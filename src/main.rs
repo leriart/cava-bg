@@ -17,10 +17,11 @@ use smithay_client_toolkit::{
 };
 use std::collections::HashMap;
 use std::ffi::CString;
+use std::ptr;
 use std::fs;
 use std::io::{BufReader, Read, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
+use std::process::{Command, Stdio, ChildStdout};
 use std::time::Duration;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::Proxy;
@@ -119,12 +120,12 @@ fn main() -> Result<()> {
     layer_surface.set_size(256, 256);
     layer_surface.set_anchor(Anchor::TOP);
     surface.commit();
-    egl.bind_api(egl::OPENGL_API).unwrap();
+    egl::bind_api(egl::OPENGL_API).unwrap();
     let egl_display = unsafe {
-        egl.get_display(conn.display().id().as_ptr() as *mut std::ffi::c_void)
+        egl::get_display(conn.backend().display() as *mut std::ffi::c_void)
             .unwrap()
     };
-    egl.initialize(egl_display).unwrap();
+    egl::initialize(egl_display).unwrap();
     const ATTRIBUTES: [i32; 9] = [
         egl::RED_SIZE,
         8,
@@ -157,7 +158,7 @@ fn main() -> Result<()> {
 
     let wl_egl_surface = WlEglSurface::new(surface.id(), 256, 256).unwrap();
     let egl_surface = unsafe {
-        egl.create_window_surface(
+        egl::create_window_surface(
             egl_display,
             egl_config,
             wl_egl_surface.ptr() as egl::NativeWindowType,
@@ -165,7 +166,7 @@ fn main() -> Result<()> {
         )
         .unwrap()
     };
-    egl.make_current(
+    egl::make_current(
         egl_display,
         Some(egl_surface),
         Some(egl_surface),
@@ -232,8 +233,9 @@ fn main() -> Result<()> {
     let mut gradient_colors_ssbo = 0;
     let gradient_colors_rgba: Vec<[f32; 4]> = config
         .colors
-        .iter()
-        .map(|color| array_from_config_color((color.1).clone()))
+        .colors
+        .values()
+        .map(|color| color.to_array())
         .collect();
 
     let gradient_colors_size = gradient_colors_rgba.len() as i32;
@@ -241,7 +243,7 @@ fn main() -> Result<()> {
     buffer_data.extend([0, 0, 0, 0].repeat(3)); // Fix for vec4 alignment
     for color in gradient_colors_rgba.iter() {
         for color_value in color {
-            buffer_data.extend_from_slice(&color_value.to_le_bytes());
+            buffer_data.extend_from_slice(&(*color_value as f32).to_le_bytes());
         }
     }
 
@@ -267,14 +269,14 @@ fn main() -> Result<()> {
         gl::BufferData(
             gl::ELEMENT_ARRAY_BUFFER,
             (indices.len() * std::mem::size_of::<u16>()) as gl::types::GLsizeiptr,
-            indices.as_ptr() as *const ffi::c_void,
+            indices.as_ptr() as *const std::ffi::c_void,
             gl::STATIC_DRAW,
         );
         gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, gradient_colors_ssbo);
         gl::BufferData(
             gl::SHADER_STORAGE_BUFFER,
             buffer_data.len() as GLsizeiptr,
-            buffer_data.as_ptr() as *const ffi::c_void,
+            buffer_data.as_ptr() as *const std::ffi::c_void,
             gl::STATIC_DRAW,
         );
         gl::BindBufferBase(gl::SHADER_STORAGE_BUFFER, 0, gradient_colors_ssbo);
@@ -314,270 +316,14 @@ fn main() -> Result<()> {
         windows_size_location,
         bar_count: config.bars.amount,
         bar_gap: config.bars.gap,
-        background_color: array_from_config_color(config.general.background_color),
+        background_color: config.general.background_color.to_array(),
         preferred_output_name: config.general.preferred_output,
         compositor,
+        config,
     };
     event_loop
         .run(frame_duration, &mut simple_window, |_| {})
         .unwrap();
-}
-
-struct AppState {
-    registry_state: RegistryState,
-    output_state: OutputState,
-    width: u32,
-    height: u32,
-    layer_shell: LayerShell,
-    layer_surface: LayerSurface,
-    surface: WlSurface,
-    cava_reader: BufReader<ChildStdout>,
-    wl_egl_surface: WlEglSurface,
-    egl_surface: egl::Surface,
-    egl_config: egl::Config,
-    egl_context: egl::Context,
-    egl_display: egl::Display,
-    shader_program: u32,
-    vao: u32,
-    vbo: u32,
-    windows_size_location: i32,
-    bar_count: u32,
-    bar_gap: f32,
-    background_color: [f32; 4],
-    preferred_output_name: Option<String>,
-    compositor: CompositorState,
-}
-
-impl AppState {
-    pub fn draw(&mut self, _conn: &Connection, qh: &QueueHandle<Self>) {
-        let mut cava_buffer: Vec<u8> = vec![0; self.bar_count as usize * 2];
-        let mut unpacked_data: Vec<f32> = vec![0.0; self.bar_count as usize];
-        self.cava_reader.read_exact(&mut cava_buffer).unwrap();
-        for (unpacked_data_index, i) in (0..cava_buffer.len()).step_by(2).enumerate() {
-            let num = u16::from_le_bytes([cava_buffer[i], cava_buffer[i + 1]]);
-            unpacked_data[unpacked_data_index] = (num as f32) / 65530.0;
-        }
-        let bar_width: f32 =
-            2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
-        let bar_gap_width: f32 = bar_width * self.bar_gap;
-        let mut vertices: Vec<f32> = vec![0.0; self.bar_count as usize * 8];
-        let fwidth: f32 = self.width as f32;
-        let fheight: f32 = self.height as f32;
-        for i in 0..self.bar_count as usize {
-            let bar_height: f32 = 2.0 * unpacked_data[i] - 1.0;
-            vertices[i * 8] = bar_gap_width * i as f32 + bar_width * i as f32 - 1.0;
-            vertices[i * 8 + 1] = bar_height;
-            vertices[i * 8 + 2] = bar_gap_width * i as f32 + bar_width * (i + 1) as f32 - 1.0;
-            vertices[i * 8 + 3] = bar_height;
-            vertices[i * 8 + 4] = bar_gap_width * i as f32 + bar_width * i as f32 - 1.0;
-            vertices[i * 8 + 5] = -1.0;
-            vertices[i * 8 + 6] = bar_gap_width * i as f32 + bar_width * (i + 1) as f32 - 1.0;
-            vertices[i * 8 + 7] = -1.0;
-        }
-        unsafe {
-            gl::BindVertexArray(self.vao);
-            gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo);
-            gl::BufferData(
-                gl::ARRAY_BUFFER,
-                (vertices.len() * std::mem::size_of::<f32>()) as gl::types::GLsizeiptr,
-                vertices.as_ptr() as *const _,
-                gl::DYNAMIC_DRAW,
-            );
-            gl::Enable(gl::BLEND);
-            gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-            gl::ClearColor(
-                self.background_color[0],
-                self.background_color[1],
-                self.background_color[2],
-                self.background_color[3],
-            );
-            gl::Clear(gl::COLOR_BUFFER_BIT);
-            gl::UseProgram(self.shader_program);
-            gl::Uniform2f(self.windows_size_location, fwidth, fheight);
-            gl::DrawElements(
-                gl::TRIANGLES,
-                (self.bar_count as usize * 3 * std::mem::size_of::<u16>()) as gl::types::GLsizei,
-                // I don't know why * 3 works here, I thought that it is supposed to be * 6, but it
-                // works, so I'll keep it like this for now.
-                gl::UNSIGNED_SHORT,
-                ptr::null(),
-            );
-            gl::BindVertexArray(0);
-        }
-        egl.swap_buffers(self.egl_display, self.egl_surface)
-            .unwrap();
-        self.surface.frame(qh, self.surface.clone());
-    }
-}
-
-impl OutputHandler for AppState {
-    fn output_state(&mut self) -> &mut OutputState {
-        &mut self.output_state
-    }
-
-    fn new_output(
-        &mut self,
-        _conn: &Connection,
-        qh: &QueueHandle<Self>,
-        output: wl_output::WlOutput,
-    ) {
-        let info = self.output_state.info(&output).unwrap();
-        let mut need_configuration = false;
-        if let Some(output_name) = info.name {
-            if let Some(preferred_output_name) = self.preferred_output_name.clone() {
-                if output_name == preferred_output_name {
-                    need_configuration = true;
-                }
-            }
-        }
-        if self.preferred_output_name.is_none() {
-            need_configuration = true;
-        }
-        if need_configuration {
-            let old_surface = self.surface.clone();
-            self.surface = self.compositor.create_surface(qh);
-            self.layer_surface = self.layer_shell.create_layer_surface(
-                qh,
-                self.surface.clone(),
-                Layer::Bottom,
-                Some("cavabg"),
-                Some(&output),
-            );
-            let logical_size = info.logical_size.unwrap();
-            self.width = logical_size.0 as u32;
-            self.height = logical_size.1 as u32;
-            self.layer_surface.set_size(self.width, self.height);
-            self.layer_surface.set_anchor(Anchor::TOP);
-            self.surface.commit();
-            old_surface.destroy();
-        }
-    }
-
-    // For now update_output is same as new_output, because I'm not really sure what to do with it
-    fn update_output(
-        &mut self,
-        _conn: &Connection,
-        qh: &QueueHandle<Self>,
-        output: wl_output::WlOutput,
-    ) {
-        self.new_output(_conn, qh, output);
-    }
-
-    fn output_destroyed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _output: wl_output::WlOutput,
-    ) {
-    }
-}
-
-delegate_compositor!(AppState);
-
-delegate_output!(AppState);
-delegate_registry!(AppState);
-delegate_layer!(AppState);
-
-impl ProvidesRegistryState for AppState {
-    fn registry(&mut self) -> &mut RegistryState {
-        &mut self.registry_state
-    }
-    registry_handlers![];
-}
-
-impl CompositorHandler for AppState {
-    fn scale_factor_changed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _new_factor: i32,
-    ) {
-    }
-
-    fn transform_changed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _new_transform: wl_output::Transform,
-    ) {
-    }
-
-    fn frame(
-        &mut self,
-        conn: &Connection,
-        qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _time: u32,
-    ) {
-        self.draw(conn, qh);
-    }
-
-    fn surface_enter(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _output: &wl_output::WlOutput,
-    ) {
-    }
-
-    fn surface_leave(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _output: &wl_output::WlOutput,
-    ) {
-    }
-}
-
-impl LayerShellHandler for AppState {
-    fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {}
-
-    fn configure(
-        &mut self,
-        _conn: &Connection,
-        qh: &QueueHandle<Self>,
-        _layer: &LayerSurface,
-        configure: LayerSurfaceConfigure,
-        _serial: u32,
-    ) {
-        let width = configure.new_size.0;
-        let height = configure.new_size.1;
-        println!(
-            "LayerSurface configure event: width={}, height={}",
-            width, height
-        );
-        self.width = width;
-        self.height = height;
-        egl.destroy_surface(self.egl_display, self.egl_surface)
-            .unwrap();
-        self.wl_egl_surface =
-            WlEglSurface::new(self.surface.id(), self.width as i32, self.height as i32).unwrap();
-        self.egl_surface = unsafe {
-            egl.create_window_surface(
-                self.egl_display,
-                self.egl_config,
-                self.wl_egl_surface.ptr() as egl::NativeWindowType,
-                None,
-            )
-            .unwrap()
-        };
-        egl.make_current(
-            self.egl_display,
-            Some(self.egl_surface),
-            Some(self.egl_surface),
-            Some(self.egl_context),
-        )
-        .unwrap();
-        unsafe {
-            gl::Viewport(0, 0, self.width as GLsizei, self.height as GLsizei);
-        }
-        self.draw(_conn, qh);
-        println!("configure finished");
-    }
 }
 
 struct AppState {
@@ -648,23 +394,7 @@ impl CompositorHandler for AppState {
         self.draw(conn, qh);
     }
 
-    fn surface_enter(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _output: &wl_output::WlOutput,
-    ) {
-    }
 
-    fn surface_leave(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _output: &wl_output::WlOutput,
-    ) {
-    }
 }
 
 impl OutputHandler for AppState {
@@ -747,7 +477,7 @@ impl LayerShellHandler for AppState {
         );
         self.width = width;
         self.height = height;
-        egl.destroy_surface(self.egl_display, self.egl_surface)
+        egl::destroy_surface(self.egl_display, self.egl_surface)
             .unwrap();
         self.wl_egl_surface =
             WlEglSurface::new(self.surface.id(), self.width as i32, self.height as i32).unwrap();
@@ -760,7 +490,7 @@ impl LayerShellHandler for AppState {
             )
             .unwrap()
         };
-        egl.make_current(
+        egl::make_current(
             self.egl_display,
             Some(self.egl_surface),
             Some(self.egl_surface),
