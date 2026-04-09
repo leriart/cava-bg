@@ -133,7 +133,7 @@ impl Config {
                 return Err(anyhow::anyhow!("Config file not found: {:?}", path));
             }
         }
-        
+
         // Otherwise, search in default locations
         let config_paths = vec![
             PathBuf::from("config.toml"),
@@ -219,19 +219,22 @@ impl Config {
 
     pub fn to_cava_config(&self) -> String {
         let mut config = String::new();
-        
+
         config.push_str(&format!("[general]\n"));
         config.push_str(&format!("framerate = {}\n", self.general.framerate));
         if let Some(autosens) = self.general.autosens {
-            config.push_str(&format!("autosens = {}\n", if autosens { "1" } else { "0" }));
+            config.push_str(&format!(
+                "autosens = {}\n",
+                if autosens { "1" } else { "0" }
+            ));
         }
         if let Some(sensitivity) = self.general.sensitivity {
             config.push_str(&format!("sensitivity = {}\n", sensitivity));
         }
-        
+
         config.push_str(&format!("\n[output]\n"));
         config.push_str(&format!("bars = {}\n", self.bars.amount));
-        
+
         config.push_str(&format!("\n[smoothing]\n"));
         if let Some(monstercat) = self.smoothing.monstercat {
             config.push_str(&format!("monstercat = {}\n", monstercat));
@@ -242,7 +245,7 @@ impl Config {
         if let Some(noise_reduction) = self.smoothing.noise_reduction {
             config.push_str(&format!("noise_reduction = {:.2}\n", noise_reduction));
         }
-        
+
         config
     }
 }

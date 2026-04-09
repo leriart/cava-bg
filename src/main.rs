@@ -34,9 +34,9 @@ fn handle_signal() -> Arc<AtomicBool> {
 
 fn main() -> Result<()> {
     env_logger::init();
-    
+
     let args = Cli::parse();
-    
+
     if args.version {
         println!("cava-bg v{}", env!("CARGO_PKG_VERSION"));
         println!("Repository: https://github.com/leriart/cava-bg");
@@ -46,7 +46,7 @@ fn main() -> Result<()> {
         println!("with adaptive color detection and automatic wallpaper change detection.");
         return Ok(());
     }
-    
+
     if args.test_config {
         println!("Testing configuration and wallpaper analysis...");
         let config = Config::load(&args.config).context("Failed to load config")?;
@@ -55,12 +55,15 @@ fn main() -> Result<()> {
         println!("  Bars: {}", config.bars.amount);
         println!("  Colors: {}", config.colors.colors.len());
         println!("  Background color: {:?}", config.general.background_color);
-        
+
         println!();
         println!("Testing wallpaper color detection and gradient generation...");
         match wallpaper::WallpaperAnalyzer::generate_gradient_colors(8) {
             Ok(colors) => {
-                println!("Successfully generated {} gradient colors from wallpaper:", colors.len());
+                println!(
+                    "Successfully generated {} gradient colors from wallpaper:",
+                    colors.len()
+                );
                 for (i, color) in colors.iter().enumerate() {
                     let hex = format!(
                         "#{:02x}{:02x}{:02x}",
@@ -68,8 +71,14 @@ fn main() -> Result<()> {
                         (color[1] * 255.0) as u8,
                         (color[2] * 255.0) as u8
                     );
-                    println!("  Color {}: {} (RGB: {:.3}, {:.3}, {:.3})", 
-                             i + 1, hex, color[0], color[1], color[2]);
+                    println!(
+                        "  Color {}: {} (RGB: {:.3}, {:.3}, {:.3})",
+                        i + 1,
+                        hex,
+                        color[0],
+                        color[1],
+                        color[2]
+                    );
                 }
             }
             Err(e) => {
@@ -87,15 +96,15 @@ fn main() -> Result<()> {
                 }
             }
         }
-        
+
         return Ok(());
     }
-    
+
     let config = Config::load(&args.config).context("Failed to load config")?;
-    
+
     info!("cava-bg starting with config: {:?}", args.config);
     info!("Auto colors: {}", config.general.auto_colors);
-    
+
     // Check if cava is installed
     if Command::new("cava").arg("--version").output().is_err() {
         eprintln!("cava is not installed. Please install it:");
@@ -104,64 +113,67 @@ fn main() -> Result<()> {
         eprintln!("  Fedora: sudo dnf install cava");
         return Ok(());
     }
-    
+
     // Set up signal handler
     let _signal_handler = handle_signal();
-    
+
     println!("cava-bg starting with adaptive gradient colors and wallpaper change detection!");
     println!("Press Ctrl+C to exit.");
     println!();
-    
+
     let mut current_wallpaper_path: Option<PathBuf> = None;
     let mut cava_process: Option<std::process::Child> = None;
     let mut last_wallpaper_check = Instant::now();
     let check_interval = Duration::from_secs(5); // Check for wallpaper changes every 5 seconds
-    
+
     // Main loop
     while RUNNING.load(Ordering::SeqCst) {
         // Check for wallpaper changes
         if last_wallpaper_check.elapsed() >= check_interval {
-            let new_wallpaper_path = wallpaper::WallpaperAnalyzer::get_current_wallpaper_path()
-                .unwrap_or(None);
-            
+            let new_wallpaper_path =
+                wallpaper::WallpaperAnalyzer::get_current_wallpaper_path().unwrap_or(None);
+
             let wallpaper_changed = match (&current_wallpaper_path, &new_wallpaper_path) {
                 (Some(old), Some(new)) => old != new,
                 (None, Some(_)) => true, // No previous wallpaper, now we have one
                 (Some(_), None) => true, // Had wallpaper, now it's gone
                 (None, None) => false,   // No wallpaper before or now
             };
-            
+
             if wallpaper_changed {
                 info!("Wallpaper change detected!");
-                
+
                 // Kill existing cava process if running
                 if let Some(mut process) = cava_process.take() {
                     info!("Stopping previous cava process...");
                     process.kill().ok();
                     process.wait().ok();
                 }
-                
+
                 // Update current wallpaper path
                 current_wallpaper_path = new_wallpaper_path.clone();
-                
+
                 if let Some(path) = &current_wallpaper_path {
                     println!("New wallpaper detected: {}", path.display());
-                    
+
                     let cava_config_path = dirs::cache_dir()
                         .context("Failed to get cache directory")?
                         .join("cava-bg-cava-config");
-                    
+
                     if config.general.auto_colors {
                         // Generate adaptive gradient colors from new wallpaper
                         info!("Generating gradient colors from new wallpaper (auto_colors enabled)...");
                         match wallpaper::WallpaperAnalyzer::generate_gradient_colors(8) {
                             Ok(gradient_colors) => {
-                                println!("Generated {} gradient colors from wallpaper:", gradient_colors.len());
-                                
+                                println!(
+                                    "Generated {} gradient colors from wallpaper:",
+                                    gradient_colors.len()
+                                );
+
                                 // Update config with new gradient colors
                                 let mut adaptive_config = config.clone();
                                 adaptive_config.colors.colors.clear();
-                                
+
                                 for (i, color) in gradient_colors.iter().enumerate() {
                                     let hex = format!(
                                         "#{:02x}{:02x}{:02x}",
@@ -170,12 +182,12 @@ fn main() -> Result<()> {
                                         (color[2] * 255.0) as u8
                                     );
                                     println!("  Color {}: {}", i + 1, hex);
-                                    adaptive_config
-                                        .colors
-                                        .colors
-                                        .insert(format!("gradient_color_{}", i + 1), Color::Hex(hex));
+                                    adaptive_config.colors.colors.insert(
+                                        format!("gradient_color_{}", i + 1),
+                                        Color::Hex(hex),
+                                    );
                                 }
-                                
+
                                 // Generate cava config with new colors
                                 let cava_config = adaptive_config.to_cava_config();
                                 fs::write(&cava_config_path, cava_config)
@@ -198,9 +210,9 @@ fn main() -> Result<()> {
                         fs::write(&cava_config_path, cava_config)
                             .context("Failed to write cava config")?;
                     }
-                    
+
                     info!("Starting cava process...");
-                    
+
                     // Start new cava process
                     match Command::new("cava")
                         .arg("-p")
@@ -221,25 +233,25 @@ fn main() -> Result<()> {
                     println!("Wallpaper removed or not found.");
                 }
             }
-            
+
             last_wallpaper_check = Instant::now();
         }
-        
+
         // Sleep to prevent busy waiting
         thread::sleep(Duration::from_millis(100));
     }
-    
+
     // Cleanup
     info!("Shutting down...");
-    
+
     if let Some(mut process) = cava_process.take() {
         info!("Stopping cava process...");
         process.kill().ok();
         process.wait().ok();
     }
-    
+
     println!("cava-bg stopped.");
     info!("cava-bg shutting down.");
-    
+
     Ok(())
 }

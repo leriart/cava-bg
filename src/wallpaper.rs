@@ -13,25 +13,22 @@ impl WallpaperAnalyzer {
         // Common wallpaper locations
         let possible_paths = [
             // Hyprland
-            dirs::config_dir()
-                .map(|mut p| {
-                    p.push("hypr");
-                    p.push("wallpaper.jpg");
-                    p
-                }),
-            dirs::config_dir()
-                .map(|mut p| {
-                    p.push("hypr");
-                    p.push("wallpaper.png");
-                    p
-                }),
+            dirs::config_dir().map(|mut p| {
+                p.push("hypr");
+                p.push("wallpaper.jpg");
+                p
+            }),
+            dirs::config_dir().map(|mut p| {
+                p.push("hypr");
+                p.push("wallpaper.png");
+                p
+            }),
             // Sway
-            dirs::config_dir()
-                .map(|mut p| {
-                    p.push("sway");
-                    p.push("wallpaper");
-                    p
-                }),
+            dirs::config_dir().map(|mut p| {
+                p.push("sway");
+                p.push("wallpaper");
+                p
+            }),
             // Common locations
             dirs::picture_dir().map(|mut p| {
                 p.push("wallpaper");
@@ -105,7 +102,6 @@ impl WallpaperAnalyzer {
 
     /// Extract dominant colors from an image using simple algorithm
 
-
     /// Get default colors (fallback when no wallpaper is found)
     pub fn default_colors(num_colors: usize) -> Vec<[f32; 4]> {
         // Catppuccin Mocha color palette
@@ -165,30 +161,39 @@ impl WallpaperAnalyzer {
     }
 
     /// Extract dominant colors and generate gradient palette
-    fn extract_and_generate_gradient(img: &image::DynamicImage, num_colors: usize) -> Vec<[f32; 4]> {
+    fn extract_and_generate_gradient(
+        img: &image::DynamicImage,
+        num_colors: usize,
+    ) -> Vec<[f32; 4]> {
         let (width, height) = img.dimensions();
-        
+
         // Sample pixels from different regions
         let mut samples = Vec::new();
         let step = (width * height / 10000).max(1) as u32; // Sample ~10000 pixels
-        
+
         for y in (0..height).step_by(step as usize) {
             for x in (0..width).step_by(step as usize) {
                 let pixel = img.get_pixel(x, y);
                 let rgb = pixel.to_rgb();
                 let channels = rgb.channels();
                 // Only include sufficiently bright and saturated colors
-                let brightness = (channels[0] as f32 + channels[1] as f32 + channels[2] as f32) / 3.0;
+                let brightness =
+                    (channels[0] as f32 + channels[1] as f32 + channels[2] as f32) / 3.0;
                 let max_channel = channels[0].max(channels[1]).max(channels[2]) as f32;
                 let min_channel = channels[0].min(channels[1]).min(channels[2]) as f32;
-                let saturation = if max_channel > 0.0 { (max_channel - min_channel) / max_channel } else { 0.0 };
-                
+                let saturation = if max_channel > 0.0 {
+                    (max_channel - min_channel) / max_channel
+                } else {
+                    0.0
+                };
+
                 // For black and white wallpapers, we need different thresholds
                 let is_black_white = saturation < 0.1;
-                
+
                 if is_black_white {
                     // For black/white images, accept based on brightness only
-                    if brightness > 20.0 && brightness < 230.0 { // Avoid pure black and pure white
+                    if brightness > 20.0 && brightness < 230.0 {
+                        // Avoid pure black and pure white
                         samples.push([channels[0] as f32, channels[1] as f32, channels[2] as f32]);
                     }
                 } else {
@@ -218,10 +223,10 @@ impl WallpaperAnalyzer {
 
         // Find 3-4 dominant colors using k-means-like clustering
         let dominant_colors = Self::find_dominant_colors(&samples, 4.min(samples.len()));
-        
+
         // Generate gradient colors by interpolating between dominant colors
         let gradient_colors = Self::generate_gradient_palette(&dominant_colors, num_colors);
-        
+
         gradient_colors
     }
 
@@ -240,12 +245,12 @@ impl WallpaperAnalyzer {
         // Simple clustering iterations
         for _ in 0..5 {
             let mut clusters: Vec<Vec<[f32; 3]>> = vec![Vec::new(); centroids.len()];
-            
+
             // Assign samples to nearest centroid
             for sample in samples {
                 let mut min_dist = f32::MAX;
                 let mut cluster_idx = 0;
-                
+
                 for (i, centroid) in centroids.iter().enumerate() {
                     let dist = Self::color_distance(sample, centroid);
                     if dist < min_dist {
@@ -253,10 +258,10 @@ impl WallpaperAnalyzer {
                         cluster_idx = i;
                     }
                 }
-                
+
                 clusters[cluster_idx].push(*sample);
             }
-            
+
             // Update centroids
             let mut new_centroids = Vec::new();
             for cluster in &clusters {
@@ -271,17 +276,13 @@ impl WallpaperAnalyzer {
                         sum[2] += sample[2];
                     }
                     let count = cluster.len() as f32;
-                    new_centroids.push([
-                        sum[0] / count,
-                        sum[1] / count,
-                        sum[2] / count,
-                    ]);
+                    new_centroids.push([sum[0] / count, sum[1] / count, sum[2] / count]);
                 }
             }
-            
+
             centroids = new_centroids;
         }
-        
+
         centroids
     }
 
@@ -290,7 +291,7 @@ impl WallpaperAnalyzer {
         if dominant_colors.is_empty() {
             return Self::default_colors(num_colors);
         }
-        
+
         // Check if we have a black/white dominant palette
         let is_black_white_palette = dominant_colors.iter().all(|color| {
             let r = color[0];
@@ -301,28 +302,28 @@ impl WallpaperAnalyzer {
             let saturation = if max > 0.0 { (max - min) / max } else { 0.0 };
             saturation < 0.1
         });
-        
+
         let mut palette = Vec::new();
-        
+
         if is_black_white_palette {
             // For black/white wallpapers, create a colorful gradient
             // Use a nice blue-to-purple gradient as default for B/W wallpapers
             let colorful_gradient = vec![
-                [0.2, 0.4, 0.8, 1.0],   // Blue
-                [0.4, 0.6, 0.9, 1.0],   // Light Blue
-                [0.6, 0.4, 0.9, 1.0],   // Purple
-                [0.8, 0.2, 0.8, 1.0],   // Magenta
-                [0.9, 0.4, 0.6, 1.0],   // Pink
-                [0.9, 0.6, 0.4, 1.0],   // Orange
-                [0.8, 0.8, 0.2, 1.0],   // Yellow
-                [0.6, 0.9, 0.4, 1.0],   // Green
+                [0.2, 0.4, 0.8, 1.0], // Blue
+                [0.4, 0.6, 0.9, 1.0], // Light Blue
+                [0.6, 0.4, 0.9, 1.0], // Purple
+                [0.8, 0.2, 0.8, 1.0], // Magenta
+                [0.9, 0.4, 0.6, 1.0], // Pink
+                [0.9, 0.6, 0.4, 1.0], // Orange
+                [0.8, 0.8, 0.2, 1.0], // Yellow
+                [0.6, 0.9, 0.4, 1.0], // Green
             ];
-            
+
             // Take the first num_colors from our colorful gradient
             for i in 0..num_colors.min(colorful_gradient.len()) {
                 palette.push(colorful_gradient[i]);
             }
-            
+
             // Fill remaining with defaults if needed
             while palette.len() < num_colors {
                 palette.extend(Self::default_colors(num_colors - palette.len()));
@@ -349,7 +350,7 @@ impl WallpaperAnalyzer {
                 let segment = t * (dominant_colors.len() - 1) as f32;
                 let idx = segment.floor() as usize;
                 let frac = segment - idx as f32;
-                
+
                 if idx >= dominant_colors.len() - 1 {
                     // Last segment
                     let color = dominant_colors[dominant_colors.len() - 1];
@@ -368,14 +369,14 @@ impl WallpaperAnalyzer {
                 }
             }
         }
-        
+
         // Ensure colors are in valid range
         for color in &mut palette {
             color[0] = color[0].clamp(0.0, 1.0);
             color[1] = color[1].clamp(0.0, 1.0);
             color[2] = color[2].clamp(0.0, 1.0);
         }
-        
+
         palette
     }
 
@@ -387,6 +388,4 @@ impl WallpaperAnalyzer {
         // Weighted for human perception
         (dr * dr * 0.299 + dg * dg * 0.587 + db * db * 0.114).sqrt()
     }
-
-
 }
