@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use image::{GenericImageView, Pixel};
-use palette::{FromColor, Hsv, LinSrgb, Srgb};
+use palette::{FromColor, Hsv, Lab, LinSrgb, Srgb};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use walkdir::WalkDir;
 
@@ -106,94 +107,231 @@ impl WallpaperAnalyzer {
         Ok(None)
     }
 
-    /// Extract dominant colors from an image
+    /// Extract dominant colors from an image using improved algorithm
     pub fn extract_colors(image_path: &PathBuf, num_colors: usize) -> Result<Vec<[f32; 4]>> {
         let img = image::open(image_path)
             .with_context(|| format!("Failed to open image: {}", image_path.display()))?;
 
         let (width, height) = img.dimensions();
-        
-        // Sample pixels from the image (every 10th pixel for performance)
-        let mut samples = Vec::new();
-        for y in (0..height).step_by(10) {
-            for x in (0..width).step_by(10) {
+
+        // Sample pixels from the image (every 8th pixel for performance)
+        let mut color_counts: HashMap<[u8; 3], usize> = HashMap::new();
+        let total_samples = (width as usize / 8) * (height as usize / 8);
+
+        for y in (0..height).step_by(8) {
+            for x in (0..width).step_by(8) {
                 let pixel = img.get_pixel(x, y);
                 let rgb = pixel.to_rgb();
-                samples.push(LinSrgb::new(
-                    rgb[0] as f32 / 255.0,
-                    rgb[1] as f32 / 255.0,
-                    rgb[2] as f32 / 255.0,
-                ));
+                let quantized = [
+                    (rgb[0] >> 4) << 4, // Quantize to 16 levels
+                    (rgb[1] >> 4) << 4,
+                    (rgb[2] >> 4) << 4,
+                ];
+                *color_counts.entry(quantized).or_insert(0) += 1;
             }
         }
 
-        if samples.is_empty() {
+        if color_counts.is_empty() {
             return Ok(Self::default_colors(num_colors));
         }
 
-        // Convert to HSV for better color clustering
-        let hsv_samples: Vec<Hsv> = samples.iter().map(|&rgb| Hsv::from_color(rgb)).collect();
+        // Convert to Lab color space for better clustering
+        let mut lab_colors: Vec<(Lab, usize)> = color_counts
+            .iter()
+            .map(|(&rgb, &count)| {
+                let srgb = Srgb::new(
+                    rgb[0] as f32 / 255.0,
+                    rgb[1] as f32 / 255.0,
+                    rgb[2] as f32 / 255.0,
+                );
+                let lab: Lab = Lab::from_color(srgb.into_linear());
+                (lab, count)
+            })
+            .collect();
 
-        // Simple k-means clustering (simplified)
-        let mut colors = Vec::new();
-        
-        // Group by hue ranges
-        let hue_ranges = if num_colors <= 3 {
-            vec![(0.0, 360.0)]
-        } else {
-            // Divide hue circle into segments
-            let segment_size = 360.0 / num_colors as f32;
-            (0..num_colors)
-                .map(|i| (i as f32 * segment_size, (i + 1) as f32 * segment_size))
-                .collect()
-        };
+        // Sort by frequency (most common colors first)
+        lab_colors.sort_by(|a, b| b.1.cmp(&a.1));
 
-        for (hue_start, hue_end) in hue_ranges {
-            let mut total_r = 0.0;
-            let mut total_g = 0.0;
-            let mut total_b = 0.0;
-            let mut count = 0;
+        // Apply k-means clustering in Lab space
+        let mut clusters = Vec::new();
+        let mut used_indices = Vec::new();
 
-            for (hsv, &rgb) in hsv_samples.iter().zip(samples.iter()) {
-                let hue = if hsv.hue.to_positive_degrees() < hue_start {
-                    hsv.hue.to_positive_degrees() + 360.0
-                } else {
-                    hsv.hue.to_positive_degrees()
-                };
+        for i in 0..lab_colors.len() {
+            if used_indices.contains(&i) {
+                continue;
+            }
 
-                if hue >= hue_start && hue <= hue_end {
-                    total_r += rgb.red;
-                    total_g += rgb.green;
-                    total_b += rgb.blue;
-                    count += 1;
+            let (center_color, center_count) = &lab_colors[i];
+            let mut total_lab = *center_color;
+            let mut total_count = *center_count;
+            let mut cluster_members = vec![i];
+
+            // Find similar colors within threshold
+            for j in (i + 1)..lab_colors.len() {
+                if used_indices.contains(&j) {
+                    continue;
+                }
+
+                let (other_color, other_count) = &lab_colors[j];
+                let distance = Self::color_distance_lab(*center_color, *other_color);
+
+                // Threshold for similar colors (adjustable)
+                if distance < 15.0 {
+                    total_lab = Lab::new(
+                        total_lab.l + other_color.l * (*other_count as f32),
+                        total_lab.a + other_color.a * (*other_count as f32),
+                        total_lab.b + other_color.b * (*other_count as f32),
+                    );
+                    total_count += other_count;
+                    cluster_members.push(j);
                 }
             }
 
-            if count > 0 {
-                let avg_r = total_r / count as f32;
-                let avg_g = total_g / count as f32;
-                let avg_b = total_b / count as f32;
-                
-                // Convert back to sRGB and ensure values are in [0, 1]
-                let srgb = Srgb::new(avg_r, avg_g, avg_b);
-                colors.push([
+            // Calculate weighted average for cluster
+            let avg_lab = Lab::new(
+                total_lab.l / total_count as f32,
+                total_lab.a / total_count as f32,
+                total_lab.b / total_count as f32,
+            );
+
+            // Convert back to sRGB
+            let lin_srgb: LinSrgb = LinSrgb::from_color(avg_lab);
+            let srgb = Srgb::from_linear(lin_srgb);
+
+            clusters.push((
+                [
                     srgb.red.max(0.0).min(1.0),
                     srgb.green.max(0.0).min(1.0),
                     srgb.blue.max(0.0).min(1.0),
-                    1.0, // Alpha
-                ]);
+                    1.0,
+                ],
+                total_count,
+            ));
+
+            // Mark all members as used
+            used_indices.extend(cluster_members);
+        }
+
+        // Sort clusters by total pixel count (dominance)
+        clusters.sort_by(|a, b| b.1.cmp(&a.1));
+
+        // Select top N colors
+        let mut selected_colors: Vec<[f32; 4]> = clusters
+            .iter()
+            .take(num_colors)
+            .map(|(color, _)| *color)
+            .collect();
+
+        // If we don't have enough colors, generate complementary ones
+        if selected_colors.len() < num_colors {
+            selected_colors = Self::generate_harmonious_colors(&selected_colors, num_colors);
+        }
+
+        // Ensure colors have good contrast and vibrancy
+        selected_colors = Self::enhance_colors(&selected_colors);
+
+        Ok(selected_colors)
+    }
+
+    /// Calculate color distance in Lab space (perceptually uniform)
+    fn color_distance_lab(lab1: Lab, lab2: Lab) -> f32 {
+        let dl = lab1.l - lab2.l;
+        let da = lab1.a - lab2.a;
+        let db = lab1.b - lab2.b;
+        (dl * dl + da * da + db * db).sqrt()
+    }
+
+    /// Generate harmonious colors based on extracted ones
+    fn generate_harmonious_colors(base_colors: &[[f32; 4]], target_count: usize) -> Vec<[f32; 4]> {
+        let mut colors = base_colors.to_vec();
+
+        if colors.is_empty() {
+            return Self::default_colors(target_count);
+        }
+
+        // Convert to HSV for color manipulation
+        let mut hsv_colors: Vec<Hsv> = colors
+            .iter()
+            .map(|color| {
+                let srgb = Srgb::new(color[0], color[1], color[2]);
+                Hsv::from_color(srgb.into_linear())
+            })
+            .collect();
+
+        // Generate complementary, analogous, and triadic colors
+        while colors.len() < target_count {
+            let last_color = &hsv_colors[colors.len() % hsv_colors.len()];
+
+            // Alternate between different color relationships
+            match colors.len() % 3 {
+                0 => {
+                    // Complementary color (180° hue shift)
+                    let mut new_hsv = *last_color;
+                    new_hsv.hue = new_hsv.hue + 180.0;
+                    let new_srgb: Srgb = Srgb::from_color(LinSrgb::from_color(new_hsv));
+                    colors.push([
+                        new_srgb.red.max(0.0).min(1.0),
+                        new_srgb.green.max(0.0).min(1.0),
+                        new_srgb.blue.max(0.0).min(1.0),
+                        1.0,
+                    ]);
+                    hsv_colors.push(new_hsv);
+                }
+                1 => {
+                    // Analogous color (30° hue shift)
+                    let mut new_hsv = *last_color;
+                    new_hsv.hue = new_hsv.hue + 30.0;
+                    let new_srgb: Srgb = Srgb::from_color(LinSrgb::from_color(new_hsv));
+                    colors.push([
+                        new_srgb.red.max(0.0).min(1.0),
+                        new_srgb.green.max(0.0).min(1.0),
+                        new_srgb.blue.max(0.0).min(1.0),
+                        1.0,
+                    ]);
+                    hsv_colors.push(new_hsv);
+                }
+                _ => {
+                    // Triadic color (120° hue shift)
+                    let mut new_hsv = *last_color;
+                    new_hsv.hue = new_hsv.hue + 120.0;
+                    let new_srgb: Srgb = Srgb::from_color(LinSrgb::from_color(new_hsv));
+                    colors.push([
+                        new_srgb.red.max(0.0).min(1.0),
+                        new_srgb.green.max(0.0).min(1.0),
+                        new_srgb.blue.max(0.0).min(1.0),
+                        1.0,
+                    ]);
+                    hsv_colors.push(new_hsv);
+                }
             }
         }
 
-        // If we didn't get enough colors, fill with defaults
-        while colors.len() < num_colors {
-            colors.extend(Self::default_colors(num_colors - colors.len()));
-        }
+        colors.truncate(target_count);
+        colors
+    }
 
-        // Limit to requested number of colors
-        colors.truncate(num_colors);
+    /// Enhance colors for better visibility and contrast
+    fn enhance_colors(colors: &[[f32; 4]]) -> Vec<[f32; 4]> {
+        colors
+            .iter()
+            .map(|color| {
+                let mut hsv: Hsv = Hsv::from_color(LinSrgb::new(color[0], color[1], color[2]));
 
-        Ok(colors)
+                // Increase saturation for more vibrant colors
+                hsv.saturation = hsv.saturation.min(0.9).max(0.7);
+
+                // Ensure good brightness
+                hsv.value = hsv.value.max(0.6).min(0.9);
+
+                let srgb: Srgb = Srgb::from_color(LinSrgb::from_color(hsv));
+                [
+                    srgb.red.max(0.0).min(1.0),
+                    srgb.green.max(0.0).min(1.0),
+                    srgb.blue.max(0.0).min(1.0),
+                    1.0,
+                ]
+            })
+            .collect()
     }
 
     /// Get default colors (fallback when no wallpaper is found)

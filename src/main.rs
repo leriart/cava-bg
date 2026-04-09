@@ -17,11 +17,11 @@ use smithay_client_toolkit::{
 };
 use std::collections::HashMap;
 use std::ffi::CString;
-use std::ptr;
 use std::fs;
 use std::io::{BufReader, Read, Write};
 use std::path::PathBuf;
-use std::process::{Command, Stdio, ChildStdout};
+use std::process::{ChildStdout, Command, Stdio};
+use std::ptr;
 use std::time::Duration;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::Proxy;
@@ -122,10 +122,8 @@ fn main() -> Result<()> {
     layer_surface.set_anchor(Anchor::TOP);
     surface.commit();
     egl::bind_api(egl::OPENGL_API).unwrap();
-    let egl_display = unsafe {
-        egl::get_display(conn.backend().display() as *mut std::ffi::c_void)
-            .unwrap()
-    };
+    let egl_display =
+        unsafe { egl::get_display(conn.backend().display() as *mut std::ffi::c_void).unwrap() };
     egl::initialize(egl_display).unwrap();
     const ATTRIBUTES: [i32; 9] = [
         egl::RED_SIZE,
@@ -394,8 +392,6 @@ impl CompositorHandler for AppState {
     ) {
         self.draw(conn, qh);
     }
-
-
 }
 
 impl OutputHandler for AppState {
@@ -478,8 +474,7 @@ impl LayerShellHandler for AppState {
         );
         self.width = width;
         self.height = height;
-        egl::destroy_surface(self.egl_display, self.egl_surface)
-            .unwrap();
+        egl::destroy_surface(self.egl_display, self.egl_surface).unwrap();
         self.wl_egl_surface =
             WlEglSurface::new(self.surface.id(), self.width as i32, self.height as i32).unwrap();
         self.egl_surface = unsafe {

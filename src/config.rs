@@ -156,10 +156,7 @@ impl Config {
                 (color[1] * 255.0) as u8,
                 (color[2] * 255.0) as u8
             );
-            colors.insert(
-                format!("gradient_color_{}", i + 1),
-                Color::Hex(hex),
-            );
+            colors.insert(format!("gradient_color_{}", i + 1), Color::Hex(hex));
         }
 
         Config {
