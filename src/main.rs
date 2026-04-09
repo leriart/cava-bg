@@ -37,6 +37,7 @@ extern crate khronos_egl as egl;
 mod cli;
 mod config;
 mod shader;
+mod wallpaper;
 
 use cli::Cli;
 use config::*;

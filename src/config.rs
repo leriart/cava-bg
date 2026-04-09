@@ -4,6 +4,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+use crate::wallpaper::WallpaperAnalyzer;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub general: GeneralConfig,
@@ -137,6 +139,29 @@ impl Config {
     }
 
     pub fn default() -> Self {
+        // Try to get adaptive colors from wallpaper
+        let gradient_colors = match WallpaperAnalyzer::generate_gradient_colors(8) {
+            Ok(colors) => colors,
+            Err(e) => {
+                log::warn!("Failed to generate adaptive colors: {}. Using defaults.", e);
+                WallpaperAnalyzer::default_colors(8)
+            }
+        };
+
+        let mut colors = HashMap::new();
+        for (i, color) in gradient_colors.iter().enumerate() {
+            let hex = format!(
+                "#{:02x}{:02x}{:02x}",
+                (color[0] * 255.0) as u8,
+                (color[1] * 255.0) as u8,
+                (color[2] * 255.0) as u8
+            );
+            colors.insert(
+                format!("gradient_color_{}", i + 1),
+                Color::Hex(hex),
+            );
+        }
+
         Config {
             general: GeneralConfig {
                 framerate: 60,
@@ -152,42 +177,7 @@ impl Config {
                 amount: 76,
                 gap: 0.1,
             },
-            colors: {
-                let mut colors = HashMap::new();
-                colors.insert(
-                    "gradient_color_1".to_string(),
-                    Color::Hex("#94e2d5".to_string()),
-                );
-                colors.insert(
-                    "gradient_color_2".to_string(),
-                    Color::Hex("#89dceb".to_string()),
-                );
-                colors.insert(
-                    "gradient_color_3".to_string(),
-                    Color::Hex("#74c7ec".to_string()),
-                );
-                colors.insert(
-                    "gradient_color_4".to_string(),
-                    Color::Hex("#89b4fa".to_string()),
-                );
-                colors.insert(
-                    "gradient_color_5".to_string(),
-                    Color::Hex("#cba6f7".to_string()),
-                );
-                colors.insert(
-                    "gradient_color_6".to_string(),
-                    Color::Hex("#f5c2e7".to_string()),
-                );
-                colors.insert(
-                    "gradient_color_7".to_string(),
-                    Color::Hex("#eba0ac".to_string()),
-                );
-                colors.insert(
-                    "gradient_color_8".to_string(),
-                    Color::Hex("#f38ba8".to_string()),
-                );
-                ColorsConfig { colors }
-            },
+            colors: ColorsConfig { colors },
             smoothing: SmoothingConfig {
                 monstercat: Some(0),
                 waves: Some(0),

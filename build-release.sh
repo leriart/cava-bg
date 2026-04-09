@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Cavabg Release Builder
+# cava-bg Release Builder
 set -e
 
 VERSION="0.1.0"
@@ -8,7 +8,7 @@ RELEASE_DIR="target/release"
 DIST_DIR="dist"
 ARCH="x86_64-unknown-linux-gnu"
 
-echo "Building Cavabg Release v$VERSION..."
+echo "Building cava-bg Release v$VERSION..."
 
 # Clean previous builds
 echo "Cleaning previous builds..."
@@ -25,17 +25,17 @@ mkdir -p "$DIST_DIR"
 
 # Copy binary
 echo "Copying binary..."
-cp "$RELEASE_DIR/cavabg" "$DIST_DIR/"
+cp "$RELEASE_DIR/cava-bg" "$DIST_DIR/"
 
 # Create archive
 echo "Creating archive..."
 cd "$DIST_DIR"
-tar -czf "../cavabg-v$VERSION-$ARCH.tar.gz" cavabg
+tar -czf "../cava-bg-v$VERSION-$ARCH.tar.gz" cava-bg
 cd ..
 
 # Create checksum
 echo "Creating checksum..."
-sha256sum "cavabg-v$VERSION-$ARCH.tar.gz" > "cavabg-v$VERSION-$ARCH.tar.gz.sha256"
+sha256sum "cava-bg-v$VERSION-$ARCH.tar.gz" > "cava-bg-v$VERSION-$ARCH.tar.gz.sha256"
 
 echo ""
 echo "Release built successfully!"

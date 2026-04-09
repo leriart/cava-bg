@@ -1,6 +1,21 @@
 # Installation Guide
 
-## Binary Installation (Recommended)
+## AUR Installation (Recommended for Arch Linux)
+
+```bash
+# Using paru
+paru -S cava-bg
+
+# Using yay
+yay -S cava-bg
+```
+
+The AUR package will automatically:
+1. Install cava if not present
+2. Install all required dependencies
+3. Build and install cava-bg
+
+## Binary Installation
 
 ### 1. Download the latest release
 
@@ -8,25 +23,25 @@
 # Download the binary archive
 VERSION="0.1.0"
 ARCH="x86_64-unknown-linux-gnu"
-wget https://github.com/yourusername/cavabg/releases/download/v${VERSION}/cavabg-v${VERSION}-${ARCH}.tar.gz
+wget https://github.com/leriart/cava-bg/releases/download/v${VERSION}/cava-bg-v${VERSION}-${ARCH}.tar.gz
 
 # Verify checksum
-wget https://github.com/yourusername/cavabg/releases/download/v${VERSION}/cavabg-v${VERSION}-${ARCH}.tar.gz.sha256
-sha256sum -c cavabg-v${VERSION}-${ARCH}.tar.gz.sha256
+wget https://github.com/leriart/cava-bg/releases/download/v${VERSION}/cava-bg-v${VERSION}-${ARCH}.tar.gz.sha256
+sha256sum -c cava-bg-v${VERSION}-${ARCH}.tar.gz.sha256
 
 # Extract
-tar -xzf cavabg-v${VERSION}-${ARCH}.tar.gz
+tar -xzf cava-bg-v${VERSION}-${ARCH}.tar.gz
 ```
 
 ### 2. Install system-wide
 
 ```bash
 # Copy to /usr/local/bin
-sudo cp cavabg /usr/local/bin/
+sudo cp cava-bg /usr/local/bin/
 
 # Or to ~/.local/bin (if in PATH)
 mkdir -p ~/.local/bin
-cp cavabg ~/.local/bin/
+cp cava-bg ~/.local/bin/
 ```
 
 ### 3. Install cava (required)
@@ -45,9 +60,9 @@ sudo dnf install cava
 ### 4. Create configuration
 
 ```bash
-mkdir -p ~/.config/cavabg
-cp config.toml ~/.config/cavabg/
-# Edit ~/.config/cavabg/config.toml as needed
+mkdir -p ~/.config/cava-bg
+cp config.toml ~/.config/cava-bg/
+# Edit ~/.config/cava-bg/config.toml as needed
 ```
 
 ## From Source
@@ -71,21 +86,25 @@ sudo apt install cava build-essential pkg-config libwayland-dev libegl-dev mesa-
 
 ```bash
 # Clone repository
-git clone https://github.com/yourusername/cavabg.git
-cd cavabg
+git clone https://github.com/leriart/cava-bg.git
+cd cava-bg
 
 # Build
 cargo build --release
 
 # Install
-sudo cp target/release/cavabg /usr/local/bin/
+sudo cp target/release/cava-bg /usr/local/bin/
 ```
 
-## Package Manager Installation (Future)
+## Package Manager Installation
 
 ### AUR (Arch Linux)
 ```bash
-yay -S cavabg
+# Using paru
+paru -S cava-bg
+
+# Using yay
+yay -S cava-bg
 ```
 
 ### Nix
@@ -99,10 +118,10 @@ After installation, verify it works:
 
 ```bash
 # Check version
-cavabg --version
+cava-bg --version
 
 # Test run (should show visualizer)
-cavabg
+cava-bg
 ```
 
 ## Troubleshooting
@@ -143,6 +162,6 @@ rm -rf ~/.config/cavabg
 
 ## Next Steps
 
-1. Configure `~/.config/cavabg/config.toml` to your liking
-2. Add to Hyprland autostart: `exec-once = cavabg`
+1. Configure `~/.config/cava-bg/config.toml` to your liking
+2. Add to Hyprland autostart: `exec-once = cava-bg`
 3. Enjoy your audio visualizer!

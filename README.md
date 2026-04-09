@@ -1,52 +1,67 @@
-# Cavabg - Native CAVA Visualizer for Hyprland
+# cava-bg - Native CAVA Visualizer for Hyprland
 
-A native implementation of wallpaper-cava optimized for Hyprland, displaying CAVA audio visualizations as a layer over your wallpaper.
+A native implementation of wallpaper-cava optimized for Hyprland, displaying CAVA audio visualizations as a layer over your wallpaper with adaptive color detection.
 
-![Cavabg Demo](https://img.shields.io/badge/demo-coming_soon-blue)
+![cava-bg Demo](https://img.shields.io/badge/demo-coming_soon-blue)
 ![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/platform-Linux%20Wayland-lightgrey)
 
+**Repository:** https://github.com/leriart/cava-bg
+
+## Features
+
+- **Adaptive color detection** - Automatically extracts colors from your wallpaper
+- **Native Wayland integration** - Uses wlr-layer-shell for optimal performance
+- **Real-time audio visualization** - Connects directly to cava for audio processing
+- **Hardware accelerated** - OpenGL 4.6 rendering
+- **Hyprland optimized** - Perfect integration with Hyprland compositor
+
 ## Quick Install
 
-### Binary Release (Recommended)
+### AUR (Arch Linux)
+
+```bash
+# Using paru
+paru -S cava-bg
+
+# Using yay
+yay -S cava-bg
+```
+
+### Binary Release
 
 ```bash
 # Download latest release
 VERSION="0.1.0"
 ARCH="x86_64-unknown-linux-gnu"
-wget https://github.com/yourusername/cavabg/releases/download/v${VERSION}/cavabg-v${VERSION}-${ARCH}.tar.gz
+wget https://github.com/leriart/cava-bg/releases/download/v${VERSION}/cava-bg-v${VERSION}-${ARCH}.tar.gz
 
 # Extract and install
-sudo tar -xzf cavabg-v${VERSION}-${ARCH}.tar.gz -C /usr/local/bin/
+sudo tar -xzf cava-bg-v${VERSION}-${ARCH}.tar.gz -C /usr/local/bin/
 
-# Install cava (required)
-sudo pacman -S cava  # Arch
-# or
-sudo apt install cava # Debian/Ubuntu
-
-# Run
-cavabg
+# Run (cava will be installed automatically if needed)
+cava-bg
 ```
 
 ### From Source
 ```bash
-git clone https://github.com/yourusername/cavabg.git
-cd cavabg
+git clone https://github.com/leriart/cava-bg.git
+cd cava-bg
 cargo build --release
-sudo cp target/release/cavabg /usr/local/bin/
+sudo cp target/release/cava-bg /usr/local/bin/
 ```
 
 ## Installation
 
 ### Method 1: Binary Release (Easiest)
 
-Download the pre-built binary from the [Releases](https://github.com/yourusername/cavabg/releases) page:
+Download the pre-built binary from the [Releases](https://github.com/leriart/cava-bg/releases) page:
 
 ```bash
 # Example for v0.1.0
-curl -L https://github.com/yourusername/cavabg/releases/download/v0.1.0/cavabg-v0.1.0-x86_64-unknown-linux-gnu.tar.gz | tar -xz
-sudo mv cavabg /usr/local/bin/
+curl -L https://github.com/leriart/cava-bg/releases/download/v0.1.0/cava-bg-v0.1.0-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+sudo mv cava-bg /usr/local/bin/
 ```
 
 ### Method 2: From Source

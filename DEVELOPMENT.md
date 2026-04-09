@@ -47,7 +47,7 @@ cargo run --release -- --config config.toml
 ## Project Structure
 
 ```
-cavabg/
+cava-bg/
 ├── src/
 │   ├── main.rs          # Main application logic
 │   ├── config.rs        # Configuration parsing
