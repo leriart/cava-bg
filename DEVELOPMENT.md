@@ -20,12 +20,12 @@ cargo --version
 
 **Arch Linux:**
 ```bash
-sudo pacman -S cava base-devel pkg-config wayland-protocols wayland
+sudo pacman -S cava base-devel pkg-config wayland-protocols wayland libxkbcommon
 ```
 
 **Ubuntu/Debian:**
 ```bash
-sudo apt install cava build-essential pkg-config libwayland-dev libegl-dev mesa-common-dev
+sudo apt install cava build-essential pkg-config libwayland-dev libegl-dev mesa-common-dev libxkbcommon-dev wayland-protocols
 ```
 
 ### 3. Build and Run

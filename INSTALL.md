@@ -61,10 +61,10 @@ source "$HOME/.cargo/env"
 
 # Install build dependencies
 # Arch Linux
-sudo pacman -S cava base-devel pkg-config wayland wayland-protocols
+sudo pacman -S cava base-devel pkg-config wayland wayland-protocols libxkbcommon
 
 # Ubuntu/Debian
-sudo apt install cava build-essential pkg-config libwayland-dev libegl-dev mesa-common-dev
+sudo apt install cava build-essential pkg-config libwayland-dev libegl-dev mesa-common-dev libxkbcommon-dev wayland-protocols
 ```
 
 ### Build and Install
