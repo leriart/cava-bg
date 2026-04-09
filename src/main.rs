@@ -774,5 +774,3 @@ impl LayerShellHandler for AppState {
         println!("configure finished");
     }
 }
-
-
