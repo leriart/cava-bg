@@ -46,35 +46,35 @@ const FRAGMENT_SHADER_SRC: &str = include_str!("shaders/fragment_shader.glsl");
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    
+
     if cli.version {
         Cli::show_version();
         return Ok(());
     }
-    
+
     cli.init_logging();
-    
+
     info!("Starting Cavabg v{}", env!("CARGO_PKG_VERSION"));
-    
+
     // Load configuration
     let config = if let Some(config_path) = &cli.config {
         Config::load_from_path(config_path)?
     } else {
         Config::load()?
     };
-    
+
     if cli.test_config {
         info!("Configuration test successful");
         return Ok(());
     }
-    
+
     // Start cava process
     let cava_output_config: HashMap<String, String> = HashMap::from([
         ("method".into(), "raw".into()),
         ("raw_target".into(), "/dev/stdout".into()),
         ("bit_format".into(), "16bit".into()),
     ]);
-    
+
     let cava_config = CavaConfig {
         general: CavaGeneralConfig {
             framerate: config.general.framerate,
@@ -89,16 +89,16 @@ fn main() -> Result<()> {
         },
         output: cava_output_config,
     };
-    
+
     let string_cava_config = toml::to_string(&cava_config)?;
     let mut cmd = Command::new("cava");
     cmd.arg("-p").arg("/dev/stdin");
-    
+
     let mut cava_process = cmd.stdout(Stdio::piped()).stdin(Stdio::piped()).spawn()?;
     let mut cava_stdin = cava_process.stdin.take().unwrap();
     cava_stdin.write_all(string_cava_config.as_bytes())?;
     drop(cava_stdin);
-    
+
     let cava_stdout = cava_process.stdout.unwrap();
     let cava_reader = BufReader::new(cava_stdout);
     let conn = Connection::connect_to_env().unwrap();
@@ -114,13 +114,8 @@ fn main() -> Result<()> {
     let compositor = CompositorState::bind(&globals, &qh).expect("wl_compositor not available");
     let surface = compositor.create_surface(&qh);
     let layer_shell = LayerShell::bind(&globals, &qh).expect("layer shell not available");
-    let layer_surface = layer_shell.create_layer_surface(
-        &qh,
-        surface.clone(),
-        Layer::Bottom,
-        Some("cavabg"),
-        None,
-    );
+    let layer_surface =
+        layer_shell.create_layer_surface(&qh, surface.clone(), Layer::Bottom, Some("cavabg"), None);
     layer_surface.set_size(256, 256);
     layer_surface.set_anchor(Anchor::TOP);
     surface.commit();
@@ -612,4 +607,172 @@ struct AppState {
 }
 
 // Delegate implementations
+delegate_compositor!(AppState);
+delegate_output!(AppState);
+delegate_registry!(AppState);
+delegate_layer!(AppState);
+
+impl ProvidesRegistryState for AppState {
+    fn registry(&mut self) -> &mut RegistryState {
+        &mut self.registry_state
+    }
+    registry_handlers![];
+}
+
+impl CompositorHandler for AppState {
+    fn scale_factor_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _new_factor: i32,
+    ) {
+    }
+
+    fn transform_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _new_transform: wl_output::Transform,
+    ) {
+    }
+
+    fn frame(
+        &mut self,
+        conn: &Connection,
+        qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _time: u32,
+    ) {
+        self.draw(conn, qh);
+    }
+
+    fn surface_enter(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _output: &wl_output::WlOutput,
+    ) {
+    }
+
+    fn surface_leave(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _output: &wl_output::WlOutput,
+    ) {
+    }
+}
+
+impl OutputHandler for AppState {
+    fn output_state(&mut self) -> &mut OutputState {
+        &mut self.output_state
+    }
+
+    fn new_output(
+        &mut self,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+        output: wl_output::WlOutput,
+    ) {
+        let info = self.output_state.info(&output).unwrap();
+        let mut need_configuration = false;
+        if let Some(output_name) = info.name {
+            if let Some(preferred_output_name) = self.preferred_output_name.clone() {
+                if output_name == preferred_output_name {
+                    need_configuration = true;
+                }
+            }
+        }
+        if self.preferred_output_name.is_none() {
+            need_configuration = true;
+        }
+        if need_configuration {
+            let old_surface = self.surface.clone();
+            self.surface = self.compositor.create_surface(qh);
+            self.layer_surface = self.layer_shell.create_layer_surface(
+                qh,
+                self.surface.clone(),
+                Layer::Bottom,
+                Some("cavabg"),
+                Some(&output),
+            );
+            let logical_size = info.logical_size.unwrap();
+            self.width = logical_size.0 as u32;
+            self.height = logical_size.1 as u32;
+            self.layer_surface.set_size(self.width, self.height);
+            self.layer_surface.set_anchor(Anchor::TOP);
+            self.surface.commit();
+            old_surface.destroy();
+        }
+    }
+
+    fn update_output(
+        &mut self,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+        output: wl_output::WlOutput,
+    ) {
+        self.new_output(_conn, qh, output);
+    }
+
+    fn output_destroyed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: wl_output::WlOutput,
+    ) {
+    }
+}
+
+impl LayerShellHandler for AppState {
+    fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {}
+
+    fn configure(
+        &mut self,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+        _layer: &LayerSurface,
+        configure: LayerSurfaceConfigure,
+        _serial: u32,
+    ) {
+        let width = configure.new_size.0;
+        let height = configure.new_size.1;
+        println!(
+            "LayerSurface configure event: width={}, height={}",
+            width, height
+        );
+        self.width = width;
+        self.height = height;
+        egl.destroy_surface(self.egl_display, self.egl_surface)
+            .unwrap();
+        self.wl_egl_surface =
+            WlEglSurface::new(self.surface.id(), self.width as i32, self.height as i32).unwrap();
+        self.egl_surface = unsafe {
+            egl.create_window_surface(
+                self.egl_display,
+                self.egl_config,
+                self.wl_egl_surface.ptr() as egl::NativeWindowType,
+                None,
+            )
+            .unwrap()
+        };
+        egl.make_current(
+            self.egl_display,
+            Some(self.egl_surface),
+            Some(self.egl_surface),
+            Some(self.egl_context),
+        )
+        .unwrap();
+        unsafe {
+            gl::Viewport(0, 0, self.width as GLsizei, self.height as GLsizei);
+        }
+        self.draw(_conn, qh);
+        println!("configure finished");
+    }
+}
+
 

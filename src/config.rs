@@ -64,7 +64,7 @@ impl Color {
 
 fn parse_hex_color(hex: &str) -> (f32, f32, f32) {
     let hex = hex.trim_start_matches('#');
-    
+
     if hex.len() == 6 {
         let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0) as f32 / 255.0;
         let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0) as f32 / 255.0;
@@ -115,34 +115,34 @@ impl Config {
                 })
                 .unwrap_or_else(|| PathBuf::from("config.toml")),
         ];
-        
+
         for path in config_paths {
             if path.exists() {
                 return Self::load_from_path(&path);
             }
         }
-        
+
         // Return default config if no file found
         Ok(Self::default())
     }
-    
+
     pub fn load_from_path(path: &PathBuf) -> Result<Self> {
         let config_str = fs::read_to_string(path)
             .with_context(|| format!("Failed to read config file: {}", path.display()))?;
-        
+
         let config: Config = toml::from_str(&config_str)
             .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
-        
+
         Ok(config)
     }
-    
+
     pub fn default() -> Self {
         Config {
             general: GeneralConfig {
                 framerate: 60,
-                background_color: Color::HexWithAlpha { 
-                    hex: "#000000".to_string(), 
-                    alpha: 0.0 
+                background_color: Color::HexWithAlpha {
+                    hex: "#000000".to_string(),
+                    alpha: 0.0,
                 },
                 autosens: Some(true),
                 sensitivity: Some(100),
@@ -154,14 +154,38 @@ impl Config {
             },
             colors: {
                 let mut colors = HashMap::new();
-                colors.insert("gradient_color_1".to_string(), Color::Hex("#94e2d5".to_string()));
-                colors.insert("gradient_color_2".to_string(), Color::Hex("#89dceb".to_string()));
-                colors.insert("gradient_color_3".to_string(), Color::Hex("#74c7ec".to_string()));
-                colors.insert("gradient_color_4".to_string(), Color::Hex("#89b4fa".to_string()));
-                colors.insert("gradient_color_5".to_string(), Color::Hex("#cba6f7".to_string()));
-                colors.insert("gradient_color_6".to_string(), Color::Hex("#f5c2e7".to_string()));
-                colors.insert("gradient_color_7".to_string(), Color::Hex("#eba0ac".to_string()));
-                colors.insert("gradient_color_8".to_string(), Color::Hex("#f38ba8".to_string()));
+                colors.insert(
+                    "gradient_color_1".to_string(),
+                    Color::Hex("#94e2d5".to_string()),
+                );
+                colors.insert(
+                    "gradient_color_2".to_string(),
+                    Color::Hex("#89dceb".to_string()),
+                );
+                colors.insert(
+                    "gradient_color_3".to_string(),
+                    Color::Hex("#74c7ec".to_string()),
+                );
+                colors.insert(
+                    "gradient_color_4".to_string(),
+                    Color::Hex("#89b4fa".to_string()),
+                );
+                colors.insert(
+                    "gradient_color_5".to_string(),
+                    Color::Hex("#cba6f7".to_string()),
+                );
+                colors.insert(
+                    "gradient_color_6".to_string(),
+                    Color::Hex("#f5c2e7".to_string()),
+                );
+                colors.insert(
+                    "gradient_color_7".to_string(),
+                    Color::Hex("#eba0ac".to_string()),
+                );
+                colors.insert(
+                    "gradient_color_8".to_string(),
+                    Color::Hex("#f38ba8".to_string()),
+                );
                 ColorsConfig { colors }
             },
             smoothing: SmoothingConfig {
