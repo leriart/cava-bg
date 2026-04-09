@@ -279,11 +279,6 @@ MIT License - see [LICENSE](LICENSE) file for details.
 - Inspired by [cava](https://github.com/karlstav/cava) community
 - Catppuccin color scheme by [catppuccin](https://github.com/catppuccin)
 
-## Support
-
-- [GitHub Issues](https://github.com/yourusername/cavabg/issues)
-- [Discord](https://discord.gg/your-server) (if applicable)
-
 ---
 
 **If you find this useful, please star the repository!**
