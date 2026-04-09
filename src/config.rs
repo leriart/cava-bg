@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::wallpaper::WallpaperAnalyzer;
+// use crate::wallpaper::WallpaperAnalyzer;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -21,6 +21,24 @@ pub struct GeneralConfig {
     pub autosens: Option<bool>,
     pub sensitivity: Option<u32>,
     pub preferred_output: Option<String>,
+    #[serde(default = "default_auto_detect")]
+    pub auto_detect_wallpaper_changes: bool,
+    #[serde(default = "default_wallpaper_check_interval")]
+    pub wallpaper_check_interval: u32,
+    #[serde(default = "default_auto_colors")]
+    pub auto_colors: bool,
+}
+
+fn default_auto_detect() -> bool {
+    true
+}
+
+fn default_wallpaper_check_interval() -> u32 {
+    5
+}
+
+fn default_auto_colors() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -106,12 +124,22 @@ pub struct CavaSmoothingConfig {
 }
 
 impl Config {
-    pub fn load() -> Result<Self> {
+    pub fn load(config_path: &Option<std::path::PathBuf>) -> Result<Self> {
+        // If config path is provided, use it
+        if let Some(path) = config_path {
+            if path.exists() {
+                return Self::load_from_path(path);
+            } else {
+                return Err(anyhow::anyhow!("Config file not found: {:?}", path));
+            }
+        }
+        
+        // Otherwise, search in default locations
         let config_paths = vec![
             PathBuf::from("config.toml"),
             dirs::config_dir()
                 .map(|mut p| {
-                    p.push("cavabg");
+                    p.push("cava-bg");
                     p.push("config.toml");
                     p
                 })
@@ -139,14 +167,17 @@ impl Config {
     }
 
     pub fn default() -> Self {
-        // Try to get adaptive colors from wallpaper
-        let gradient_colors = match WallpaperAnalyzer::generate_gradient_colors(8) {
-            Ok(colors) => colors,
-            Err(e) => {
-                log::warn!("Failed to generate adaptive colors: {}. Using defaults.", e);
-                WallpaperAnalyzer::default_colors(8)
-            }
-        };
+        // Use Catppuccin Mocha gradient as default (fallback)
+        let gradient_colors = vec![
+            [0.580, 0.886, 0.835, 1.0], // #94e2d5
+            [0.537, 0.863, 0.922, 1.0], // #89dceb
+            [0.455, 0.780, 0.925, 1.0], // #74c7ec
+            [0.537, 0.706, 0.980, 1.0], // #89b4fa
+            [0.796, 0.651, 0.969, 1.0], // #cba6f7
+            [0.961, 0.761, 0.906, 1.0], // #f5c2e7
+            [0.922, 0.627, 0.675, 1.0], // #eba0ac
+            [0.953, 0.545, 0.659, 1.0], // #f38ba8
+        ];
 
         let mut colors = HashMap::new();
         for (i, color) in gradient_colors.iter().enumerate() {
@@ -169,6 +200,9 @@ impl Config {
                 autosens: Some(true),
                 sensitivity: Some(100),
                 preferred_output: None,
+                auto_detect_wallpaper_changes: true,
+                wallpaper_check_interval: 5,
+                auto_colors: true,
             },
             bars: BarsConfig {
                 amount: 76,
@@ -181,5 +215,34 @@ impl Config {
                 noise_reduction: Some(0.77),
             },
         }
+    }
+
+    pub fn to_cava_config(&self) -> String {
+        let mut config = String::new();
+        
+        config.push_str(&format!("[general]\n"));
+        config.push_str(&format!("framerate = {}\n", self.general.framerate));
+        if let Some(autosens) = self.general.autosens {
+            config.push_str(&format!("autosens = {}\n", if autosens { "1" } else { "0" }));
+        }
+        if let Some(sensitivity) = self.general.sensitivity {
+            config.push_str(&format!("sensitivity = {}\n", sensitivity));
+        }
+        
+        config.push_str(&format!("\n[output]\n"));
+        config.push_str(&format!("bars = {}\n", self.bars.amount));
+        
+        config.push_str(&format!("\n[smoothing]\n"));
+        if let Some(monstercat) = self.smoothing.monstercat {
+            config.push_str(&format!("monstercat = {}\n", monstercat));
+        }
+        if let Some(waves) = self.smoothing.waves {
+            config.push_str(&format!("waves = {}\n", waves));
+        }
+        if let Some(noise_reduction) = self.smoothing.noise_reduction {
+            config.push_str(&format!("noise_reduction = {:.2}\n", noise_reduction));
+        }
+        
+        config
     }
 }

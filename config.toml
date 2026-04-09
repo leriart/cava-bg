@@ -1,4 +1,10 @@
-# Cavabg Configuration for Hyprland
+# cava-bg Configuration for Hyprland
+# 
+# FEATURES:
+# • Automatic gradient colors from wallpaper (enabled by default)
+# • Manual color configuration (disable auto_colors)
+# • Wallpaper change detection
+# 
 # Alpha is a float and can take value from 0.0 to 1.0
 # All colors here can be either just "#FFFFFF" or { hex: "#FFFFFF", alpha:1.0 }
 # If alpha is not specified, it is considered 1.0.
@@ -6,9 +12,19 @@
 [general]
 framerate = 60
 background_color = { hex = "#000000", alpha = 0.0 }
-# autosens = true
-# sensitivity = 100
-# Optionally you can set your monitor name, if your are on hyprland you can get it using `hyprctl monitors all`
+
+# Enable automatic color extraction from wallpaper
+# Set to false to use manual colors defined below
+auto_colors = true
+
+# Enable/disable automatic wallpaper change detection
+auto_detect_wallpaper_changes = true
+
+# How often to check for wallpaper changes (in seconds)
+wallpaper_check_interval = 5
+
+# Optional: Set your monitor name
+# On Hyprland: `hyprctl monitors all`
 # preferred_output = ""
 
 [bars]
@@ -17,8 +33,10 @@ amount = 76
 gap = 0.1
 
 [colors]
-# These parameters can be named however you like, only the values matter here.
-# Catppuccin Mocha gradient
+# MANUAL COLOR CONFIGURATION (used only when auto_colors = false)
+# These colors are used when auto_colors is disabled
+# You can name them however you like, only the values matter
+# Catppuccin Mocha gradient (beautiful fallback)
 gradient_color_1 = '#94e2d5'
 gradient_color_2 = '#89dceb'
 gradient_color_3 = '#74c7ec'
@@ -28,18 +46,19 @@ gradient_color_6 = '#f5c2e7'
 gradient_color_7 = '#eba0ac'
 gradient_color_8 = '#f38ba8'
 
-# Alternative: Single color
+# Alternative: Single color theme
 # solid_color = '#89b4fa'
 
 [smoothing]
 # Smoothing just passes these parameters to cava
 
 # Disables or enables the so-called "Monstercat smoothing" with or without "waves". Set to 0 to disable.
-# monstercat = 0
+monstercat = 0
+
 # At the time of writing this line of code, waves work properly in raw mode(which cavabg relies on) only if you compile cava from github.
-# waves = 0
+waves = 0
 
 # Noise reduction, float 0 - 1. default 0.77
 # the raw visualization is very noisy, this factor adjusts the integral and gravity filters to keep the signal smooth
 # 1 will be very slow and smooth, 0 will be fast but noisy.
-# noise_reduction = 0.77
+noise_reduction = 0.77

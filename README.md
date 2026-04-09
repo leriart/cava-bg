@@ -11,11 +11,12 @@ A native implementation of wallpaper-cava optimized for Hyprland, displaying CAV
 
 ## Features
 
-- **Adaptive color detection** - Automatically extracts colors from your wallpaper
-- **Native Wayland integration** - Uses wlr-layer-shell for optimal performance
-- **Real-time audio visualization** - Connects directly to cava for audio processing
-- **Hardware accelerated** - OpenGL 4.6 rendering
-- **Hyprland optimized** - Perfect integration with Hyprland compositor
+- **Adaptive Gradient Colors** - Automatically extracts and generates gradient colors from your wallpaper
+- **Wallpaper Change Detection** - Detects wallpaper changes and updates colors in real-time
+- **Native Wayland Integration** - Uses wlr-layer-shell for optimal performance on Hyprland
+- **Real-time Audio Visualization** - Connects directly to cava for audio processing
+- **Hardware Accelerated** - OpenGL 4.6 rendering for smooth visuals
+- **Automatic Configuration** - Self-adjusting based on your wallpaper and preferences
 
 ## Quick Install
 

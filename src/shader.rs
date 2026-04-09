@@ -1,6 +1,18 @@
 use anyhow::{Context, Result};
 use std::ffi::CString;
 
+pub fn load_shader_program() -> Result<u32> {
+    // Load vertex shader from file
+    let vertex_src = std::fs::read_to_string("src/shaders/vertex_shader.glsl")
+        .context("Failed to read vertex shader")?;
+    
+    // Load fragment shader from file
+    let fragment_src = std::fs::read_to_string("src/shaders/fragment_shader.glsl")
+        .context("Failed to read fragment shader")?;
+    
+    create_shader_program(&vertex_src, &fragment_src)
+}
+
 pub fn create_shader_program(vertex_src: &str, fragment_src: &str) -> Result<u32> {
     // Create vertex shader
     let vert_shader_source =

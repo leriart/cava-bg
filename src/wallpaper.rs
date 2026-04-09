@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use image::{GenericImageView, Pixel};
-use palette::{FromColor, Hsv, Lab, LinSrgb, Srgb};
-use std::collections::HashMap;
+use log;
 use std::path::PathBuf;
 use walkdir::WalkDir;
 
@@ -19,23 +18,20 @@ impl WallpaperAnalyzer {
                     p.push("hypr");
                     p.push("wallpaper.jpg");
                     p
-                })
-                .ok(),
+                }),
             dirs::config_dir()
                 .map(|mut p| {
                     p.push("hypr");
                     p.push("wallpaper.png");
                     p
-                })
-                .ok(),
+                }),
             // Sway
             dirs::config_dir()
                 .map(|mut p| {
                     p.push("sway");
                     p.push("wallpaper");
                     p
-                })
-                .ok(),
+                }),
             // Common locations
             dirs::picture_dir().map(|mut p| {
                 p.push("wallpaper");
@@ -107,232 +103,8 @@ impl WallpaperAnalyzer {
         Ok(None)
     }
 
-    /// Extract dominant colors from an image using improved algorithm
-    pub fn extract_colors(image_path: &PathBuf, num_colors: usize) -> Result<Vec<[f32; 4]>> {
-        let img = image::open(image_path)
-            .with_context(|| format!("Failed to open image: {}", image_path.display()))?;
+    /// Extract dominant colors from an image using simple algorithm
 
-        let (width, height) = img.dimensions();
-
-        // Sample pixels from the image (every 8th pixel for performance)
-        let mut color_counts: HashMap<[u8; 3], usize> = HashMap::new();
-        let total_samples = (width as usize / 8) * (height as usize / 8);
-
-        for y in (0..height).step_by(8) {
-            for x in (0..width).step_by(8) {
-                let pixel = img.get_pixel(x, y);
-                let rgb = pixel.to_rgb();
-                let quantized = [
-                    (rgb[0] >> 4) << 4, // Quantize to 16 levels
-                    (rgb[1] >> 4) << 4,
-                    (rgb[2] >> 4) << 4,
-                ];
-                *color_counts.entry(quantized).or_insert(0) += 1;
-            }
-        }
-
-        if color_counts.is_empty() {
-            return Ok(Self::default_colors(num_colors));
-        }
-
-        // Convert to Lab color space for better clustering
-        let mut lab_colors: Vec<(Lab, usize)> = color_counts
-            .iter()
-            .map(|(&rgb, &count)| {
-                let srgb = Srgb::new(
-                    rgb[0] as f32 / 255.0,
-                    rgb[1] as f32 / 255.0,
-                    rgb[2] as f32 / 255.0,
-                );
-                let lab: Lab = Lab::from_color(srgb.into_linear());
-                (lab, count)
-            })
-            .collect();
-
-        // Sort by frequency (most common colors first)
-        lab_colors.sort_by(|a, b| b.1.cmp(&a.1));
-
-        // Apply k-means clustering in Lab space
-        let mut clusters = Vec::new();
-        let mut used_indices = Vec::new();
-
-        for i in 0..lab_colors.len() {
-            if used_indices.contains(&i) {
-                continue;
-            }
-
-            let (center_color, center_count) = &lab_colors[i];
-            let mut total_lab = *center_color;
-            let mut total_count = *center_count;
-            let mut cluster_members = vec![i];
-
-            // Find similar colors within threshold
-            for j in (i + 1)..lab_colors.len() {
-                if used_indices.contains(&j) {
-                    continue;
-                }
-
-                let (other_color, other_count) = &lab_colors[j];
-                let distance = Self::color_distance_lab(*center_color, *other_color);
-
-                // Threshold for similar colors (adjustable)
-                if distance < 15.0 {
-                    total_lab = Lab::new(
-                        total_lab.l + other_color.l * (*other_count as f32),
-                        total_lab.a + other_color.a * (*other_count as f32),
-                        total_lab.b + other_color.b * (*other_count as f32),
-                    );
-                    total_count += other_count;
-                    cluster_members.push(j);
-                }
-            }
-
-            // Calculate weighted average for cluster
-            let avg_lab = Lab::new(
-                total_lab.l / total_count as f32,
-                total_lab.a / total_count as f32,
-                total_lab.b / total_count as f32,
-            );
-
-            // Convert back to sRGB
-            let lin_srgb: LinSrgb = LinSrgb::from_color(avg_lab);
-            let srgb = Srgb::from_linear(lin_srgb);
-
-            clusters.push((
-                [
-                    srgb.red.max(0.0).min(1.0),
-                    srgb.green.max(0.0).min(1.0),
-                    srgb.blue.max(0.0).min(1.0),
-                    1.0,
-                ],
-                total_count,
-            ));
-
-            // Mark all members as used
-            used_indices.extend(cluster_members);
-        }
-
-        // Sort clusters by total pixel count (dominance)
-        clusters.sort_by(|a, b| b.1.cmp(&a.1));
-
-        // Select top N colors
-        let mut selected_colors: Vec<[f32; 4]> = clusters
-            .iter()
-            .take(num_colors)
-            .map(|(color, _)| *color)
-            .collect();
-
-        // If we don't have enough colors, generate complementary ones
-        if selected_colors.len() < num_colors {
-            selected_colors = Self::generate_harmonious_colors(&selected_colors, num_colors);
-        }
-
-        // Ensure colors have good contrast and vibrancy
-        selected_colors = Self::enhance_colors(&selected_colors);
-
-        Ok(selected_colors)
-    }
-
-    /// Calculate color distance in Lab space (perceptually uniform)
-    fn color_distance_lab(lab1: Lab, lab2: Lab) -> f32 {
-        let dl = lab1.l - lab2.l;
-        let da = lab1.a - lab2.a;
-        let db = lab1.b - lab2.b;
-        (dl * dl + da * da + db * db).sqrt()
-    }
-
-    /// Generate harmonious colors based on extracted ones
-    fn generate_harmonious_colors(base_colors: &[[f32; 4]], target_count: usize) -> Vec<[f32; 4]> {
-        let mut colors = base_colors.to_vec();
-
-        if colors.is_empty() {
-            return Self::default_colors(target_count);
-        }
-
-        // Convert to HSV for color manipulation
-        let mut hsv_colors: Vec<Hsv> = colors
-            .iter()
-            .map(|color| {
-                let srgb = Srgb::new(color[0], color[1], color[2]);
-                Hsv::from_color(srgb.into_linear())
-            })
-            .collect();
-
-        // Generate complementary, analogous, and triadic colors
-        while colors.len() < target_count {
-            let last_color = &hsv_colors[colors.len() % hsv_colors.len()];
-
-            // Alternate between different color relationships
-            match colors.len() % 3 {
-                0 => {
-                    // Complementary color (180° hue shift)
-                    let mut new_hsv = *last_color;
-                    new_hsv.hue = new_hsv.hue + 180.0;
-                    let new_srgb: Srgb = Srgb::from_color(LinSrgb::from_color(new_hsv));
-                    colors.push([
-                        new_srgb.red.max(0.0).min(1.0),
-                        new_srgb.green.max(0.0).min(1.0),
-                        new_srgb.blue.max(0.0).min(1.0),
-                        1.0,
-                    ]);
-                    hsv_colors.push(new_hsv);
-                }
-                1 => {
-                    // Analogous color (30° hue shift)
-                    let mut new_hsv = *last_color;
-                    new_hsv.hue = new_hsv.hue + 30.0;
-                    let new_srgb: Srgb = Srgb::from_color(LinSrgb::from_color(new_hsv));
-                    colors.push([
-                        new_srgb.red.max(0.0).min(1.0),
-                        new_srgb.green.max(0.0).min(1.0),
-                        new_srgb.blue.max(0.0).min(1.0),
-                        1.0,
-                    ]);
-                    hsv_colors.push(new_hsv);
-                }
-                _ => {
-                    // Triadic color (120° hue shift)
-                    let mut new_hsv = *last_color;
-                    new_hsv.hue = new_hsv.hue + 120.0;
-                    let new_srgb: Srgb = Srgb::from_color(LinSrgb::from_color(new_hsv));
-                    colors.push([
-                        new_srgb.red.max(0.0).min(1.0),
-                        new_srgb.green.max(0.0).min(1.0),
-                        new_srgb.blue.max(0.0).min(1.0),
-                        1.0,
-                    ]);
-                    hsv_colors.push(new_hsv);
-                }
-            }
-        }
-
-        colors.truncate(target_count);
-        colors
-    }
-
-    /// Enhance colors for better visibility and contrast
-    fn enhance_colors(colors: &[[f32; 4]]) -> Vec<[f32; 4]> {
-        colors
-            .iter()
-            .map(|color| {
-                let mut hsv: Hsv = Hsv::from_color(LinSrgb::new(color[0], color[1], color[2]));
-
-                // Increase saturation for more vibrant colors
-                hsv.saturation = hsv.saturation.min(0.9).max(0.7);
-
-                // Ensure good brightness
-                hsv.value = hsv.value.max(0.6).min(0.9);
-
-                let srgb: Srgb = Srgb::from_color(LinSrgb::from_color(hsv));
-                [
-                    srgb.red.max(0.0).min(1.0),
-                    srgb.green.max(0.0).min(1.0),
-                    srgb.blue.max(0.0).min(1.0),
-                    1.0,
-                ]
-            })
-            .collect()
-    }
 
     /// Get default colors (fallback when no wallpaper is found)
     pub fn default_colors(num_colors: usize) -> Vec<[f32; 4]> {
@@ -361,28 +133,260 @@ impl WallpaperAnalyzer {
     }
 
     /// Generate gradient colors based on wallpaper or defaults
+    /// Generate gradient colors from wallpaper
     pub fn generate_gradient_colors(num_colors: usize) -> Result<Vec<[f32; 4]>> {
-        if let Some(wallpaper_path) = Self::find_wallpaper()? {
-            match Self::extract_colors(&wallpaper_path, num_colors) {
-                Ok(colors) => {
-                    log::info!(
-                        "Extracted {} colors from wallpaper: {}",
-                        colors.len(),
-                        wallpaper_path.display()
-                    );
-                    return Ok(colors);
-                }
-                Err(e) => {
-                    log::warn!(
-                        "Failed to extract colors from wallpaper ({}): {}",
-                        wallpaper_path.display(),
-                        e
-                    );
+        let wallpaper_path = match Self::find_wallpaper()? {
+            Some(path) => path,
+            None => {
+                // No wallpaper found, return default colors
+                log::warn!("No wallpaper found, using default colors");
+                return Ok(Self::default_colors(num_colors));
+            }
+        };
+
+        log::info!("Analyzing wallpaper: {:?}", wallpaper_path);
+
+        // Load image
+        let img = image::open(&wallpaper_path)
+            .context(format!("Failed to open wallpaper: {:?}", wallpaper_path))?;
+
+        let (width, height) = img.dimensions();
+        log::info!("Wallpaper dimensions: {}x{}", width, height);
+
+        // Extract dominant colors and generate gradient palette
+        let colors = Self::extract_and_generate_gradient(&img, num_colors);
+
+        Ok(colors)
+    }
+
+    /// Get current wallpaper path (for change detection)
+    pub fn get_current_wallpaper_path() -> Result<Option<PathBuf>> {
+        Self::find_wallpaper()
+    }
+
+    /// Extract dominant colors and generate gradient palette
+    fn extract_and_generate_gradient(img: &image::DynamicImage, num_colors: usize) -> Vec<[f32; 4]> {
+        let (width, height) = img.dimensions();
+        
+        // Sample pixels from different regions
+        let mut samples = Vec::new();
+        let step = (width * height / 10000).max(1) as u32; // Sample ~10000 pixels
+        
+        for y in (0..height).step_by(step as usize) {
+            for x in (0..width).step_by(step as usize) {
+                let pixel = img.get_pixel(x, y);
+                let rgb = pixel.to_rgb();
+                let channels = rgb.channels();
+                // Only include sufficiently bright and saturated colors
+                let brightness = (channels[0] as f32 + channels[1] as f32 + channels[2] as f32) / 3.0;
+                let max_channel = channels[0].max(channels[1]).max(channels[2]) as f32;
+                let min_channel = channels[0].min(channels[1]).min(channels[2]) as f32;
+                let saturation = if max_channel > 0.0 { (max_channel - min_channel) / max_channel } else { 0.0 };
+                
+                // For black and white wallpapers, we need different thresholds
+                let is_black_white = saturation < 0.1;
+                
+                if is_black_white {
+                    // For black/white images, accept based on brightness only
+                    if brightness > 20.0 && brightness < 230.0 { // Avoid pure black and pure white
+                        samples.push([channels[0] as f32, channels[1] as f32, channels[2] as f32]);
+                    }
+                } else {
+                    // For colored images, use stricter thresholds
+                    if brightness > 50.0 && saturation > 0.2 {
+                        samples.push([channels[0] as f32, channels[1] as f32, channels[2] as f32]);
+                    }
                 }
             }
         }
 
-        log::info!("Using default color palette");
-        Ok(Self::default_colors(num_colors))
+        if samples.is_empty() {
+            // Fall back to sampling all pixels
+            for y in (0..height).step_by(step as usize * 2) {
+                for x in (0..width).step_by(step as usize * 2) {
+                    let pixel = img.get_pixel(x, y);
+                    let rgb = pixel.to_rgb();
+                    let channels = rgb.channels();
+                    samples.push([channels[0] as f32, channels[1] as f32, channels[2] as f32]);
+                }
+            }
+        }
+
+        if samples.is_empty() {
+            return Self::default_colors(num_colors);
+        }
+
+        // Find 3-4 dominant colors using k-means-like clustering
+        let dominant_colors = Self::find_dominant_colors(&samples, 4.min(samples.len()));
+        
+        // Generate gradient colors by interpolating between dominant colors
+        let gradient_colors = Self::generate_gradient_palette(&dominant_colors, num_colors);
+        
+        gradient_colors
     }
+
+    /// Find dominant colors using simple clustering
+    fn find_dominant_colors(samples: &[[f32; 3]], k: usize) -> Vec<[f32; 3]> {
+        if samples.len() <= k {
+            return samples.to_vec();
+        }
+
+        // Initialize with evenly spaced samples
+        let mut centroids: Vec<[f32; 3]> = Vec::new();
+        for i in 0..k {
+            centroids.push(samples[i * samples.len() / k]);
+        }
+
+        // Simple clustering iterations
+        for _ in 0..5 {
+            let mut clusters: Vec<Vec<[f32; 3]>> = vec![Vec::new(); centroids.len()];
+            
+            // Assign samples to nearest centroid
+            for sample in samples {
+                let mut min_dist = f32::MAX;
+                let mut cluster_idx = 0;
+                
+                for (i, centroid) in centroids.iter().enumerate() {
+                    let dist = Self::color_distance(sample, centroid);
+                    if dist < min_dist {
+                        min_dist = dist;
+                        cluster_idx = i;
+                    }
+                }
+                
+                clusters[cluster_idx].push(*sample);
+            }
+            
+            // Update centroids
+            let mut new_centroids = Vec::new();
+            for cluster in &clusters {
+                if cluster.is_empty() {
+                    // Keep random sample if cluster is empty
+                    new_centroids.push(samples[new_centroids.len() % samples.len()]);
+                } else {
+                    let mut sum = [0.0, 0.0, 0.0];
+                    for sample in cluster {
+                        sum[0] += sample[0];
+                        sum[1] += sample[1];
+                        sum[2] += sample[2];
+                    }
+                    let count = cluster.len() as f32;
+                    new_centroids.push([
+                        sum[0] / count,
+                        sum[1] / count,
+                        sum[2] / count,
+                    ]);
+                }
+            }
+            
+            centroids = new_centroids;
+        }
+        
+        centroids
+    }
+
+    /// Generate gradient palette by interpolating between colors
+    fn generate_gradient_palette(dominant_colors: &[[f32; 3]], num_colors: usize) -> Vec<[f32; 4]> {
+        if dominant_colors.is_empty() {
+            return Self::default_colors(num_colors);
+        }
+        
+        // Check if we have a black/white dominant palette
+        let is_black_white_palette = dominant_colors.iter().all(|color| {
+            let r = color[0];
+            let g = color[1];
+            let b = color[2];
+            let max = r.max(g).max(b);
+            let min = r.min(g).min(b);
+            let saturation = if max > 0.0 { (max - min) / max } else { 0.0 };
+            saturation < 0.1
+        });
+        
+        let mut palette = Vec::new();
+        
+        if is_black_white_palette {
+            // For black/white wallpapers, create a colorful gradient
+            // Use a nice blue-to-purple gradient as default for B/W wallpapers
+            let colorful_gradient = vec![
+                [0.2, 0.4, 0.8, 1.0],   // Blue
+                [0.4, 0.6, 0.9, 1.0],   // Light Blue
+                [0.6, 0.4, 0.9, 1.0],   // Purple
+                [0.8, 0.2, 0.8, 1.0],   // Magenta
+                [0.9, 0.4, 0.6, 1.0],   // Pink
+                [0.9, 0.6, 0.4, 1.0],   // Orange
+                [0.8, 0.8, 0.2, 1.0],   // Yellow
+                [0.6, 0.9, 0.4, 1.0],   // Green
+            ];
+            
+            // Take the first num_colors from our colorful gradient
+            for i in 0..num_colors.min(colorful_gradient.len()) {
+                palette.push(colorful_gradient[i]);
+            }
+            
+            // Fill remaining with defaults if needed
+            while palette.len() < num_colors {
+                palette.extend(Self::default_colors(num_colors - palette.len()));
+            }
+        } else if dominant_colors.len() == 1 {
+            // Single color - create variations
+            let base = dominant_colors[0];
+            for i in 0..num_colors {
+                let t = i as f32 / (num_colors - 1) as f32;
+                // Vary brightness
+                let brightness = 0.5 + t * 0.5;
+                let color = [
+                    (base[0] / 255.0) * brightness,
+                    (base[1] / 255.0) * brightness,
+                    (base[2] / 255.0) * brightness,
+                    1.0,
+                ];
+                palette.push(color);
+            }
+        } else {
+            // Multiple colors - create gradient between them
+            for i in 0..num_colors {
+                let t = i as f32 / (num_colors - 1) as f32;
+                let segment = t * (dominant_colors.len() - 1) as f32;
+                let idx = segment.floor() as usize;
+                let frac = segment - idx as f32;
+                
+                if idx >= dominant_colors.len() - 1 {
+                    // Last segment
+                    let color = dominant_colors[dominant_colors.len() - 1];
+                    palette.push([color[0] / 255.0, color[1] / 255.0, color[2] / 255.0, 1.0]);
+                } else {
+                    // Interpolate between two colors
+                    let color1 = dominant_colors[idx];
+                    let color2 = dominant_colors[idx + 1];
+                    let color = [
+                        (color1[0] + (color2[0] - color1[0]) * frac) / 255.0,
+                        (color1[1] + (color2[1] - color1[1]) * frac) / 255.0,
+                        (color1[2] + (color2[2] - color1[2]) * frac) / 255.0,
+                        1.0,
+                    ];
+                    palette.push(color);
+                }
+            }
+        }
+        
+        // Ensure colors are in valid range
+        for color in &mut palette {
+            color[0] = color[0].clamp(0.0, 1.0);
+            color[1] = color[1].clamp(0.0, 1.0);
+            color[2] = color[2].clamp(0.0, 1.0);
+        }
+        
+        palette
+    }
+
+    /// Calculate color distance (perceptually weighted)
+    fn color_distance(a: &[f32; 3], b: &[f32; 3]) -> f32 {
+        let dr = a[0] - b[0];
+        let dg = a[1] - b[1];
+        let db = a[2] - b[2];
+        // Weighted for human perception
+        (dr * dr * 0.299 + dg * dg * 0.587 + db * db * 0.114).sqrt()
+    }
+
+
 }

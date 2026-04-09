@@ -2,7 +2,7 @@
 pkgname=cava-bg
 pkgver=0.1.0
 pkgrel=1
-pkgdesc="Native CAVA audio visualizer for Hyprland wallpapers with adaptive color detection"
+pkgdesc="Native CAVA audio visualizer for Hyprland with adaptive gradient colors and wallpaper change detection"
 arch=('x86_64')
 url="https://github.com/leriart/cava-bg"
 license=('MIT')
@@ -60,14 +60,22 @@ EOF
   cat > "$pkgdir/usr/share/$pkgname/post-install.txt" << EOF
 cava-bg has been installed!
 
+Features:
+• Adaptive gradient colors extracted from wallpaper
+• Automatic wallpaper change detection (every 5 seconds)
+• Real-time audio visualization with cava
+• Hyprland optimized with wlr-layer-shell
+
 To use cava-bg:
 
 1. Copy the example configuration:
    mkdir -p ~/.config/cava-bg
    cp /usr/share/cava-bg/config.toml.example ~/.config/cava-bg/config.toml
 
-2. Edit the configuration:
+2. Configure (optional):
    nano ~/.config/cava-bg/config.toml
+   - Set auto_detect_wallpaper_changes = true/false
+   - Adjust wallpaper_check_interval (seconds)
 
 3. Run manually:
    cava-bg
@@ -77,6 +85,11 @@ To use cava-bg:
 
 5. For Hyprland, add to hyprland.conf:
    exec-once = cava-bg
+
+The application will:
+• Automatically extract gradient colors from your wallpaper
+• Detect wallpaper changes and update colors in real-time
+• Start cava with the generated color palette
 
 For more information, see:
 https://github.com/leriart/cava-bg

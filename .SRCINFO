@@ -1,5 +1,5 @@
 pkgbase = cava-bg
-	pkgdesc = Native CAVA audio visualizer for Hyprland wallpapers with adaptive color detection
+	pkgdesc = Native CAVA audio visualizer for Hyprland with adaptive gradient colors and wallpaper change detection
 	pkgver = 0.1.0
 	pkgrel = 1
 	url = https://github.com/leriart/cava-bg

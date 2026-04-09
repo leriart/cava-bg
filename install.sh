@@ -65,7 +65,17 @@ else
 fi
 
 echo ""
+echo "Features:"
+echo "  • Adaptive gradient colors from wallpaper"
+echo "  • Automatic wallpaper change detection"
+echo "  • Real-time audio visualization with cava"
+echo "  • Hyprland optimized with wlr-layer-shell"
+echo ""
 echo "To use with Hyprland, add to your hyprland.conf:"
 echo "exec-once = cava-bg"
 echo ""
-echo "For more configuration options, see ~/.config/cava-bg/config.toml"
+echo "Configuration: ~/.config/cava-bg/config.toml"
+echo "  • Set 'auto_detect_wallpaper_changes' to enable/disable wallpaper tracking"
+echo "  • Adjust 'wallpaper_check_interval' for change detection frequency"
+echo ""
+echo "For AUR installation: yay -S cava-bg  or  paru -S cava-bg"
