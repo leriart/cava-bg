@@ -1,0 +1,25 @@
+# Rainbow Theme
+# Full rainbow gradient
+
+[general]
+framerate = 60
+background_color = { hex = "#000000", alpha = 0.3 }
+
+[bars]
+amount = 96
+gap = 0.1
+
+[colors]
+red = '#ff0000'
+orange = '#ff8800'
+yellow = '#ffff00'
+green = '#00ff00'
+cyan = '#00ffff'
+blue = '#0000ff'
+purple = '#8800ff'
+magenta = '#ff00ff'
+
+[smoothing]
+noise_reduction = 0.7
+monstercat = 1
+waves = 0

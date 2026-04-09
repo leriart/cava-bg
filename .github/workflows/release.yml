@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      run: |
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
+        echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y pkg-config libwayland-dev libegl-dev mesa-common-dev
+    
+    - name: Build release
+      run: |
+        cargo build --release
+        mkdir -p dist
+        cp target/release/cavabg dist/
+    
+    - name: Create archive
+      run: |
+        cd dist
+        tar -czf "../cavabg-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz" cavabg
+        cd ..
+        sha256sum "cavabg-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz" > "cavabg-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz.sha256"
+    
+    - name: Create GitHub Release
+      uses: softprops/action-gh-release@v1
+      with:
+        files: |
+          cavabg-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz
+          cavabg-${{ github.ref_name }}-x86_64-unknown-linux-gnu.tar.gz.sha256
+        generate_release_notes: true
+        prerelease: false

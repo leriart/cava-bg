@@ -33,22 +33,44 @@ use wayland_egl::WlEglSurface;
 
 extern crate khronos_egl as egl;
 
+mod cli;
 mod config;
-use config::*;
-
 mod shader;
+
+use cli::Cli;
+use config::*;
 use shader::*;
 
 const VERTEX_SHADER_SRC: &str = include_str!("shaders/vertex_shader.glsl");
 const FRAGMENT_SHADER_SRC: &str = include_str!("shaders/fragment_shader.glsl");
 
 fn main() -> Result<()> {
-    env_logger::init();
+    let cli = Cli::parse();
     
-    info!("Starting Cavabg - Hyprland native CAVA visualizer");
+    if cli.version {
+        Cli::show_version();
+        return Ok(());
+    }
+    
+    cli.init_logging();
+    
+    info!("Starting Cavabg v{} - Hyprland native CAVA visualizer", env!("CARGO_PKG_VERSION"));
     
     // Load configuration
-    let config = Config::load()?;
+    let config = if let Some(config_path) = &cli.config {
+        Config::load_from_path(config_path)?
+    } else {
+        Config::load()?
+    };
+    
+    if cli.test_config {
+        info!("Configuration test successful:");
+        info!("  Bars: {}", config.bars.amount);
+        info!("  FPS: {}", config.general.framerate);
+        info!("  Colors: {}", config.colors.colors.len());
+        return Ok(());
+    }
+    
     info!("Configuration loaded: {} bars, {} fps", config.bars.amount, config.general.framerate);
     
     // Start cava process

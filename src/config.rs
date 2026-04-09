@@ -118,18 +118,22 @@ impl Config {
         
         for path in config_paths {
             if path.exists() {
-                let config_str = fs::read_to_string(&path)
-                    .with_context(|| format!("Failed to read config file: {}", path.display()))?;
-                
-                let config: Config = toml::from_str(&config_str)
-                    .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
-                
-                return Ok(config);
+                return Self::load_from_path(&path);
             }
         }
         
         // Return default config if no file found
         Ok(Self::default())
+    }
+    
+    pub fn load_from_path(path: &PathBuf) -> Result<Self> {
+        let config_str = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read config file: {}", path.display()))?;
+        
+        let config: Config = toml::from_str(&config_str)
+            .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
+        
+        Ok(config)
     }
     
     pub fn default() -> Self {

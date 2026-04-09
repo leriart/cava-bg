@@ -2,25 +2,54 @@
 
 A native implementation of wallpaper-cava optimized for Hyprland, displaying CAVA audio visualizations as a layer over your wallpaper.
 
-## Features
+![Cavabg Demo](https://img.shields.io/badge/demo-coming_soon-blue)
+![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)
+![License](https://img.shields.io/badge/license-MIT-green.svg)
+![Platform](https://img.shields.io/badge/platform-Linux%20Wayland-lightgrey)
 
-- **Native Hyprland integration**: Uses wlr-layer-shell protocol directly
-- **Hardware-accelerated rendering**: OpenGL 4.6 with EGL
-- **Customizable visuals**: Gradient colors, bar count, gaps, and more
-- **Real-time audio visualization**: Connects directly to cava for audio processing
-- **Transparent background**: Can be configured with alpha transparency
-- **Multi-monitor support**: Can target specific outputs
+## Quick Install
 
-## Prerequisites
+### Binary Release (Recommended)
 
-- **Rust toolchain** (latest stable)
-- **cava** audio visualizer (`pacman -S cava` on Arch)
-- **Hyprland** or any Wayland compositor supporting wlr-layer-shell
-- **OpenGL 4.6** capable GPU with EGL support
+```bash
+# Download latest release
+VERSION="0.1.0"
+ARCH="x86_64-unknown-linux-gnu"
+wget https://github.com/yourusername/cavabg/releases/download/v${VERSION}/cavabg-v${VERSION}-${ARCH}.tar.gz
+
+# Extract and install
+sudo tar -xzf cavabg-v${VERSION}-${ARCH}.tar.gz -C /usr/local/bin/
+
+# Install cava (required)
+sudo pacman -S cava  # Arch
+# or
+sudo apt install cava # Debian/Ubuntu
+
+# Run
+cavabg
+```
+
+### From Source
+```bash
+git clone https://github.com/yourusername/cavabg.git
+cd cavabg
+cargo build --release
+sudo cp target/release/cavabg /usr/local/bin/
+```
 
 ## Installation
 
-### From Source
+### Method 1: Binary Release (Easiest)
+
+Download the pre-built binary from the [Releases](https://github.com/yourusername/cavabg/releases) page:
+
+```bash
+# Example for v0.1.0
+curl -L https://github.com/yourusername/cavabg/releases/download/v0.1.0/cavabg-v0.1.0-x86_64-unknown-linux-gnu.tar.gz | tar -xz
+sudo mv cavabg /usr/local/bin/
+```
+
+### Method 2: From Source
 
 ```bash
 # Clone the repository
@@ -30,107 +59,231 @@ cd cavabg
 # Build in release mode
 cargo build --release
 
-# The binary will be at target/release/cavabg
+# Install system-wide
+sudo cp target/release/cavabg /usr/local/bin/
+```
+
+### Method 3: Using install.sh
+
+```bash
+chmod +x install.sh
+./install.sh
 ```
 
 ### Dependencies
 
-On Arch Linux:
+**Required:**
+- `cava` - Audio visualizer
+- Wayland compositor with wlr-layer-shell support (Hyprland, Sway, etc.)
+- OpenGL 4.6 capable GPU
+
+**Install on Arch Linux:**
 ```bash
-sudo pacman -S cava base-devel
+sudo pacman -S cava base-devel pkg-config wayland-protocols
+```
+
+**Install on Ubuntu/Debian:**
+```bash
+sudo apt install cava build-essential pkg-config libwayland-dev libegl-dev mesa-common-dev
 ```
 
 ## Configuration
 
-Copy `config.toml` to `~/.config/cavabg/config.toml` and customize:
+After installation, set up your configuration:
 
 ```bash
+# Create config directory
 mkdir -p ~/.config/cavabg
+
+# Copy default config
 cp config.toml ~/.config/cavabg/
+
+# Edit to your liking
+nano ~/.config/cavabg/config.toml
 ```
+
+Or use the built-in default configuration if you don't create one.
 
 ### Configuration Options
 
-- **general.framerate**: FPS for the visualization (default: 60)
-- **general.background_color**: Background color with alpha (default: transparent black)
-- **bars.amount**: Number of bars (default: 76)
-- **bars.gap**: Gap between bars as percentage of bar width (default: 0.1)
-- **colors**: Gradient colors (supports any number of colors)
-- **smoothing**: CAVA smoothing parameters
+| Section | Option | Type | Default | Description |
+|---------|--------|------|---------|-------------|
+| `[general]` | `framerate` | integer | 60 | FPS for visualization |
+| | `background_color` | color | `{hex: "#000000", alpha: 0.0}` | Background with transparency |
+| | `preferred_output` | string | (none) | Target monitor name |
+| `[bars]` | `amount` | integer | 76 | Number of bars |
+| | `gap` | float | 0.1 | Gap between bars (0.0-1.0) |
+| `[colors]` | `gradient_color_*` | color | Catppuccin gradient | Gradient colors (any number) |
+| `[smoothing]` | `noise_reduction` | float | 0.77 | CAVA noise reduction (0.0-1.0) |
+
+**Color formats:**
+- `"#RRGGBB"` - Hex color (alpha = 1.0)
+- `{hex: "#RRGGBB", alpha: 0.5}` - Hex color with alpha
 
 ## Usage
 
 ### Basic Usage
 
 ```bash
-# Run with default configuration
+# Run with default config
 cavabg
 
-# Run with specific config file
-cavabg --config /path/to/config.toml
+# Run with specific config
+cavabg --config ~/.config/cavabg/my-config.toml
+
+# Show help
+cavabg --help
 ```
 
 ### Hyprland Integration
 
-Add to your Hyprland configuration (`~/.config/hypr/hyprland.conf`):
+Add to `~/.config/hypr/hyprland.conf`:
 
 ```hyprlang
-# Start cavabg on launch
+# Start on login
 exec-once = cavabg
 
-# Or with specific config
-exec-once = cavabg --config ~/.config/cavabg/my-config.toml
+# With custom config
+exec-once = cavabg --config ~/.config/cavabg/config.toml
+
+# Delay start (wait 2 seconds)
+exec-once = sleep 2 && cavabg
 ```
 
 ### Monitor Targeting
 
-To target a specific monitor, set the monitor name in config:
+Target specific monitor:
+```bash
+# Get monitor names
+hyprctl monitors all
 
-```toml
+# Set in config.toml
 [general]
 preferred_output = "DP-1"
 ```
 
-Get monitor names with:
-```bash
-hyprctl monitors all
-```
-
 ## Building from Source
 
+### Prerequisites
+
 ```bash
-# Clone and build
+# Install Rust
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+
+# Install dependencies (Arch example)
+sudo pacman -S cava base-devel pkg-config wayland-protocols
+```
+
+### Build
+
+```bash
+# Clone
 git clone https://github.com/yourusername/cavabg.git
 cd cavabg
+
+# Debug build
+cargo build
+
+# Release build (recommended)
 cargo build --release
 
-# Install system-wide (optional)
-sudo cp target/release/cavabg /usr/local/bin/
+# Run tests
+cargo test
+```
+
+### Create Release
+
+```bash
+# Build release package
+./build-release.sh
+
+# Outputs:
+# - dist/cavabg (binary)
+# - cavabg-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
+# - cavabg-v0.1.0-x86_64-unknown-linux-gnu.tar.gz.sha256
 ```
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **"cava not found"**: Install cava: `sudo pacman -S cava`
-2. **"wl_compositor not available"**: Make sure you're running under Wayland
-3. **Black screen**: Check that cava is receiving audio input
-4. **Low performance**: Reduce bar count or framerate in config
+| Issue | Solution |
+|-------|----------|
+| **"cava not found"** | `sudo pacman -S cava` or `sudo apt install cava` |
+| **"wl_compositor not available"** | Make sure you're running Wayland (`echo $XDG_SESSION_TYPE`) |
+| **Black screen** | Check audio input to cava, verify config |
+| **Low FPS** | Reduce `framerate` or `bars.amount` in config |
+| **Permission denied** | `chmod +x /path/to/cavabg` or use `sudo` |
 
 ### Debug Mode
 
-Run with RUST_LOG environment variable for debug output:
+```bash
+# Enable verbose logging
+RUST_LOG=debug cavabg
+
+# Or with custom config
+RUST_LOG=info cavabg --config ~/.config/cavabg/config.toml
+```
+
+### Checking Dependencies
 
 ```bash
-RUST_LOG=debug cavabg
+# Check cava
+cava --version
+
+# Check Wayland
+echo $XDG_SESSION_TYPE
+
+# Check OpenGL
+glxinfo | grep "OpenGL version"
 ```
+
+## Project Structure
+
+```
+cavabg/
+├── src/                    # Source code
+│   ├── main.rs            # Application entry point
+│   ├── config.rs          # Configuration parsing
+│   ├── shader.rs          # OpenGL shader management
+│   └── shaders/           # GLSL shaders
+├── Cargo.toml            # Rust dependencies
+├── build.rs              # OpenGL bindings generation
+├── config.toml           # Example configuration
+├── build-release.sh      # Release builder
+├── install.sh            # Installation script
+├── README.md             # This file
+├── INSTALL.md            # Detailed installation guide
+└── DEVELOPMENT.md        # Development guide
+```
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/amazing-feature`
+3. Commit changes: `git commit -m 'Add amazing feature'`
+4. Push: `git push origin feature/amazing-feature`
+5. Open a Pull Request
+
+See [DEVELOPMENT.md](DEVELOPMENT.md) for development setup.
 
 ## License
 
-MIT
+MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Acknowledgments
 
 - Based on [wallpaper-cava](https://github.com/rs-pro0/wallpaper-cava) by rs-pro0
 - Uses [Smithay client toolkit](https://github.com/Smithay/client-toolkit)
-- Inspired by the cava community
+- Inspired by [cava](https://github.com/karlstav/cava) community
+- Catppuccin color scheme by [catppuccin](https://github.com/catppuccin)
+
+## Support
+
+- [GitHub Issues](https://github.com/yourusername/cavabg/issues)
+- [Discord](https://discord.gg/your-server) (if applicable)
+
+---
+
+**If you find this useful, please star the repository!**
