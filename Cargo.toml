@@ -1,0 +1,23 @@
+[package]
+name = "cavabg"
+version = "0.1.0"
+edition = "2021"
+description = "Native CAVA audio visualizer for Hyprland wallpapers"
+license = "MIT"
+authors = ["Gena <gena@example.com>"]
+
+[dependencies]
+wayland-client = "0.31"
+wayland-egl = "0.31"
+smithay-client-toolkit = "0.18"
+calloop = "0.12"
+khronos-egl = "6.0"
+gl = "0.14"
+toml = "0.8"
+anyhow = "1.0"
+thiserror = "1.0"
+log = "0.4"
+env_logger = "0.11"
+
+[build-dependencies]
+gl_generator = "0.14"
