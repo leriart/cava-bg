@@ -211,16 +211,16 @@ fn main() -> Result<()> {
     cava_manager.start_monitor(config.clone());
 
     // Try to create complete Wayland renderer
-    println!("\n🚀 Attempting to create complete Wayland renderer...");
+    println!("\n Attempting to create complete Wayland renderer...");
     
     // Create a new cava_manager for Wayland renderer
     let wayland_cava_manager = cava_manager::CavaManager::new(&config)?;
     
     match wayland::WaylandRenderer::new(config.clone(), wayland_cava_manager) {
         Ok(wayland_renderer) => {
-            println!("✅ Complete Wayland renderer created successfully!");
+            println!(" Complete Wayland renderer created successfully!");
             
-            println!("\n🎵 Starting audio visualizer...");
+            println!("\n Starting audio visualizer...");
             println!("========================================");
             println!("Status: Audio processing ACTIVE");
             println!("Mode: Wayland (full graphical rendering)");
@@ -233,23 +233,23 @@ fn main() -> Result<()> {
             });
             println!("Layer: Background (over wallpaper)");
             println!("========================================");
-            println!("\n🎧 To test: Play audio (music, video, etc.)");
-            println!("🖥️  Visualizer will appear as a transparent overlay");
-            println!("⏹️  Press Ctrl+C to exit");
+            println!("\n To test: Play audio (music, video, etc.)");
+            println!("  Visualizer will appear as a transparent overlay");
+            println!("  Press Ctrl+C to exit");
             println!();
             
             // Run Wayland renderer
             if let Err(e) = wayland_renderer.run() {
-                eprintln!("❌ Wayland renderer error: {}", e);
-                eprintln!("↪️  Falling back to terminal mode...");
+                eprintln!(" Wayland renderer error: {}", e);
+                eprintln!("  Falling back to terminal mode...");
                 
                 // Run terminal renderer with original cava_manager
                 run_terminal_renderer(config, cava_manager)?;
             }
         }
         Err(e) => {
-            eprintln!("❌ Wayland renderer creation failed: {}", e);
-            eprintln!("↪️  Falling back to terminal mode...");
+            eprintln!(" Wayland renderer creation failed: {}", e);
+            eprintln!("  Falling back to terminal mode...");
             
             // Run terminal renderer
             run_terminal_renderer(config, cava_manager)?;

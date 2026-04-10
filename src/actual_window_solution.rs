@@ -55,14 +55,14 @@ impl ActualWindowSolution {
         match self.create_actual_window_external() {
             Ok(pid) => {
                 self.window_pid = Some(pid);
-                info!("✅ ACTUAL window created with PID: {}", pid);
-                info!("✅ Window SHOULD be VISIBLE over wallpaper");
-                info!("✅ Uses ydotool/yad for simple window creation");
+                info!(" ACTUAL window created with PID: {}", pid);
+                info!(" Window SHOULD be VISIBLE over wallpaper");
+                info!(" Uses ydotool/yad for simple window creation");
                 self.run_main_loop()?;
                 Ok(())
             }
             Err(e) => {
-                error!("❌ Failed to create window: {}", e);
+                error!(" Failed to create window: {}", e);
                 info!("Running in audio-only mode...");
                 self.run_audio_loop()?;
                 Ok(())
@@ -91,8 +91,8 @@ impl ActualWindowSolution {
         {
             Ok(child) => {
                 let pid = child.id();
-                info!("✅ yad window created with PID: {}", pid);
-                info!("✅ Window should be visible as notification");
+                info!(" yad window created with PID: {}", pid);
+                info!(" Window should be visible as notification");
                 return Ok(pid);
             }
             Err(e) => {
@@ -113,8 +113,8 @@ impl ActualWindowSolution {
         {
             Ok(child) => {
                 let pid = child.id();
-                info!("✅ zenity window created with PID: {}", pid);
-                info!("✅ Window should be visible as dialog");
+                info!(" zenity window created with PID: {}", pid);
+                info!(" Window should be visible as dialog");
                 return Ok(pid);
             }
             Err(e) => {
@@ -134,8 +134,8 @@ impl ActualWindowSolution {
         {
             Ok(child) => {
                 let pid = child.id();
-                info!("✅ xterm window created with PID: {}", pid);
-                info!("✅ Terminal window should be visible");
+                info!(" xterm window created with PID: {}", pid);
+                info!(" Terminal window should be visible");
                 return Ok(pid);
             }
             Err(_) => {
@@ -149,8 +149,8 @@ impl ActualWindowSolution {
                 {
                     Ok(child) => {
                         let pid = child.id();
-                        info!("✅ gnome-terminal window created with PID: {}", pid);
-                        info!("✅ Terminal window should be visible");
+                        info!(" gnome-terminal window created with PID: {}", pid);
+                        info!(" Terminal window should be visible");
                         return Ok(pid);
                     }
                     Err(e) => {
@@ -185,8 +185,8 @@ impl ActualWindowSolution {
         
         info!("🎉 ACTUAL window is NOW VISIBLE!");
         info!("👀 Look for the window on your screen");
-        info!("🎧 Play audio to test visualization");
-        info!("⏹️  Press Ctrl+C to exit and close window");
+        info!(" Play audio to test visualization");
+        info!("  Press Ctrl+C to exit and close window");
         
         // Main loop
         while self.running.load(Ordering::SeqCst) {
@@ -379,7 +379,7 @@ pub fn check_actual() -> Result<bool> {
         for tool in &tools {
             match Command::new("which").arg(tool).output() {
                 Ok(output) if output.status.success() => {
-                    info!("✅ {} is available for window creation", tool);
+                    info!(" {} is available for window creation", tool);
                     return Ok(true);
                 }
                 _ => continue,

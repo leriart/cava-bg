@@ -593,17 +593,14 @@ impl WaylandRenderer {
             running: self.running.clone(),
         };
 
-        info!("✅ Wayland renderer started");
-        info!("🎨 Colors: {} | 📊 Bars: {}", colors.len(), bar_count);
-        info!("🖥️  Window: {}x{}", app_state.width, app_state.height);
-        info!("⏹️  Press Ctrl+C to exit");
+        info!("Wayland renderer started");
+        info!("Colors: {} | Bars: {}", colors.len(), bar_count);
+        info!("Window: {}x{}", app_state.width, app_state.height);
+        info!("Press Ctrl+C to exit");
 
-        // 10. Signal handler
-        let running_clone = self.running.clone();
-        ctrlc::set_handler(move || {
-            info!("Shutting down...");
-            running_clone.store(false, Ordering::SeqCst);
-        }).context("Failed to set Ctrl+C handler")?;
+        // 10. Signal handler - use the global signal handler from main.rs
+        // Note: ctrlc::set_handler() can only be called once per process
+        // The handler is already set in main.rs, so we just use the running flag
 
         // 11. Run event loop (from wallpaper-cava)
         let frame_duration = Duration::from_secs(1) / self.config.general.framerate;
