@@ -168,14 +168,14 @@ fn main() -> Result<()> {
     cava_manager.start_monitor(config.clone());
 
     // Initialize renderer with config and cava_manager
-    println!("\n🎨 Initializing visualizer...");
+    println!("\nInitializing visualizer...");
     let mut renderer = match renderer::Renderer::new(config.clone(), cava_manager) {
         Ok(r) => {
-            println!("✓ Visualizer initialized");
+            println!("Visualizer initialized");
             r
         }
         Err(e) => {
-            eprintln!("⚠️  Visualizer warning: {}", e);
+            eprintln!("Visualizer warning: {}", e);
             eprintln!("Continuing with basic audio processing...");
             // Create a fallback - we need to get cava_manager back
             // For now, we'll exit since we can't recover cava_manager
@@ -185,7 +185,7 @@ fn main() -> Result<()> {
     };
 
     // Start renderer (it will handle audio processing)
-    println!("\n📊 Starting audio visualizer...");
+    println!("\nStarting audio visualizer...");
     println!("========================================");
     println!("Status: Audio processing ACTIVE");
     println!("Mode: {}", if std::env::var("WAYLAND_DISPLAY").is_ok() || std::env::var("XDG_SESSION_TYPE") == Ok("wayland".to_string()) {
@@ -201,7 +201,7 @@ fn main() -> Result<()> {
         "Manual (from config)"
     });
     println!("========================================");
-    println!("\n🎵 To test: Play audio (music, video, etc.)");
+    println!("\nTo test: Play audio (music, video, etc.)");
     println!("📈 Audio visualization will be shown...");
     println!("\n💡 Tip: For graphical visualization:");
     println!("  Run under Hyprland, Sway, or another Wayland compositor");
@@ -215,7 +215,7 @@ fn main() -> Result<()> {
     // Renderer.run() will handle everything and block until done
     // When it returns, we clean up and exit
     
-    println!("\n🛑 cava-bg stopping...");
+    println!("\ncava-bg stopping...");
     info!("cava-bg shutting down.");
     
     Ok(())

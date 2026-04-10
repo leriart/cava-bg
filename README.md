@@ -2,55 +2,49 @@
 
 A native implementation of wallpaper-cava optimized for Hyprland, displaying CAVA audio visualizations as a layer over your wallpaper with adaptive color detection.
 
-![cava-bg Demo](https://img.shields.io/badge/demo-coming_soon-blue)
-![Rust](https://img.shields.io/badge/rust-1.70+-orange.svg)
-![License](https://img.shields.io/badge/license-MIT-green.svg)
-![Platform](https://img.shields.io/badge/platform-Linux%20Wayland-lightgrey)
+![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange.svg)
+![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
+![Wayland](https://img.shields.io/badge/Wayland-Native-green.svg)
+![Arch Linux](https://img.shields.io/badge/Arch_Linux-AUR-blue.svg)
 
 ## Features
 
-✅ **Currently Implemented:**
-- **Adaptive Gradient Colors** - Automatically extracts and generates gradient colors from your wallpaper
-- **Wallpaper Change Detection** - Detects wallpaper changes and updates colors in real-time
-- **Efficient Audio Processing** - Uses wallpaper-cava's raw 16-bit audio format for optimal performance
-- **Real-time Audio Monitoring** - Terminal-based audio visualization with detailed feedback
-- **Automatic Configuration** - Self-adjusting based on your wallpaper and preferences
+### Currently Implemented:
+- **Adaptive Color Detection**: Automatically extracts colors from your current wallpaper
+- **Efficient Audio Processing**: Raw 16-bit CAVA output (inspired by wallpaper-cava)
+- **Terminal Visualization**: Real-time ASCII audio bars with level indicators
+- **Configuration System**: TOML-based config with auto-reload
+- **Wallpaper Monitoring**: Detects wallpaper changes and updates colors
+- **Wayland Detection**: Auto-detects Wayland sessions and compositors
+- **Modular Architecture**: Ready for full graphical rendering implementation
 
-🔧 **Ready for Implementation:**
-- **Native Wayland Integration** - Architecture prepared for wlr-layer-shell (like wallpaper-cava)
-- **Hardware Accelerated Rendering** - OpenGL 4.6 structure ready for implementation
-- **Shader-based Visualization** - GLSL shaders prepared for gradient rendering
+### Structure Ready for Implementation:
+- **Wayland/OpenGL Rendering**: Full GPU-accelerated visualization pipeline
+- **GLSL Shaders**: Advanced gradient and effects system (shaders prepared)
+- **Multi-monitor Support**: Architecture prepared for multiple displays
+- **Advanced Effects**: Pulse, glow, and smooth animations system
+- **Performance Optimization**: SSBO data transfer and instanced rendering ready
 
-📊 **Current Status:** Audio processing and color adaptation fully functional. Graphical rendering structure prepared for future implementation.
+## Installation
 
-## Quick Install
-
-### AUR (Arch Linux)
-
+### Quick Install (Arch Linux AUR)
 ```bash
-# Using paru
-paru -S cava-bg
-
 # Using yay
 yay -S cava-bg
-```
 
-### Binary Release
-
-```bash
-# Download latest release
-VERSION="0.1.0"
-ARCH="x86_64-unknown-linux-gnu"
-wget https://github.com/leriart/cava-bg/releases/download/v${VERSION}/cava-bg-v${VERSION}-${ARCH}.tar.gz
-
-# Extract and install
-sudo tar -xzf cava-bg-v${VERSION}-${ARCH}.tar.gz -C /usr/local/bin/
-
-# Run (cava will be installed automatically if needed)
-cava-bg
+# Using paru
+paru -S cava-bg
 ```
 
 ### From Source
+
+1. **Install Dependencies:**
+```bash
+# Arch Linux
+sudo pacman -S cava rustup wayland wayland-protocols libxkbcommon mesa libglvnd
+```
+
+2. **Build and Install:**
 ```bash
 git clone https://github.com/leriart/cava-bg.git
 cd cava-bg
@@ -58,266 +52,228 @@ cargo build --release
 sudo cp target/release/cava-bg /usr/local/bin/
 ```
 
-## Installation
-
-### Method 1: Binary Release (Easiest)
-
-Download the pre-built binary from the [Releases](https://github.com/leriart/cava-bg/releases) page:
-
+3. **Test Installation:**
 ```bash
-# Example for v0.1.0
-curl -L https://github.com/leriart/cava-bg/releases/download/v0.1.0/cava-bg-v0.1.0-x86_64-unknown-linux-gnu.tar.gz | tar -xz
-sudo mv cava-bg /usr/local/bin/
+# Run cava-bg
+cava-bg
 ```
-
-### Method 2: From Source
-
-```bash
-# Clone the repository
-git clone https://github.com/yourusername/cavabg.git
-cd cavabg
-
-# Build in release mode
-cargo build --release
-
-# Install system-wide
-sudo cp target/release/cavabg /usr/local/bin/
-```
-
-### Method 3: Using install.sh
-
-```bash
-chmod +x install.sh
-./install.sh
-```
-
-### Dependencies
-
-**Required:**
-- `cava` - Audio visualizer (for audio processing)
-- Rust toolchain (for building from source)
-
-**Recommended for future graphical rendering:**
-- Wayland compositor with wlr-layer-shell support (Hyprland, Sway, etc.)
-- OpenGL 4.6 capable GPU
-- Wayland development libraries
-
-**Install on Arch Linux:**
-```bash
-# Required for audio processing
-sudo pacman -S cava
-
-# For building from source
-sudo pacman -S rust cargo pkg-config
-
-# For future graphical rendering (optional)
-sudo pacman -S wayland-protocols libxkbcommon
-```
-
-**Install on Ubuntu/Debian:**
-```bash
-# Required for audio processing
-sudo apt install cava
-
-# For building from source
-sudo apt install rustc cargo pkg-config build-essential
-
-# For future graphical rendering (optional)
-sudo apt install libwayland-dev libegl-dev mesa-common-dev libxkbcommon-dev wayland-protocols
-```
-
-## Configuration
-
-After installation, set up your configuration:
-
-```bash
-# Create config directory
-mkdir -p ~/.config/cavabg
-
-# Copy default config
-cp config.toml ~/.config/cavabg/
-
-# Edit to your liking
-nano ~/.config/cavabg/config.toml
-```
-
-Or use the built-in default configuration if you don't create one.
-
-### Configuration Options
-
-| Section | Option | Type | Default | Description |
-|---------|--------|------|---------|-------------|
-| `[general]` | `framerate` | integer | 60 | FPS for visualization |
-| | `background_color` | color | `{hex: "#000000", alpha: 0.0}` | Background with transparency |
-| | `preferred_output` | string | (none) | Target monitor name |
-| `[bars]` | `amount` | integer | 76 | Number of bars |
-| | `gap` | float | 0.1 | Gap between bars (0.0-1.0) |
-| `[colors]` | `gradient_color_*` | color | Catppuccin gradient | Gradient colors (any number) |
-| `[smoothing]` | `noise_reduction` | float | 0.77 | CAVA noise reduction (0.0-1.0) |
-
-**Color formats:**
-- `"#RRGGBB"` - Hex color (alpha = 1.0)
-- `{hex: "#RRGGBB", alpha: 0.5}` - Hex color with alpha
 
 ## Usage
 
 ### Basic Usage
-
 ```bash
-# Run with default config
+# Start with default settings
 cava-bg
 
-# Run with specific config
-cava-bg --config ~/.config/cavabg/my-config.toml
+# Force Wayland mode (if available)
+cava-bg --wayland
 
-# Show help
+# Test configuration and color extraction
+cava-bg --test-config
+```
+
+### Command Line Options
+```bash
 cava-bg --help
 ```
 
-### Hyprland Integration
+**Available Options:**
+- `--config <PATH>`: Use custom config file
+- `--test-config`: Test color extraction and exit
+- `--version`: Show version information
+- `--list-monitors` (`-m`): List available monitors
+- `--wayland`: Force Wayland rendering mode (if available)
 
-Add to `~/.config/hypr/hyprland.conf`:
+## Configuration
 
-```hyprlang
-# Start on login
-exec-once = cava-bg
+### Basic Configuration
+Create `~/.config/cava-bg/config.toml`:
 
-# With custom config
-exec-once = cava-bg --config ~/.config/cavabg/config.toml
-
-# Delay start (wait 2 seconds)
-exec-once = sleep 2 && cavabg
-```
-
-### Monitor Targeting
-
-Target specific monitor:
-```bash
-# Get monitor names
-hyprctl monitors all
-
-# Set in config.toml
+```toml
 [general]
-preferred_output = "DP-1"
+framerate = 60
+auto_colors = true
+wallpaper_check_interval = 5
+
+[bars]
+amount = 76
+width = 1.0
+gap = 0.1
+roundness = 0.2
+
+# Colors are auto-generated from wallpaper
+# Manual override available in [colors] section
 ```
 
-## Building from Source
+### Configuration Locations
+cava-bg looks for configuration in this order:
+1. Command line: `--config /path/to/config.toml`
+2. `~/.config/cava-bg/config.toml`
+3. `/etc/cava-bg/config.toml`
+4. Built-in defaults
 
-### Prerequisites
+## How It Works
 
-```bash
-# Install Rust
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source "$HOME/.cargo/env"
-
-# Install dependencies (Arch example)
-sudo pacman -S cava base-devel pkg-config wayland-protocols
+### Current Implementation Pipeline:
+```
+1. Wallpaper Detection -> Find current wallpaper path
+2. Color Extraction -> k-means clustering for dominant colors
+3. Gradient Generation -> Create smooth color gradients
+4. Audio Processing -> CAVA raw 16-bit binary output
+5. Data Normalization -> Convert to 0.0-1.0 range
+6. Terminal Rendering -> ASCII visualization with real-time feedback
+7. Wayland Detection -> Check for graphical rendering capability
 ```
 
-### Build
-
-```bash
-# Clone
-git clone https://github.com/yourusername/cavabg.git
-cd cavabg
-
-# Debug build
-cargo build
-
-# Release build (recommended)
-cargo build --release
-
-# Run tests
-cargo test
+### Future Graphics Pipeline (Structure Ready):
 ```
-
-### Create Release
-
-```bash
-# Build release package
-./build-release.sh
-
-# Outputs:
-# - dist/cavabg (binary)
-# - cavabg-v0.1.0-x86_64-unknown-linux-gnu.tar.gz
-# - cavabg-v0.1.0-x86_64-unknown-linux-gnu.tar.gz.sha256
-```
-
-## Troubleshooting
-
-### Common Issues
-
-| Issue | Solution |
-|-------|----------|
-| **"cava not found"** | `sudo pacman -S cava` or `sudo apt install cava` |
-| **"wl_compositor not available"** | Make sure you're running Wayland (`echo $XDG_SESSION_TYPE`) |
-| **Black screen** | Check audio input to cava, verify config |
-| **Low FPS** | Reduce `framerate` or `bars.amount` in config |
-| **Permission denied** | `chmod +x /path/to/cavabg` or use `sudo` |
-
-### Debug Mode
-
-```bash
-# Enable verbose logging
-RUST_LOG=debug cavabg
-
-# Or with custom config
-RUST_LOG=info cavabg --config ~/.config/cava-bg/config.toml
-```
-
-### Checking Dependencies
-
-```bash
-# Check cava
-cava --version
-
-# Check Wayland
-echo $XDG_SESSION_TYPE
-
-# Check OpenGL
-glxinfo | grep "OpenGL version"
+1. Wayland Connection -> Connect to compositor
+2. Surface Creation -> wlr-layer-shell transparent window
+3. EGL/OpenGL Context -> GPU acceleration setup
+4. Shader Compilation -> GLSL vertex/fragment shaders
+5. Buffer Setup -> VBO/VAO/EBO + SSBO for audio data
+6. Main Render Loop -> 60 FPS frame rendering
+7. Audio Data Transfer -> SSBO updates each frame
+8. Effects Application -> Pulse, glow, gradient blending
 ```
 
 ## Project Structure
 
 ```
-cavabg/
-├── src/                    # Source code
-│   ├── main.rs            # Application entry point
-│   ├── config.rs          # Configuration parsing
-│   ├── shader.rs          # OpenGL shader management
-│   └── shaders/           # GLSL shaders
-├── Cargo.toml            # Rust dependencies
-├── build.rs              # OpenGL bindings generation
-├── config.toml           # Example configuration
-├── build-release.sh      # Release builder
-├── install.sh            # Installation script
-├── README.md             # This file
-├── INSTALL.md            # Detailed installation guide
-└── DEVELOPMENT.md        # Development guide
+cava-bg/
+├── src/
+│   ├── main.rs              # Application entry point
+│   ├── config.rs           # TOML configuration parsing
+│   ├── wallpaper.rs        # Wallpaper analysis & color extraction
+│   ├── renderer.rs         # Modular rendering system
+│   ├── cava_manager.rs     # Efficient CAVA process management
+│   ├── cli.rs             # Command line interface (clap)
+│   ├── wayland_basic.rs   # Basic Wayland implementation
+│   ├── wayland_simple.rs  # Simple renderer structure
+│   └── wayland_renderer.rs # Full Wayland renderer (future)
+├── shaders/               # GLSL shaders
+│   ├── vertex.glsl        # Vertex shader (ready)
+│   └── fragment.glsl      # Fragment shader with effects (ready)
+└── Cargo.toml            # Rust dependencies
 ```
+
+## Development
+
+### Building from Source
+```bash
+# Debug build
+cargo build
+
+# Release build
+cargo build --release
+
+# Run tests
+cargo test
+
+# Check code
+cargo check
+```
+
+### Development Roadmap
+
+#### Version 0.1.5 (Current) - Stable Foundation
+- Efficient audio processing with raw 16-bit output
+- Terminal visualization with real-time feedback
+- Wayland environment detection
+- Configuration system with TOML support
+- Wallpaper color adaptation
+- Modular architecture for future expansion
+
+#### Version 0.2.0 (Next) - Basic Graphics
+- Basic Wayland window creation
+- OpenGL context initialization
+- Simple shader rendering
+- Audio data to GPU transfer
+- Transparent overlay rendering
+
+#### Version 1.0.0 (Future) - Full Features
+- Complete Wayland/OpenGL rendering pipeline
+- Multi-monitor support
+- Advanced visual effects system
+- Performance optimization
+- Configuration GUI (optional)
+- Plugin system for custom effects
 
 ## Contributing
 
-1. Fork the repository
-2. Create a feature branch: `git checkout -b feature/amazing-feature`
-3. Commit changes: `git commit -m 'Add amazing feature'`
-4. Push: `git push origin feature/amazing-feature`
-5. Open a Pull Request
+We welcome contributions! Here's how to get started:
 
-See [DEVELOPMENT.md](DEVELOPMENT.md) for development setup.
+### Development Setup
+```bash
+# 1. Fork and clone
+git clone https://github.com/your-username/cava-bg.git
+cd cava-bg
 
-## License
+# 2. Install dependencies
+sudo pacman -S cava rustup wayland wayland-protocols libxkbcommon mesa libglvnd
 
-MIT License - see [LICENSE](LICENSE) file for details.
+# 3. Build and test
+cargo build
+cargo test
+
+# 4. Create feature branch
+git checkout -b feature/your-feature
+```
+
+### Contribution Guidelines
+1. **Code Style**: Follow Rust conventions, run `cargo fmt` before committing
+2. **Testing**: Add tests for new functionality
+3. **Documentation**: Update relevant documentation
+4. **Commits**: Use meaningful commit messages
+5. **PRs**: Reference related issues, describe changes clearly
+
+## Troubleshooting
+
+### Common Issues & Solutions
+
+#### 1. No Audio Detected
+```bash
+# Check CAVA installation
+cava --version
+
+# Test CAVA directly
+cava -p /dev/null
+```
+
+#### 2. Wayland Not Detected
+```bash
+# Check session type
+echo $XDG_SESSION_TYPE
+echo $WAYLAND_DISPLAY
+
+# Install Wayland compositor (Arch Linux)
+sudo pacman -S hyprland
+```
+
+#### 3. Debug Mode
+```bash
+# Full debug output
+RUST_LOG=debug cava-bg
+
+# Specific module debugging
+RUST_LOG=cava_bg=debug,cava_bg::renderer=info cava-bg
+```
 
 ## Acknowledgments
 
-- Based on [wallpaper-cava](https://github.com/rs-pro0/wallpaper-cava) by rs-pro0
-- Uses [Smithay client toolkit](https://github.com/Smithay/client-toolkit)
-- Inspired by [cava](https://github.com/karlstav/cava) community
-- Catppuccin color scheme by [catppuccin](https://github.com/catppuccin)
+### Projects & Libraries
+- **wallpaper-cava** - Inspiration and audio processing approach
+- **CAVA** - Audio visualization engine
+- **Smithay Client Toolkit** - Wayland client library
+- **wlroots** - Wayland compositor library
 
----
+### Rust Ecosystem
+- **anyhow** - Error handling
+- **clap** - Command line parsing
+- **toml** - Configuration parsing
+- **log/env_logger** - Logging system
+- **image** - Image processing for color extraction
 
-**If you find this useful, please star the repository!**
+## License
+
+MIT License - see LICENSE file for details.
