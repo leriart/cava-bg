@@ -234,6 +234,11 @@ impl Config {
 
         config.push_str(&format!("\n[output]\n"));
         config.push_str(&format!("bars = {}\n", self.bars.amount));
+        // Configuración para salida raw (como wallpaper-cava)
+        config.push_str(&format!("method = raw\n"));
+        config.push_str(&format!("raw_target = /dev/stdout\n"));
+        config.push_str(&format!("bit_format = 16bit\n"));
+        config.push_str(&format!("ascii_max_range = 1000\n"));
 
         config.push_str(&format!("\n[smoothing]\n"));
         if let Some(monstercat) = self.smoothing.monstercat {
@@ -246,6 +251,20 @@ impl Config {
             config.push_str(&format!("noise_reduction = {:.2}\n", noise_reduction));
         }
 
+        config
+    }
+    
+    /// Generate cava config for raw output (optimized for direct reading)
+    pub fn to_cava_raw_config(&self) -> String {
+        let mut config = self.to_cava_config();
+        // Asegurarnos de que está configurado para raw output
+        if !config.contains("method = raw") {
+            let output_section = "\n[output]\n";
+            if let Some(pos) = config.find(output_section) {
+                let insert_pos = pos + output_section.len();
+                config.insert_str(insert_pos, "method = raw\nraw_target = /dev/stdout\nbit_format = 16bit\n");
+            }
+        }
         config
     }
 }

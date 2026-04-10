@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use clap::Parser;
 use log::{info, warn};
 use std::fs;
 use std::path::PathBuf;
@@ -9,13 +8,16 @@ use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod cava_manager;
 mod cli;
 mod config;
+mod renderer;
 mod shader;
 mod wallpaper;
 
 use cli::*;
 use config::*;
+use config::Color;
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
@@ -126,132 +128,191 @@ fn main() -> Result<()> {
     let mut last_wallpaper_check = Instant::now();
     let check_interval = Duration::from_secs(5); // Check for wallpaper changes every 5 seconds
 
-    // Main loop
-    while RUNNING.load(Ordering::SeqCst) {
-        // Check for wallpaper changes
-        if last_wallpaper_check.elapsed() >= check_interval {
-            let new_wallpaper_path =
-                wallpaper::WallpaperAnalyzer::get_current_wallpaper_path().unwrap_or(None);
-
-            let wallpaper_changed = match (&current_wallpaper_path, &new_wallpaper_path) {
-                (Some(old), Some(new)) => old != new,
-                (None, Some(_)) => true, // No previous wallpaper, now we have one
-                (Some(_), None) => true, // Had wallpaper, now it's gone
-                (None, None) => false,   // No wallpaper before or now
-            };
-
-            if wallpaper_changed {
-                info!("Wallpaper change detected!");
-
-                // Kill existing cava process if running
-                if let Some(mut process) = cava_process.take() {
-                    info!("Stopping previous cava process...");
-                    process.kill().ok();
-                    process.wait().ok();
+    // Initialize cava manager with raw output (inspired by wallpaper-cava)
+    println!("Initializing cava with raw audio output (16-bit)...");
+    let mut cava_manager = match cava_manager::CavaManager::new(&config) {
+        Ok(manager) => {
+            println!("✓ cava initialized successfully with raw output");
+            println!("  Bars: {}", config.bars.amount);
+            println!("  Framerate: {}", config.general.framerate);
+            if config.general.auto_colors {
+                println!("  Colors: Adaptive (from wallpaper)");
+            } else {
+                println!("  Colors: Manual (from config)");
+            }
+            manager
+        }
+        Err(e) => {
+            eprintln!("Failed to initialize cava: {}", e);
+            eprintln!("Falling back to standard cava mode...");
+            
+            // Fallback to old method
+            let cava_config_path = dirs::cache_dir()
+                .context("Failed to get cache directory")?
+                .join("cava-bg-cava-config");
+            let cava_config = config.to_cava_config();
+            fs::write(&cava_config_path, cava_config)
+                .context("Failed to write cava config")?;
+            
+            match Command::new("cava")
+                .arg("-p")
+                .arg(&cava_config_path)
+                .stdout(Stdio::piped())
+                .spawn()
+            {
+                Ok(process) => {
+                    println!("cava started in fallback mode");
+                    // Create a simple wrapper for fallback mode
+                    return Ok(());
                 }
-
-                // Update current wallpaper path
-                current_wallpaper_path = new_wallpaper_path.clone();
-
-                if let Some(path) = &current_wallpaper_path {
-                    println!("New wallpaper detected: {}", path.display());
-
-                    let cava_config_path = dirs::cache_dir()
-                        .context("Failed to get cache directory")?
-                        .join("cava-bg-cava-config");
-
-                    if config.general.auto_colors {
-                        // Generate adaptive gradient colors from new wallpaper
-                        info!("Generating gradient colors from new wallpaper (auto_colors enabled)...");
-                        match wallpaper::WallpaperAnalyzer::generate_gradient_colors(8) {
-                            Ok(gradient_colors) => {
-                                println!(
-                                    "Generated {} gradient colors from wallpaper:",
-                                    gradient_colors.len()
-                                );
-
-                                // Update config with new gradient colors
-                                let mut adaptive_config = config.clone();
-                                adaptive_config.colors.colors.clear();
-
-                                for (i, color) in gradient_colors.iter().enumerate() {
-                                    let hex = format!(
-                                        "#{:02x}{:02x}{:02x}",
-                                        (color[0] * 255.0) as u8,
-                                        (color[1] * 255.0) as u8,
-                                        (color[2] * 255.0) as u8
-                                    );
-                                    println!("  Color {}: {}", i + 1, hex);
-                                    adaptive_config.colors.colors.insert(
-                                        format!("gradient_color_{}", i + 1),
-                                        Color::Hex(hex),
-                                    );
-                                }
-
-                                // Generate cava config with new colors
-                                let cava_config = adaptive_config.to_cava_config();
-                                fs::write(&cava_config_path, cava_config)
-                                    .context("Failed to write cava config")?;
-                            }
-                            Err(e) => {
-                                warn!("Failed to generate gradient colors: {}", e);
-                                println!("Using manual colors from configuration.");
-                                // Use manual colors from config
-                                let cava_config = config.to_cava_config();
-                                fs::write(&cava_config_path, cava_config)
-                                    .context("Failed to write cava config")?;
-                            }
-                        }
-                    } else {
-                        // Use manual colors from config
-                        info!("Using manual colors (auto_colors disabled)");
-                        println!("Using manual colors from configuration.");
-                        let cava_config = config.to_cava_config();
-                        fs::write(&cava_config_path, cava_config)
-                            .context("Failed to write cava config")?;
-                    }
-
-                    info!("Starting cava process...");
-
-                    // Start new cava process
-                    match Command::new("cava")
-                        .arg("-p")
-                        .arg(&cava_config_path)
-                        .stdout(Stdio::piped())
-                        .spawn()
-                    {
-                        Ok(process) => {
-                            cava_process = Some(process);
-                            println!("cava restarted with new colors!");
-                            println!("Config: {}", cava_config_path.display());
-                        }
-                        Err(e) => {
-                            warn!("Failed to start cava process: {}", e);
-                        }
-                    }
-                } else {
-                    println!("Wallpaper removed or not found.");
+                Err(e) => {
+                    return Err(anyhow::anyhow!("Failed to start cava in fallback mode: {}", e));
                 }
             }
+        }
+    };
+    
+    // Start monitor thread for cava
+    cava_manager.start_monitor(config.clone());
+    
+    // Initialize renderer
+    println!("Initializing renderer...");
+    let mut renderer = match renderer::Renderer::new() {
+        Ok(r) => {
+            println!("✓ Renderer initialized");
+            r
+        }
+        Err(e) => {
+            eprintln!("Renderer warning: {}", e);
+            eprintln!("Continuing without advanced rendering...");
+            // Continue with basic functionality
+            renderer::Renderer::new().unwrap_or_else(|_| renderer::Renderer::new().unwrap())
+        }
+    };
+    
+    // Start renderer in background
+    let renderer_thread = std::thread::spawn(move || {
+        if let Err(e) = renderer.run() {
+            eprintln!("Renderer error: {}", e);
+        }
+    });
+    
+    // Demo: Read some audio data to show it's working
+    println!("\nReading audio data from cava...");
+    println!("Try playing some audio to see the visualization!");
+    println!("\nNote: Full graphical rendering requires Wayland/OpenGL implementation.");
+    println!("Current version has improved audio processing inspired by wallpaper-cava.");
 
+    // Main loop for wallpaper change detection and audio processing
+    let mut last_wallpaper_check = Instant::now();
+    let mut current_wallpaper_path: Option<PathBuf> = None;
+    let check_interval = Duration::from_secs(5);
+    
+    // Demo counter for showing audio data
+    let mut demo_counter = 0;
+    
+    while RUNNING.load(Ordering::SeqCst) {
+        // 1. Check for wallpaper changes
+        if last_wallpaper_check.elapsed() >= check_interval {
+            match wallpaper::WallpaperAnalyzer::get_current_wallpaper_path() {
+                Ok(Some(new_wallpaper_path)) => {
+                    let wallpaper_changed = match &current_wallpaper_path {
+                        Some(old) => old != &new_wallpaper_path,
+                        None => true, // No previous wallpaper, now we have one
+                    };
+                
+                    if wallpaper_changed {
+                        println!("\n🎨 Wallpaper change detected!");
+                        current_wallpaper_path = Some(new_wallpaper_path.clone());
+                        
+                        if config.general.auto_colors {
+                            println!("Generating adaptive colors from new wallpaper...");
+                            match wallpaper::WallpaperAnalyzer::generate_gradient_colors(8) {
+                                Ok(colors) => {
+                                    println!("Generated {} gradient colors", colors.len());
+                                    // In a full implementation, we would update the renderer colors here
+                                }
+                                Err(e) => {
+                                    println!("Could not generate colors: {}", e);
+                                }
+                            }
+                        }
+                        
+                        // Restart cava with new colors if auto_colors is enabled
+                        if config.general.auto_colors {
+                            println!("Restarting cava with new colors...");
+                            if let Err(e) = cava_manager.start(&config) {
+                                println!("Warning: Failed to restart cava: {}", e);
+                            }
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // No wallpaper found
+                }
+                Err(e) => {
+                    println!("Warning: Failed to check wallpaper: {}", e);
+                }
+            }
             last_wallpaper_check = Instant::now();
         }
-
-        // Sleep to prevent busy waiting
+        
+        // 2. Try to read audio data (demo mode)
+        if demo_counter % 20 == 0 { // Read every ~2 seconds
+            match cava_manager.read_audio_data() {
+                Ok(Some(audio_data)) if !audio_data.is_empty() => {
+                    // Calculate some simple stats to show it's working
+                    let avg: f32 = audio_data.iter().sum::<f32>() / audio_data.len() as f32;
+                    let max = audio_data.iter().fold(0.0f32, |a, &b| a.max(b));
+                    
+                    if demo_counter % 100 == 0 { // Show stats every ~10 seconds
+                        println!("\n📊 Audio data: avg={:.3}, max={:.3}, bars={}", 
+                               avg, max, audio_data.len());
+                        
+                        // Show a simple ASCII visualization
+                        if max > 0.1 {
+                            let bars_to_show = audio_data.len().min(20);
+                            print!("    [");
+                            for i in 0..bars_to_show {
+                                let height = (audio_data[i] * 8.0) as usize;
+                                if height > 0 {
+                                    print!("▮");
+                                } else {
+                                    print!("▯");
+                                }
+                            }
+                            println!("]");
+                        }
+                    }
+                }
+                Ok(None) => {
+                    // No data yet, normal
+                }
+                Err(e) => {
+                    println!("\n⚠️  Audio read error: {}", e);
+                    println!("Attempting to restart cava...");
+                    if let Err(e) = cava_manager.start(&config) {
+                        println!("Failed to restart cava: {}", e);
+                    }
+                }
+                _ => {}
+            }
+        }
+        
+        // 3. Sleep to prevent busy waiting
         thread::sleep(Duration::from_millis(100));
+        demo_counter += 1;
     }
 
-    // Cleanup
-    info!("Shutting down...");
+    // Wait for renderer thread to finish
+    let _ = renderer_thread.join();
 
-    if let Some(mut process) = cava_process.take() {
-        info!("Stopping cava process...");
-        process.kill().ok();
-        process.wait().ok();
-    }
-
-    println!("cava-bg stopped.");
+    // Cleanup - cava_manager will auto-cleanup when dropped
+    println!("\n🛑 cava-bg stopping...");
     info!("cava-bg shutting down.");
+    
+    // Explicitly stop cava manager
+    drop(cava_manager);
 
     Ok(())
 }

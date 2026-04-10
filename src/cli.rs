@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 /// Cavabg - Native CAVA visualizer for Hyprland
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(author, version, about, long_about = None, disable_version_flag = true)]
 pub struct Cli {
     /// Configuration file path
     #[arg(short, long, value_name = "FILE")]
@@ -18,7 +18,7 @@ pub struct Cli {
     pub version: bool,
 
     /// List available monitors
-    #[arg(short, long)]
+    #[arg(short = 'm', long)]
     pub list_monitors: bool,
 
     /// Test configuration without running
