@@ -4,8 +4,6 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
-// use crate::wallpaper::WallpaperAnalyzer;
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub general: GeneralConfig,
@@ -29,17 +27,9 @@ pub struct GeneralConfig {
     pub auto_colors: bool,
 }
 
-fn default_auto_detect() -> bool {
-    true
-}
-
-fn default_wallpaper_check_interval() -> u32 {
-    5
-}
-
-fn default_auto_colors() -> bool {
-    true
-}
+fn default_auto_detect() -> bool { true }
+fn default_wallpaper_check_interval() -> u32 { 5 }
+fn default_auto_colors() -> bool { true }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BarsConfig {
@@ -84,7 +74,6 @@ impl Color {
 
 fn parse_hex_color(hex: &str) -> (f32, f32, f32) {
     let hex = hex.trim_start_matches('#');
-
     if hex.len() == 6 {
         let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0) as f32 / 255.0;
         let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0) as f32 / 255.0;
@@ -100,7 +89,6 @@ fn parse_hex_color(hex: &str) -> (f32, f32, f32) {
     }
 }
 
-// CAVA configuration structures
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CavaConfig {
     pub general: CavaGeneralConfig,
@@ -125,7 +113,6 @@ pub struct CavaSmoothingConfig {
 
 impl Config {
     pub fn load(config_path: &Option<std::path::PathBuf>) -> Result<Self> {
-        // If config path is provided, use it
         if let Some(path) = config_path {
             if path.exists() {
                 return Self::load_from_path(path);
@@ -133,8 +120,6 @@ impl Config {
                 return Err(anyhow::anyhow!("Config file not found: {:?}", path));
             }
         }
-
-        // Otherwise, search in default locations
         let config_paths = vec![
             PathBuf::from("config.toml"),
             dirs::config_dir()
@@ -145,29 +130,23 @@ impl Config {
                 })
                 .unwrap_or_else(|| PathBuf::from("config.toml")),
         ];
-
         for path in config_paths {
             if path.exists() {
                 return Self::load_from_path(&path);
             }
         }
-
-        // Return default config if no file found
         Ok(Self::default())
     }
 
     pub fn load_from_path(path: &PathBuf) -> Result<Self> {
         let config_str = fs::read_to_string(path)
             .with_context(|| format!("Failed to read config file: {}", path.display()))?;
-
         let config: Config = toml::from_str(&config_str)
             .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
-
         Ok(config)
     }
 
     pub fn default() -> Self {
-        // Use Catppuccin Mocha gradient as default (fallback)
         let gradient_colors = vec![
             [0.580, 0.886, 0.835, 1.0], // #94e2d5
             [0.537, 0.863, 0.922, 1.0], // #89dceb
@@ -178,7 +157,6 @@ impl Config {
             [0.922, 0.627, 0.675, 1.0], // #eba0ac
             [0.953, 0.545, 0.659, 1.0], // #f38ba8
         ];
-
         let mut colors = HashMap::new();
         for (i, color) in gradient_colors.iter().enumerate() {
             let hex = format!(
@@ -189,7 +167,6 @@ impl Config {
             );
             colors.insert(format!("gradient_color_{}", i + 1), Color::Hex(hex));
         }
-
         Config {
             general: GeneralConfig {
                 framerate: 60,
@@ -219,28 +196,21 @@ impl Config {
 
     pub fn to_cava_config(&self) -> String {
         let mut config = String::new();
-
-        config.push_str(&format!("[general]\n"));
+        config.push_str("[general]\n");
         config.push_str(&format!("framerate = {}\n", self.general.framerate));
         if let Some(autosens) = self.general.autosens {
-            config.push_str(&format!(
-                "autosens = {}\n",
-                if autosens { "1" } else { "0" }
-            ));
+            config.push_str(&format!("autosens = {}\n", if autosens { "1" } else { "0" }));
         }
         if let Some(sensitivity) = self.general.sensitivity {
             config.push_str(&format!("sensitivity = {}\n", sensitivity));
         }
-
-        config.push_str(&format!("\n[output]\n"));
+        config.push_str("\n[output]\n");
         config.push_str(&format!("bars = {}\n", self.bars.amount));
-        // Configuración para salida raw (como wallpaper-cava)
-        config.push_str(&format!("method = raw\n"));
-        config.push_str(&format!("raw_target = /dev/stdout\n"));
-        config.push_str(&format!("bit_format = 16bit\n"));
-        config.push_str(&format!("ascii_max_range = 1000\n"));
-
-        config.push_str(&format!("\n[smoothing]\n"));
+        config.push_str("method = raw\n");
+        config.push_str("raw_target = /dev/stdout\n");
+        config.push_str("bit_format = 16bit\n");
+        config.push_str("ascii_max_range = 1000\n");
+        config.push_str("\n[smoothing]\n");
         if let Some(monstercat) = self.smoothing.monstercat {
             config.push_str(&format!("monstercat = {}\n", monstercat));
         }
@@ -250,14 +220,11 @@ impl Config {
         if let Some(noise_reduction) = self.smoothing.noise_reduction {
             config.push_str(&format!("noise_reduction = {:.2}\n", noise_reduction));
         }
-
         config
     }
-    
-    /// Generate cava config for raw output (optimized for direct reading)
+
     pub fn to_cava_raw_config(&self) -> String {
         let mut config = self.to_cava_config();
-        // Asegurarnos de que está configurado para raw output
         if !config.contains("method = raw") {
             let output_section = "\n[output]\n";
             if let Some(pos) = config.find(output_section) {

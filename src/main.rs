@@ -194,8 +194,8 @@ fn main() -> Result<()> {
             } else {
                 "Manual configuration"
             });
-            println!("Layer: Top (above wallpaper, below normal windows)");
-            println!("Size: 0,0 (auto-size to output)");
+            println!("Layer: Overlay (above everything, like swaybg)");
+            println!("Size: auto (full output)");
             println!("Anchors: ALL (full coverage)");
             println!("========================================");
             println!("\n To test: Play audio (music, video, etc.)");

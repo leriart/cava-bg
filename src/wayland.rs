@@ -1,4 +1,5 @@
 //! Wayland renderer using smithay-client-toolkit 0.19
+//! Fixed: waits for configure, uses real output size, works like swaybg
 
 use anyhow::{anyhow, Context, Result};
 use log::{error, info, warn};
@@ -253,7 +254,9 @@ impl AppState {
             gl::DeleteShader(fs);
         }
 
-        let bar_color_loc = unsafe { gl::GetUniformLocation(program, CString::new("BarColor").unwrap().as_ptr()) };
+        let bar_color_loc = unsafe {
+            gl::GetUniformLocation(program, CString::new("BarColor").unwrap().as_ptr())
+        };
 
         let mut vao = 0;
         let mut vbo = 0;
@@ -262,7 +265,14 @@ impl AppState {
             gl::GenBuffers(1, &mut vbo);
             gl::BindVertexArray(vao);
             gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
-            gl::VertexAttribPointer(0, 2, gl::FLOAT, gl::FALSE, 2 * std::mem::size_of::<f32>() as GLsizei, std::ptr::null());
+            gl::VertexAttribPointer(
+                0,
+                2,
+                gl::FLOAT,
+                gl::FALSE,
+                2 * std::mem::size_of::<f32>() as GLsizei,
+                std::ptr::null(),
+            );
             gl::EnableVertexAttribArray(0);
             gl::BindVertexArray(0);
         }
@@ -620,22 +630,37 @@ impl WaylandRenderer {
 
         // Create state components
         let registry_state = RegistryState::new(&globals);
-        let output_state = OutputState::new(&globals, &qh);
+        let mut output_state = OutputState::new(&globals, &qh);
         let compositor_state = CompositorState::bind(&globals, &qh)
             .context("wl_compositor not available")?;
         let surface = compositor_state.create_surface(&qh);
         let layer_shell = LayerShell::bind(&globals, &qh)
             .context("layer shell not available")?;
+
+        // --- Get output size (like swaybg) ---
+        // Dispatch once to populate output_state
+        event_queue.dispatch(&mut (), Some(Duration::from_millis(100)))?;
+        let (output_width, output_height) = output_state
+            .outputs()
+            .iter()
+            .find_map(|output| {
+                output_state
+                    .info(output)
+                    .map(|info| (info.logical_size.0, info.logical_size.1))
+            })
+            .unwrap_or((1920, 1080));
+        info!("Detected output size: {}x{}", output_width, output_height);
+
         let layer_surface = layer_shell.create_layer_surface(
             &qh,
             surface.clone(),
-            Layer::Top,
+            Layer::Overlay,  // Use Overlay to ensure visibility (like swaybg uses Background)
             Some("cava-bg"),
             None,
         );
         layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
         layer_surface.set_exclusive_zone(-1);
-        layer_surface.set_size(0, 0);
+        layer_surface.set_size(output_width, output_height);
         surface.commit();
 
         let mut app_state = AppState::new(
@@ -655,6 +680,17 @@ impl WaylandRenderer {
             framerate,
         );
 
+        // --- Wait for configure event (essential) ---
+        let start = Instant::now();
+        while !app_state.configured && start.elapsed() < Duration::from_secs(2) {
+            event_queue.dispatch(&mut app_state, Some(Duration::from_millis(50)))?;
+        }
+        if !app_state.configured {
+            error!("Timeout waiting for layer configure");
+            return Err(anyhow!("Layer not configured by compositor"));
+        }
+        info!("Layer configured after {:?}", start.elapsed());
+
         // Ctrl+C handler
         let running_clone = self.running.clone();
         ctrlc::set_handler(move || {
@@ -666,7 +702,6 @@ impl WaylandRenderer {
 
         // Main loop
         while app_state.running.load(Ordering::SeqCst) {
-            // Dispatch pending events (non‑blocking)
             let _ = event_queue.dispatch_pending(&mut app_state);
             let _ = event_queue.flush();
 
