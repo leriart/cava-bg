@@ -645,7 +645,7 @@ impl WaylandRenderer {
             &qh,
             &app_state.surface,
             None, // output (None = todos)
-            Layer::Overlay as u32, // 2 = overlay, 1 = top, 0 = background
+            Layer::OVERLAY as u32, // 2 = overlay, 1 = top, 0 = background
             "cava-bg".to_string(),
         );
         layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
@@ -657,7 +657,9 @@ impl WaylandRenderer {
         // Esperar a que configure nos dé el tamaño real
         let start = Instant::now();
         while !app_state.configured && start.elapsed() < Duration::from_secs(2) {
-            app_state.event_queue.dispatch(&mut app_state, Some(Duration::from_millis(50)))?;
+            app_state.event_queue.dispatch_pending(&mut app_state)?;
+            app_state.event_queue.flush()?;
+            thread::sleep(Duration::from_millis(10));
         }
         if !app_state.configured {
             error!("Timeout waiting for layer configure");
