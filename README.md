@@ -7,8 +7,6 @@ A native implementation of wallpaper-cava optimized for Hyprland, displaying CAV
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 ![Platform](https://img.shields.io/badge/platform-Linux%20Wayland-lightgrey)
 
-**Repository:** https://github.com/leriart/cava-bg
-
 ## Features
 
 - **Adaptive Gradient Colors** - Automatically extracts and generates gradient colors from your wallpaper
