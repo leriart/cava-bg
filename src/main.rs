@@ -2,9 +2,6 @@ use anyhow::{Context, Result};
 use log::info;
 use std::fs;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
-use crossbeam_channel::Receiver;
-use std::time::Duration;
 
 mod cava_manager;
 mod cli;
@@ -16,14 +13,6 @@ mod wayland;
 use cli::*;
 use config::*;
 use cava_manager::CavaManager;
-
-fn setup_ctrl_c_channel() -> Result<Receiver<()>> {
-    let (sender, receiver) = crossbeam_channel::bounded(100);
-    ctrlc::set_handler(move || {
-        let _ = sender.send(());
-    })?;
-    Ok(receiver)
-}
 
 fn run_terminal_renderer(config: Config, cava_manager: CavaManager) -> Result<()> {
     println!("\nInitializing terminal visualizer...");

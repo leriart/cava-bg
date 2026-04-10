@@ -1,6 +1,4 @@
-//! Complete Wayland renderer for cava-bg
-//! Fixed: viewport, bar drawing, non-blocking audio, correct shader
-//! No calloop dependency – uses direct event queue dispatch
+//! Wayland renderer using smithay-client-toolkit 0.19
 
 use anyhow::{anyhow, Context, Result};
 use log::{debug, error, info, warn};
@@ -88,7 +86,7 @@ fn start_audio_reader(
 }
 
 // -----------------------------------------------------------------------------
-// Application state (no Send/Sync required – used only on main thread)
+// Application state
 // -----------------------------------------------------------------------------
 
 struct AppState {
@@ -304,7 +302,6 @@ impl AppState {
 
         self.update_audio();
 
-        // Compute bar geometry (normalized device coordinates: -1..1)
         let total_gap = (self.bar_count as f32 - 1.0) * self.bar_gap;
         let bar_width = (2.0 - total_gap) / self.bar_count as f32;
         let gap_width = self.bar_gap;
@@ -395,7 +392,7 @@ impl AppState {
     }
 }
 
-// Helper shader functions
+// Helper functions
 fn compile_shader(shader_type: GLenum, src: &str) -> Result<GLuint> {
     unsafe {
         let shader = gl::CreateShader(shader_type);
@@ -433,45 +430,101 @@ fn link_program(vs: GLuint, fs: GLuint) -> Result<GLuint> {
 }
 
 // -----------------------------------------------------------------------------
-// Wayland event handlers (required traits)
+// Trait implementations for smithay-client-toolkit 0.19
 // -----------------------------------------------------------------------------
 
 impl CompositorHandler for AppState {
-    fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: i32) {}
-    fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: wl_output::Transform) {}
-    fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: &WlOutput) {}
-    fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: &WlOutput) {}
-    fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: u32) {}
+    fn scale_factor_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &WlSurface,
+        _new_factor: i32,
+    ) {
+    }
+    fn transform_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &WlSurface,
+        _new_transform: wl_output::Transform,
+    ) {
+    }
+    fn frame(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &WlSurface,
+        _time: u32,
+    ) {
+    }
+    fn surface_enter(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &WlSurface,
+        _output: &WlOutput,
+    ) {
+    }
+    fn surface_leave(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &WlSurface,
+        _output: &WlOutput,
+    ) {
+    }
 }
 
 impl OutputHandler for AppState {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
     }
-    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlOutput) {}
-    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlOutput) {}
-    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlOutput) {}
+    fn new_output(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: WlOutput,
+    ) {
+    }
+    fn update_output(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: WlOutput,
+    ) {
+    }
+    fn output_destroyed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _output: WlOutput,
+    ) {
+    }
 }
 
 impl LayerShellHandler for AppState {
-    fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {
+    fn closed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _layer_surface: &LayerSurface,
+    ) {
         info!("Layer surface closed");
         self.running.store(false, Ordering::SeqCst);
     }
-
     fn configure(
         &mut self,
-        _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &LayerSurface,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _layer_surface: &LayerSurface,
         configure: LayerSurfaceConfigure,
-        _: u32,
+        _serial: u32,
     ) {
         self.width = configure.new_size.0 as i32;
         self.height = configure.new_size.1 as i32;
         self.configured = true;
         info!("Layer configured: {}x{}", self.width, self.height);
-
         if self.graphics_initialized {
             unsafe {
                 gl::Viewport(0, 0, self.width, self.height);
@@ -484,8 +537,23 @@ impl ProvidesRegistryState for AppState {
     fn registry(&mut self) -> &mut RegistryState {
         &mut self.registry_state
     }
-    fn runtime_add_global(&mut self, _: &Connection, _: &QueueHandle<Self>, _: u32, _: &str, _: u32) {}
-    fn runtime_remove_global(&mut self, _: &Connection, _: &QueueHandle<Self>, _: u32, _: &str) {}
+    fn runtime_add_global(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _id: u32,
+        _interface: &str,
+        _version: u32,
+    ) {
+    }
+    fn runtime_remove_global(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _id: u32,
+        _interface: &str,
+    ) {
+    }
 }
 
 delegate_compositor!(AppState);
@@ -586,7 +654,7 @@ impl WaylandRenderer {
             framerate,
         );
 
-        // Set up Ctrl+C handler
+        // Ctrl+C handler
         let running_clone = self.running.clone();
         ctrlc::set_handler(move || {
             info!("Ctrl+C received, shutting down...");
@@ -595,10 +663,10 @@ impl WaylandRenderer {
 
         info!("Wayland renderer running. Press Ctrl+C to exit.");
 
-        // Main loop – process events and draw at target framerate
+        // Main loop
         while app_state.running.load(Ordering::SeqCst) {
-            // Dispatch pending Wayland events (non‑blocking)
-            let _ = event_queue.dispatch_pending(&mut app_state, &mut DispatchData::new(())).unwrap_or_else(|e| {
+            // Dispatch pending events (non‑blocking)
+            event_queue.dispatch_pending(&mut app_state).unwrap_or_else(|e| {
                 error!("Event dispatch error: {}", e);
             });
             event_queue.flush().unwrap_or_else(|e| error!("Flush error: {}", e));
@@ -621,7 +689,6 @@ impl WaylandRenderer {
                 }
                 app_state.last_frame = Instant::now();
             } else {
-                // Sleep a little to avoid busy‑looping
                 thread::sleep(Duration::from_millis(1));
             }
         }
