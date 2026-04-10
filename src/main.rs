@@ -31,18 +31,7 @@ fn setup_ctrl_c_channel() -> Result<Receiver<()>> {
     Ok(receiver)
 }
 
-fn handle_signal() -> Arc<AtomicBool> {
-    let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
-
-    // Setup Ctrl+C handler
-    let _ = ctrlc::set_handler(move || {
-        r.store(false, Ordering::SeqCst);
-        RUNNING.store(false, Ordering::SeqCst);
-    });
-
-    running
-}
+// fn handle_signal() removed - using setup_ctrl_c_channel() instead
 
 /// Run terminal renderer
 fn run_terminal_renderer(config: Config, cava_manager: CavaManager) -> Result<()> {
@@ -168,8 +157,7 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Set up signal handler
-    let _signal_handler = handle_signal();
+    // Signal handler will be set up via setup_ctrl_c_channel() when needed
 
     println!("cava-bg starting with adaptive gradient colors and wallpaper change detection!");
     println!("Press Ctrl+C to exit.");
