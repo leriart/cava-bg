@@ -174,31 +174,6 @@ cargo test
 cargo check
 ```
 
-### Development Roadmap
-
-#### Version 0.1.5 (Current) - Stable Foundation
-- Efficient audio processing with raw 16-bit output
-- Terminal visualization with real-time feedback
-- Wayland environment detection
-- Configuration system with TOML support
-- Wallpaper color adaptation
-- Modular architecture for future expansion
-
-#### Version 0.2.0 (Next) - Basic Graphics
-- Basic Wayland window creation
-- OpenGL context initialization
-- Simple shader rendering
-- Audio data to GPU transfer
-- Transparent overlay rendering
-
-#### Version 1.0.0 (Future) - Full Features
-- Complete Wayland/OpenGL rendering pipeline
-- Multi-monitor support
-- Advanced visual effects system
-- Performance optimization
-- Configuration GUI (optional)
-- Plugin system for custom effects
-
 ## Contributing
 
 We welcome contributions! Here's how to get started:
@@ -274,6 +249,4 @@ RUST_LOG=cava_bg=debug,cava_bg::renderer=info cava-bg
 - **log/env_logger** - Logging system
 - **image** - Image processing for color extraction
 
-## License
 
-MIT License - see LICENSE file for details.
