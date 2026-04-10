@@ -1,6 +1,6 @@
 pkgbase = cava-bg
 	pkgdesc = Native CAVA audio visualizer for Hyprland with adaptive gradient colors and wallpaper change detection
-	pkgver = 0.1.4
+	pkgver = 0.1.4.r0.g27
 	pkgrel = 1
 	url = https://github.com/leriart/cava-bg
 	arch = x86_64
@@ -9,11 +9,12 @@ pkgbase = cava-bg
 	makedepends = cargo
 	makedepends = pkg-config
 	makedepends = wayland-protocols
+	makedepends = git
 	depends = cava
 	depends = wayland
 	depends = libxkbcommon
 	depends = gcc-libs
-	source = cava-bg-0.1.4.tar.gz::https://github.com/leriart/cava-bg/archive/refs/tags/0.1.4.tar.gz
+	source = git+https://github.com/leriart/cava-bg.git
 	sha256sums = SKIP
 
 pkgname = cava-bg
