@@ -2,9 +2,8 @@ use anyhow::{Context, Result};
 use log::info;
 use std::fs;
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use crossbeam_channel::{bounded, Receiver, select, tick};
+use crossbeam_channel::Receiver;
 use std::time::Duration;
 
 mod cava_manager;
@@ -13,29 +12,19 @@ mod config;
 mod renderer;
 mod wallpaper;
 mod wayland;
-// mod wayland_simple_winit;
-// mod wayland_minimal_working;
 
 use cli::*;
 use config::*;
 use cava_manager::CavaManager;
 
-
-// RUNNING flag is now managed by each renderer individually
-
 fn setup_ctrl_c_channel() -> Result<Receiver<()>> {
-    let (sender, receiver) = bounded(100);
-    
+    let (sender, receiver) = crossbeam_channel::bounded(100);
     ctrlc::set_handler(move || {
         let _ = sender.send(());
     })?;
-    
     Ok(receiver)
 }
 
-// fn handle_signal() removed - using setup_ctrl_c_channel() instead
-
-/// Run terminal renderer
 fn run_terminal_renderer(config: Config, cava_manager: CavaManager) -> Result<()> {
     println!("\nInitializing terminal visualizer...");
     let mut renderer = match renderer::Renderer::new(config.clone(), cava_manager) {
@@ -68,12 +57,10 @@ fn run_terminal_renderer(config: Config, cava_manager: CavaManager) -> Result<()
     println!("  Run under Hyprland, Sway, or another Wayland compositor");
     println!();
 
-    // Run the renderer
     if let Err(e) = renderer.run() {
         eprintln!("Renderer error: {}", e);
         return Err(e);
     }
-    
     Ok(())
 }
 
@@ -141,16 +128,13 @@ fn main() -> Result<()> {
                 }
             }
         }
-
         return Ok(());
     }
 
     let config = Config::load(&args.config).context("Failed to load config")?;
-
     info!("cava-bg starting with config: {:?}", args.config);
     info!("Auto colors: {}", config.general.auto_colors);
 
-    // Check if cava is installed
     if Command::new("cava").arg("--version").output().is_err() {
         eprintln!("cava is not installed. Please install it:");
         eprintln!("  Arch: sudo pacman -S cava");
@@ -159,13 +143,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Signal handler will be set up via setup_ctrl_c_channel() when needed
-
     println!("cava-bg starting with adaptive gradient colors and wallpaper change detection!");
     println!("Press Ctrl+C to exit.");
     println!();
 
-    // Initialize cava manager with raw output (inspired by wallpaper-cava)
     println!("Initializing cava with raw audio output (16-bit)...");
     let cava_manager = match cava_manager::CavaManager::new(&config) {
         Ok(manager) => {
@@ -182,15 +163,12 @@ fn main() -> Result<()> {
         Err(e) => {
             eprintln!("Failed to initialize cava: {}", e);
             eprintln!("Falling back to standard cava mode...");
-
-            // Fallback to old method
             let cava_config_path = dirs::cache_dir()
                 .context("Failed to get cache directory")?
                 .join("cava-bg-cava-config");
             let cava_config = config.to_cava_config();
             fs::write(&cava_config_path, cava_config)
                 .context("Failed to write cava config")?;
-
             match Command::new("cava")
                 .arg("-p")
                 .arg(&cava_config_path)
@@ -199,7 +177,6 @@ fn main() -> Result<()> {
             {
                 Ok(_process) => {
                     println!("cava started in fallback mode");
-                    // Create a simple wrapper for fallback mode
                     return Ok(());
                 }
                 Err(e) => {
@@ -209,19 +186,14 @@ fn main() -> Result<()> {
         }
     };
 
-    // Start monitor thread for cava
     cava_manager.start_monitor(config.clone());
 
-    // Try to create complete Wayland renderer (swaybg pattern)
     println!("\n Attempting to create complete Wayland renderer (swaybg pattern)...");
-    
-    // Create a new cava_manager for Wayland renderer
     let wayland_cava_manager = cava_manager::CavaManager::new(&config)?;
-    
+
     match wayland::WaylandRenderer::new(config.clone(), wayland_cava_manager) {
         Ok(wayland_renderer) => {
             println!(" Complete Wayland renderer created successfully!");
-            
             println!("\n Starting audio visualizer...");
             println!("========================================");
             println!("Status: Audio processing ACTIVE");
@@ -233,7 +205,7 @@ fn main() -> Result<()> {
             } else {
                 "Manual configuration"
             });
-            println!("Layer: Top (above everything)");
+            println!("Layer: Top (above wallpaper, below normal windows)");
             println!("Size: 0,0 (auto-size to output)");
             println!("Anchors: ALL (full coverage)");
             println!("========================================");
@@ -241,9 +213,7 @@ fn main() -> Result<()> {
             println!("  Visualizer will appear as a transparent overlay");
             println!("  Press Ctrl+C to exit");
             println!();
-            
-            // Run Wayland renderer directly (must be on main thread for winit)
-            // Ctrl+C is handled by the renderer itself
+
             match wayland_renderer.run() {
                 Ok(_) => {
                     println!("cava-bg stopped gracefully.");
@@ -252,8 +222,6 @@ fn main() -> Result<()> {
                 Err(e) => {
                     eprintln!(" Wayland renderer error: {}", e);
                     eprintln!("  Falling back to terminal mode...");
-                    
-                    // Run terminal renderer
                     run_terminal_renderer(config, cava_manager)
                 }
             }
@@ -261,8 +229,6 @@ fn main() -> Result<()> {
         Err(e) => {
             eprintln!(" Wayland renderer creation failed: {}", e);
             eprintln!("  Falling back to terminal mode...");
-            
-            // Run terminal renderer
             run_terminal_renderer(config, cava_manager)
         }
     }

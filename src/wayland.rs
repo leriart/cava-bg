@@ -1,18 +1,18 @@
 //! Complete Wayland renderer for cava-bg
 //! Fixed: viewport, bar drawing, non-blocking audio, correct shader
+//! No calloop dependency – uses direct event queue dispatch
 
 use anyhow::{anyhow, Context, Result};
 use log::{debug, error, info, warn};
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::thread;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{bounded, Receiver, TryRecvError};
 use gl::types::*;
 use khronos_egl as egl;
-use smithay_client_toolkit::reexports::calloop::EventLoop as CalloopEventLoop;
-use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::shell::wlr_layer::{
     Anchor, Layer, LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
 };
@@ -22,11 +22,11 @@ use smithay_client_toolkit::{
     registry::{ProvidesRegistryState, RegistryState},
     delegate_compositor, delegate_layer, delegate_output, delegate_registry,
 };
+use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::{
     globals::registry_queue_init,
-    protocol::wl_output,
-    Connection, Proxy, QueueHandle,
+    Connection, DispatchData, EventQueue, Proxy, QueueHandle,
 };
 use wayland_egl::WlEglSurface;
 
@@ -35,7 +35,7 @@ use crate::cava_manager::CavaManager;
 use crate::wallpaper::WallpaperAnalyzer;
 
 // -----------------------------------------------------------------------------
-// Shaders (simplified for bar drawing)
+// Shaders
 // -----------------------------------------------------------------------------
 
 const VERTEX_SHADER_SRC: &str = r#"#version 430 core
@@ -61,7 +61,7 @@ fn start_audio_reader(
     mut reader: Box<dyn std::io::Read + Send>,
     bar_count: u32,
 ) -> Receiver<Vec<f32>> {
-    let (sender, receiver) = bounded(2); // small buffer
+    let (sender, receiver) = bounded(2);
     std::thread::spawn(move || {
         let mut buffer = vec![0u8; (bar_count as usize) * 2];
         loop {
@@ -73,7 +73,7 @@ fn start_audio_reader(
                         audio[i] = val;
                     }
                     if sender.send(audio).is_err() {
-                        break; // receiver dropped
+                        break;
                     }
                 }
                 Err(e) => {
@@ -88,17 +88,18 @@ fn start_audio_reader(
 }
 
 // -----------------------------------------------------------------------------
-// Application state
+// Application state (no Send/Sync required – used only on main thread)
 // -----------------------------------------------------------------------------
 
 struct AppState {
     // Wayland objects
-    registry_state: Option<RegistryState>,
-    compositor_state: Option<CompositorState>,
-    output_state: Option<OutputState>,
-    layer_shell: Option<LayerShell>,
-    layer_surface: Option<LayerSurface>,
-    surface: Option<WlSurface>,
+    conn: Connection,
+    registry_state: RegistryState,
+    compositor_state: CompositorState,
+    output_state: OutputState,
+    layer_shell: LayerShell,
+    layer_surface: LayerSurface,
+    surface: WlSurface,
 
     // EGL / OpenGL
     egl_instance: Option<egl::Instance<egl::Static>>,
@@ -119,13 +120,13 @@ struct AppState {
 
     // Bar parameters
     bar_count: u32,
-    bar_gap: f32,          // relative gap (0.0 .. 1.0)
+    bar_gap: f32,
     background_color: [f32; 4],
     gradient_colors: Vec<[f32; 4]>,
 
     // Audio
     audio_receiver: Receiver<Vec<f32>>,
-    last_audio: Vec<f32>, // cached audio data
+    last_audio: Vec<f32>,
 
     // Control
     running: Arc<AtomicBool>,
@@ -135,6 +136,13 @@ struct AppState {
 
 impl AppState {
     fn new(
+        conn: Connection,
+        registry_state: RegistryState,
+        compositor_state: CompositorState,
+        output_state: OutputState,
+        layer_shell: LayerShell,
+        layer_surface: LayerSurface,
+        surface: WlSurface,
         audio_receiver: Receiver<Vec<f32>>,
         bar_count: u32,
         bar_gap: f32,
@@ -144,12 +152,13 @@ impl AppState {
         framerate: u32,
     ) -> Self {
         Self {
-            registry_state: None,
-            compositor_state: None,
-            output_state: None,
-            layer_shell: None,
-            layer_surface: None,
-            surface: None,
+            conn,
+            registry_state,
+            compositor_state,
+            output_state,
+            layer_shell,
+            layer_surface,
+            surface,
             egl_instance: None,
             egl_display: None,
             egl_context: None,
@@ -176,14 +185,11 @@ impl AppState {
     }
 
     fn init_graphics(&mut self) -> Result<()> {
-        let surface = self.surface.as_ref().unwrap();
-        let conn = Connection::get_global().unwrap(); // safe because we are inside event loop
-
         info!("Initializing EGL/OpenGL at {}x{}", self.width, self.height);
 
         let egl = egl::Instance::new(egl::Static);
         let display = unsafe {
-            egl.get_display(conn.display().id().as_ptr() as *mut std::ffi::c_void)
+            egl.get_display(self.conn.display().id().as_ptr() as *mut std::ffi::c_void)
                 .ok_or_else(|| anyhow!("Failed to get EGL display"))?
         };
         egl.initialize(display)
@@ -215,7 +221,7 @@ impl AppState {
         let context = egl.create_context(display, config, None, &ctx_attribs)
             .map_err(|e| anyhow!("EGL context: {:?}", e))?;
 
-        let wl_egl_surface = WlEglSurface::new(surface.id(), self.width, self.height)
+        let wl_egl_surface = WlEglSurface::new(self.surface.id(), self.width, self.height)
             .context("WlEglSurface creation")?;
         let egl_surface = unsafe {
             egl.create_window_surface(
@@ -230,19 +236,16 @@ impl AppState {
         egl.make_current(display, Some(egl_surface), Some(egl_surface), Some(context))
             .map_err(|e| anyhow!("EGL make current: {:?}", e))?;
 
-        // Load OpenGL functions
         gl::load_with(|s| {
             egl.get_proc_address(s)
                 .map(|f| f as *const std::ffi::c_void)
                 .unwrap_or(std::ptr::null())
         });
 
-        // Setup viewport
         unsafe {
             gl::Viewport(0, 0, self.width as GLsizei, self.height as GLsizei);
         }
 
-        // Compile shaders
         let vs = compile_shader(gl::VERTEX_SHADER, VERTEX_SHADER_SRC)?;
         let fs = compile_shader(gl::FRAGMENT_SHADER, FRAGMENT_SHADER_SRC)?;
         let program = link_program(vs, fs)?;
@@ -253,7 +256,6 @@ impl AppState {
 
         let bar_color_loc = unsafe { gl::GetUniformLocation(program, CString::new("BarColor").unwrap().as_ptr()) };
 
-        // Create VAO and VBO
         let mut vao = 0;
         let mut vbo = 0;
         unsafe {
@@ -282,7 +284,6 @@ impl AppState {
     }
 
     fn update_audio(&mut self) {
-        // Try to receive the latest audio frame (non-blocking)
         loop {
             match self.audio_receiver.try_recv() {
                 Ok(audio) => self.last_audio = audio,
@@ -308,21 +309,20 @@ impl AppState {
         let bar_width = (2.0 - total_gap) / self.bar_count as f32;
         let gap_width = self.bar_gap;
 
-        let mut vertices = Vec::with_capacity((self.bar_count as usize) * 4 * 2); // 4 vertices * 2 floats
+        let mut vertices = Vec::with_capacity((self.bar_count as usize) * 4 * 2);
 
         for i in 0..self.bar_count as usize {
             let x1 = -1.0 + i as f32 * (bar_width + gap_width);
             let x2 = x1 + bar_width;
-            let height = self.last_audio[i]; // 0..1
-            let y_top = -1.0 + 2.0 * height; // map 0..1 -> -1..1
+            let height = self.last_audio[i];
+            let y_top = -1.0 + 2.0 * height;
             let y_bottom = -1.0;
 
-            // Triangle strip order: bottom-left, top-left, bottom-right, top-right
             vertices.extend_from_slice(&[
-                x1, y_bottom,  // bottom-left
-                x1, y_top,     // top-left
-                x2, y_bottom,  // bottom-right
-                x2, y_top,     // top-right
+                x1, y_bottom,
+                x1, y_top,
+                x2, y_bottom,
+                x2, y_top,
             ]);
         }
 
@@ -347,7 +347,6 @@ impl AppState {
                 gl::DYNAMIC_DRAW,
             );
 
-            // Draw each bar as a separate quad (TRIANGLE_STRIP with 4 vertices)
             for i in 0..self.bar_count as usize {
                 let color = self.gradient_colors[i % self.gradient_colors.len()];
                 gl::Uniform4f(self.bar_color_loc, color[0], color[1], color[2], color[3]);
@@ -396,7 +395,7 @@ impl AppState {
     }
 }
 
-// Helper shader compilation
+// Helper shader functions
 fn compile_shader(shader_type: GLenum, src: &str) -> Result<GLuint> {
     unsafe {
         let shader = gl::CreateShader(shader_type);
@@ -434,24 +433,24 @@ fn link_program(vs: GLuint, fs: GLuint) -> Result<GLuint> {
 }
 
 // -----------------------------------------------------------------------------
-// Wayland event handlers
+// Wayland event handlers (required traits)
 // -----------------------------------------------------------------------------
 
 impl CompositorHandler for AppState {
     fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: i32) {}
     fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: wl_output::Transform) {}
-    fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: &wl_output::WlOutput) {}
-    fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: &wl_output::WlOutput) {}
+    fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: &WlOutput) {}
+    fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: &WlOutput) {}
     fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &WlSurface, _: u32) {}
 }
 
 impl OutputHandler for AppState {
     fn output_state(&mut self) -> &mut OutputState {
-        self.output_state.as_mut().unwrap()
+        &mut self.output_state
     }
-    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
-    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
-    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_output::WlOutput) {}
+    fn new_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlOutput) {}
+    fn update_output(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlOutput) {}
+    fn output_destroyed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: WlOutput) {}
 }
 
 impl LayerShellHandler for AppState {
@@ -473,7 +472,6 @@ impl LayerShellHandler for AppState {
         self.configured = true;
         info!("Layer configured: {}x{}", self.width, self.height);
 
-        // Update viewport if graphics already initialized
         if self.graphics_initialized {
             unsafe {
                 gl::Viewport(0, 0, self.width, self.height);
@@ -484,7 +482,7 @@ impl LayerShellHandler for AppState {
 
 impl ProvidesRegistryState for AppState {
     fn registry(&mut self) -> &mut RegistryState {
-        self.registry_state.as_mut().unwrap()
+        &mut self.registry_state
     }
     fn runtime_add_global(&mut self, _: &Connection, _: &QueueHandle<Self>, _: u32, _: &str, _: u32) {}
     fn runtime_remove_global(&mut self, _: &Connection, _: &QueueHandle<Self>, _: u32, _: &str) {}
@@ -539,7 +537,7 @@ impl WaylandRenderer {
 
         let bar_count = self.config.bars.amount;
         let bar_gap = self.config.bars.gap.clamp(0.0, 1.0);
-        let background = [0.0, 0.0, 0.0, 0.0]; // fully transparent
+        let background = [0.0, 0.0, 0.0, 0.0];
         let framerate = self.config.general.framerate;
 
         // Start audio reader thread
@@ -548,10 +546,37 @@ impl WaylandRenderer {
 
         // Connect to Wayland
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
-        let (globals, event_queue) = registry_queue_init(&conn).context("Failed to init registry")?;
+        let (globals, mut event_queue) = registry_queue_init(&conn).context("Failed to init registry")?;
         let qh = event_queue.handle();
 
+        // Create state components
+        let registry_state = RegistryState::new(&globals);
+        let output_state = OutputState::new(&globals, &qh);
+        let compositor_state = CompositorState::bind(&globals, &qh)
+            .context("wl_compositor not available")?;
+        let surface = compositor_state.create_surface(&qh);
+        let layer_shell = LayerShell::bind(&globals, &qh)
+            .context("layer shell not available")?;
+        let layer_surface = layer_shell.create_layer_surface(
+            &qh,
+            surface.clone(),
+            Layer::Top,
+            Some("cava-bg"),
+            None,
+        );
+        layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer_surface.set_exclusive_zone(-1);
+        layer_surface.set_size(0, 0);
+        surface.commit();
+
         let mut app_state = AppState::new(
+            conn,
+            registry_state,
+            compositor_state,
+            output_state,
+            layer_shell,
+            layer_surface,
+            surface,
             audio_rx,
             bar_count,
             bar_gap,
@@ -561,31 +586,6 @@ impl WaylandRenderer {
             framerate,
         );
 
-        app_state.registry_state = Some(RegistryState::new(&globals));
-        app_state.output_state = Some(OutputState::new(&globals, &qh));
-        let compositor = CompositorState::bind(&globals, &qh)
-            .context("wl_compositor not available")?;
-        let surface = compositor.create_surface(&qh);
-        app_state.surface = Some(surface.clone());
-        app_state.compositor_state = Some(compositor);
-
-        let layer_shell = LayerShell::bind(&globals, &qh)
-            .context("layer shell not available")?;
-        app_state.layer_shell = Some(layer_shell.clone());
-
-        let layer_surface = layer_shell.create_layer_surface(
-            &qh,
-            surface.clone(),
-            Layer::Top,      // visible over wallpaper, under normal windows
-            Some("cava-bg"),
-            None,
-        );
-        layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
-        layer_surface.set_exclusive_zone(-1);
-        layer_surface.set_size(0, 0);
-        surface.commit();
-        app_state.layer_surface = Some(layer_surface);
-
         // Set up Ctrl+C handler
         let running_clone = self.running.clone();
         ctrlc::set_handler(move || {
@@ -593,20 +593,18 @@ impl WaylandRenderer {
             running_clone.store(false, Ordering::SeqCst);
         })?;
 
-        // Event loop
-        let mut event_loop: CalloopEventLoop<AppState> = CalloopEventLoop::try_new()
-            .context("Failed to create event loop")?;
-        let loop_handle = event_loop.handle();
-        WaylandSource::new(conn, event_queue).insert(loop_handle)?;
-
         info!("Wayland renderer running. Press Ctrl+C to exit.");
+
+        // Main loop – process events and draw at target framerate
         while app_state.running.load(Ordering::SeqCst) {
-            let timeout = app_state.frame_duration
-                .checked_sub(app_state.last_frame.elapsed())
-                .unwrap_or(Duration::ZERO);
-            event_loop.dispatch(Some(timeout), &mut app_state)?;
+            // Dispatch pending Wayland events (non‑blocking)
+            let _ = event_queue.dispatch_pending(&mut app_state, &mut DispatchData::new(())).unwrap_or_else(|e| {
+                error!("Event dispatch error: {}", e);
+            });
+            event_queue.flush().unwrap_or_else(|e| error!("Flush error: {}", e));
 
             if !app_state.configured {
+                thread::sleep(Duration::from_millis(10));
                 continue;
             }
 
@@ -622,6 +620,9 @@ impl WaylandRenderer {
                     error!("Draw error: {}", e);
                 }
                 app_state.last_frame = Instant::now();
+            } else {
+                // Sleep a little to avoid busy‑looping
+                thread::sleep(Duration::from_millis(1));
             }
         }
 
