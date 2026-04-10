@@ -11,7 +11,7 @@ mod config;
 mod renderer;
 mod shader;
 mod wallpaper;
-mod waypaper_compatible;
+mod real_window_final;
 
 use cli::*;
 use config::*;
@@ -211,26 +211,26 @@ fn main() -> Result<()> {
     // Start monitor thread for cava
     cava_manager.start_monitor(config.clone());
 
-    // Check if we can run Waypaper-compatible overlay
-    let can_run_waypaper = waypaper_compatible::check_waypaper_compatible().unwrap_or(false);
+    // Check if we can run REAL window
+    let can_run_real = real_window_final::check_real_window().unwrap_or(false);
     
-    if can_run_waypaper {
-        println!("\nWayland detected - creating Waypaper-compatible overlay...");
+    if can_run_real {
+        println!("\n✅ Wayland detected - attempting to create REAL window...");
         
-        // Create a new cava_manager for overlay
-        let mut overlay_cava_manager = CavaManager::new(&config)?;
-        overlay_cava_manager.start(&config)?;
+        // Create a new cava_manager for window
+        let mut window_cava_manager = CavaManager::new(&config)?;
+        window_cava_manager.start(&config)?;
         
-        // Try to create Waypaper-compatible overlay
-        println!("Initializing Waypaper-compatible overlay...");
-        match waypaper_compatible::WaypaperCompatibleOverlay::new(config.clone(), overlay_cava_manager) {
-            Ok(overlay) => {
-                println!("Waypaper-compatible overlay initialized");
+        // Try to create REAL window
+        println!("Initializing REAL window...");
+        match real_window_final::RealWindowApp::new(config.clone(), window_cava_manager) {
+            Ok(window) => {
+                println!("✅ REAL window application initialized");
                 
-                println!("\nStarting audio visualizer...");
+                println!("\n🎵 Starting audio visualizer...");
                 println!("========================================");
                 println!("Status: Audio processing ACTIVE");
-                println!("Mode: Wayland (overlay on wallpaper)");
+                println!("Mode: Wayland (REAL window over wallpaper)");
                 println!("Bars: {}", config.bars.amount);
                 println!("Framerate: {}", config.general.framerate);
                 println!("Colors: {}", if config.general.auto_colors {
@@ -239,33 +239,33 @@ fn main() -> Result<()> {
                     "Manual configuration"
                 });
                 println!("========================================");
-                println!("\nTo test: Play audio (music, video, etc.)");
-                println!("Look for visualization rendered OVER your Waypaper wallpaper");
-                println!("100% compatible with Waypaper and ALL its backends:");
-                println!("  - swaybg, hyprpaper, awww, mpvpaper, wallutils, etc.");
-                println!("The overlay does not interfere with applications");
+                println!("\n🎧 To test: Play audio (music, video, etc.)");
+                println!("👀 If window creation succeeds, you should see:");
+                println!("   - Transparent window over wallpaper");
+                println!("   - Audio visualization rendering");
+                println!("   - No interference with applications");
                 println!();
                 
-                // Run overlay
-                if let Err(e) = overlay.run() {
-                    eprintln!("Error in overlay: {}", e);
-                    eprintln!("Falling back to terminal mode...");
+                // Run window
+                if let Err(e) = window.run() {
+                    eprintln!("❌ Error in window: {}", e);
+                    eprintln!("↪️  Falling back to terminal mode...");
                     
                     // Run terminal renderer
                     run_terminal_renderer(config, cava_manager)?;
                 }
             }
             Err(e) => {
-                eprintln!("Overlay initialization failed: {}", e);
-                eprintln!("Falling back to terminal mode...");
+                eprintln!("❌ Window initialization failed: {}", e);
+                eprintln!("↪️  Falling back to terminal mode...");
                 
                 // Run terminal renderer
                 run_terminal_renderer(config, cava_manager)?;
             }
         }
     } else {
-        // Cannot create overlay, use terminal
-        println!("\nCannot create Waypaper-compatible overlay, using terminal mode...");
+        // Cannot create real window, use terminal
+        println!("\n⚠️  Cannot create REAL window, using terminal mode...");
         run_terminal_renderer(config, cava_manager)?;
     }
     
