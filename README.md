@@ -140,13 +140,13 @@ Or use the built-in default configuration if you don't create one.
 
 ```bash
 # Run with default config
-cavabg
+cava-bg
 
 # Run with specific config
-cavabg --config ~/.config/cavabg/my-config.toml
+cava-bg --config ~/.config/cavabg/my-config.toml
 
 # Show help
-cavabg --help
+cava-bg --help
 ```
 
 ### Hyprland Integration
@@ -155,10 +155,10 @@ Add to `~/.config/hypr/hyprland.conf`:
 
 ```hyprlang
 # Start on login
-exec-once = cavabg
+exec-once = cava-bg
 
 # With custom config
-exec-once = cavabg --config ~/.config/cavabg/config.toml
+exec-once = cava-bg --config ~/.config/cavabg/config.toml
 
 # Delay start (wait 2 seconds)
 exec-once = sleep 2 && cavabg
@@ -237,7 +237,7 @@ cargo test
 RUST_LOG=debug cavabg
 
 # Or with custom config
-RUST_LOG=info cavabg --config ~/.config/cavabg/config.toml
+RUST_LOG=info cavabg --config ~/.config/cava-bg/config.toml
 ```
 
 ### Checking Dependencies
