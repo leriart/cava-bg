@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use log::{info, warn};
-use std::collections::HashMap;
 use std::io::{BufReader, Read};
 use std::process::{Command, Stdio, Child, ChildStdout};
 use std::sync::atomic::{AtomicBool, Ordering};

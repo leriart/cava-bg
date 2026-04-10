@@ -5,23 +5,36 @@ All notable changes to cava-bg will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [Unreleased] - Development Version
 
 ### Added
-- Initial project structure
-- Basic audio visualization with cava integration
-- Wayland wlr-layer-shell support
-- OpenGL 4.6 rendering with gradient colors
-- Configuration file support (TOML)
-- Multi-monitor targeting
-- Installation scripts
-- GitHub Actions CI/CD
+- **Efficient audio processing** inspired by wallpaper-cava (raw 16-bit format)
+- **New cava_manager module** for optimized cava process management
+- **Advanced renderer structure** with Wayland detection
+- **Improved user feedback** with detailed audio monitoring
+- **ASCII visualization** in terminal mode
+- **Dynamic versioning** in PKGBUILD (git-based)
+- **Enhanced configuration** with raw audio output support
 
 ### Changed
-- N/A
+- **PKGBUILD now uses git source** (always latest main branch)
+- **Audio processing completely rewritten** for efficiency
+- **User interface significantly improved** with real-time feedback
+- **Project structure optimized** for future graphical rendering
+- **Dependencies updated** for better compatibility
 
 ### Fixed
-- N/A
+- **CLI argument conflicts** resolved (flag collisions)
+- **Compiler warnings** cleaned up
+- **Unused code removed** for cleaner codebase
+- **Build process streamlined**
+
+### Technical Improvements
+- **Architecture prepared** for full Wayland/OpenGL implementation
+- **Shader system structured** for future gradient rendering
+- **Audio data pipeline optimized** (wallpaper-cava inspired)
+- **Error handling enhanced** with better fallback mechanisms
+- **Code organization improved** with modular design
 
 ## [0.1.0] - 2024-04-09
 

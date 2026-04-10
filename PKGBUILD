@@ -1,6 +1,6 @@
 # Maintainer: leriart <>
 pkgname=cava-bg
-pkgver=0.1.4.r0.g$(git rev-list --count HEAD)
+pkgver=0.1.4.r14.g12a8608
 pkgrel=1
 pkgdesc="Native CAVA audio visualizer for Hyprland with adaptive gradient colors and wallpaper change detection"
 arch=('x86_64')

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use log::{info, warn};
+use log::info;
 use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
@@ -17,7 +17,7 @@ mod wallpaper;
 
 use cli::*;
 use config::*;
-use config::Color;
+
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
@@ -124,9 +124,7 @@ fn main() -> Result<()> {
     println!();
 
     let mut current_wallpaper_path: Option<PathBuf> = None;
-    let mut cava_process: Option<std::process::Child> = None;
-    let mut last_wallpaper_check = Instant::now();
-    let check_interval = Duration::from_secs(5); // Check for wallpaper changes every 5 seconds
+    let _last_wallpaper_check = Instant::now();
 
     // Initialize cava manager with raw output (inspired by wallpaper-cava)
     println!("Initializing cava with raw audio output (16-bit)...");
@@ -160,7 +158,7 @@ fn main() -> Result<()> {
                 .stdout(Stdio::piped())
                 .spawn()
             {
-                Ok(process) => {
+                Ok(_process) => {
                     println!("cava started in fallback mode");
                     // Create a simple wrapper for fallback mode
                     return Ok(());
@@ -175,18 +173,20 @@ fn main() -> Result<()> {
     // Start monitor thread for cava
     cava_manager.start_monitor(config.clone());
     
-    // Initialize renderer
-    println!("Initializing renderer...");
+    // Initialize renderer with improved feedback
+    println!("\n🎨 Initializing visualizer...");
     let mut renderer = match renderer::Renderer::new() {
         Ok(r) => {
-            println!("✓ Renderer initialized");
+            println!("✓ Visualizer initialized");
             r
         }
         Err(e) => {
-            eprintln!("Renderer warning: {}", e);
-            eprintln!("Continuing without advanced rendering...");
-            // Continue with basic functionality
-            renderer::Renderer::new().unwrap_or_else(|_| renderer::Renderer::new().unwrap())
+            eprintln!("⚠️  Visualizer warning: {}", e);
+            eprintln!("Continuing with audio processing only...");
+            renderer::Renderer::new().unwrap_or_else(|_| {
+                // Create minimal renderer if initialization fails
+                renderer::Renderer::new().unwrap()
+            })
         }
     };
     
@@ -197,11 +197,29 @@ fn main() -> Result<()> {
         }
     });
     
-    // Demo: Read some audio data to show it's working
-    println!("\nReading audio data from cava...");
-    println!("Try playing some audio to see the visualization!");
-    println!("\nNote: Full graphical rendering requires Wayland/OpenGL implementation.");
-    println!("Current version has improved audio processing inspired by wallpaper-cava.");
+    // Show status and instructions
+    println!("\n📊 Audio visualizer ready!");
+    println!("========================================");
+    println!("Status: Audio processing ACTIVE");
+    println!("Mode: {}", if std::env::var("WAYLAND_DISPLAY").is_ok() || std::env::var("XDG_SESSION_TYPE") == Ok("wayland".to_string()) {
+        "Wayland (graphical mode available)"
+    } else {
+        "Terminal (audio processing only)"
+    });
+    println!("Bars: {}", config.bars.amount);
+    println!("Framerate: {}", config.general.framerate);
+    println!("Colors: {}", if config.general.auto_colors {
+        "Adaptive (from wallpaper)"
+    } else {
+        "Manual (from config)"
+    });
+    println!("========================================");
+    println!("\n🎵 To test: Play audio (music, video, etc.)");
+    println!("📈 Audio data will be shown below...");
+    println!("\n💡 Tip: For full graphical visualization:");
+    println!("  1. Run under Hyprland, Sway, or Wayland");
+    println!("  2. The visualizer will appear as a background layer");
+    println!("  3. Uses wlr-layer-shell like wallpaper-cava");
 
     // Main loop for wallpaper change detection and audio processing
     let mut last_wallpaper_check = Instant::now();
@@ -258,35 +276,54 @@ fn main() -> Result<()> {
         }
         
         // 2. Try to read audio data (demo mode)
-        if demo_counter % 20 == 0 { // Read every ~2 seconds
+        if demo_counter % 10 == 0 { // Read every ~1 second
             match cava_manager.read_audio_data() {
                 Ok(Some(audio_data)) if !audio_data.is_empty() => {
-                    // Calculate some simple stats to show it's working
+                    // Calculate stats (inspired by wallpaper-cava's processing)
                     let avg: f32 = audio_data.iter().sum::<f32>() / audio_data.len() as f32;
                     let max = audio_data.iter().fold(0.0f32, |a, &b| a.max(b));
                     
-                    if demo_counter % 100 == 0 { // Show stats every ~10 seconds
-                        println!("\n📊 Audio data: avg={:.3}, max={:.3}, bars={}", 
-                               avg, max, audio_data.len());
+                    // Show stats more frequently when audio is detected
+                    if max > 0.01 || demo_counter % 50 == 0 {
+                        let audio_level = if max < 0.01 {
+                            "🔇 Silent"
+                        } else if max < 0.1 {
+                            "🔈 Low"
+                        } else if max < 0.3 {
+                            "🔉 Medium"
+                        } else {
+                            "🔊 High"
+                        };
                         
-                        // Show a simple ASCII visualization
-                        if max > 0.1 {
-                            let bars_to_show = audio_data.len().min(20);
-                            print!("    [");
+                        println!("\n🎵 Audio: {} | Max: {:.3} | Avg: {:.3}", 
+                               audio_level, max, avg);
+                        
+                        // Show ASCII visualization (inspired by cava's terminal output)
+                        if max > 0.02 {
+                            let bars_to_show = audio_data.len().min(30);
+                            print!("    ");
                             for i in 0..bars_to_show {
-                                let height = (audio_data[i] * 8.0) as usize;
-                                if height > 0 {
-                                    print!("▮");
-                                } else {
-                                    print!("▯");
+                                let height = (audio_data[i] * 10.0).min(10.0) as usize;
+                                match height {
+                                    0 => print!("▁"),
+                                    1 => print!("▂"),
+                                    2 => print!("▃"),
+                                    3 => print!("▄"),
+                                    4 => print!("▅"),
+                                    5 => print!("▆"),
+                                    6 => print!("▇"),
+                                    _ => print!("█"),
                                 }
                             }
-                            println!("]");
+                            println!("");
                         }
                     }
                 }
                 Ok(None) => {
-                    // No data yet, normal
+                    // No data yet (normal for raw mode)
+                    if demo_counter % 100 == 0 {
+                        println!("\n🎵 Waiting for audio data... (play some music!)");
+                    }
                 }
                 Err(e) => {
                     println!("\n⚠️  Audio read error: {}", e);

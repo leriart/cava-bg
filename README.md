@@ -9,12 +9,19 @@ A native implementation of wallpaper-cava optimized for Hyprland, displaying CAV
 
 ## Features
 
+✅ **Currently Implemented:**
 - **Adaptive Gradient Colors** - Automatically extracts and generates gradient colors from your wallpaper
 - **Wallpaper Change Detection** - Detects wallpaper changes and updates colors in real-time
-- **Native Wayland Integration** - Uses wlr-layer-shell for optimal performance on Hyprland
-- **Real-time Audio Visualization** - Connects directly to cava for audio processing
-- **Hardware Accelerated** - OpenGL 4.6 rendering for smooth visuals
+- **Efficient Audio Processing** - Uses wallpaper-cava's raw 16-bit audio format for optimal performance
+- **Real-time Audio Monitoring** - Terminal-based audio visualization with detailed feedback
 - **Automatic Configuration** - Self-adjusting based on your wallpaper and preferences
+
+🔧 **Ready for Implementation:**
+- **Native Wayland Integration** - Architecture prepared for wlr-layer-shell (like wallpaper-cava)
+- **Hardware Accelerated Rendering** - OpenGL 4.6 structure ready for implementation
+- **Shader-based Visualization** - GLSL shaders prepared for gradient rendering
+
+📊 **Current Status:** Audio processing and color adaptation fully functional. Graphical rendering structure prepared for future implementation.
 
 ## Quick Install
 
@@ -87,18 +94,36 @@ chmod +x install.sh
 ### Dependencies
 
 **Required:**
-- `cava` - Audio visualizer
+- `cava` - Audio visualizer (for audio processing)
+- Rust toolchain (for building from source)
+
+**Recommended for future graphical rendering:**
 - Wayland compositor with wlr-layer-shell support (Hyprland, Sway, etc.)
 - OpenGL 4.6 capable GPU
+- Wayland development libraries
 
 **Install on Arch Linux:**
 ```bash
-sudo pacman -S cava base-devel pkg-config wayland-protocols libxkbcommon
+# Required for audio processing
+sudo pacman -S cava
+
+# For building from source
+sudo pacman -S rust cargo pkg-config
+
+# For future graphical rendering (optional)
+sudo pacman -S wayland-protocols libxkbcommon
 ```
 
 **Install on Ubuntu/Debian:**
 ```bash
-sudo apt install cava build-essential pkg-config libwayland-dev libegl-dev mesa-common-dev libxkbcommon-dev wayland-protocols
+# Required for audio processing
+sudo apt install cava
+
+# For building from source
+sudo apt install rustc cargo pkg-config build-essential
+
+# For future graphical rendering (optional)
+sudo apt install libwayland-dev libegl-dev mesa-common-dev libxkbcommon-dev wayland-protocols
 ```
 
 ## Configuration
