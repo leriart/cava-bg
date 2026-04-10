@@ -1,9 +1,9 @@
-//! Wayland/X11 renderer usando winit y glutin (transparente, pantalla completa)
+//! Renderer usando winit + glutin (pantalla completa transparente)
 
 use anyhow::{anyhow, Context, Result};
 use crossbeam_channel::{bounded, Receiver, TryRecvError};
 use gl::types::*;
-use log::{error, info, warn};
+use log::{error, info};
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -11,12 +11,11 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use glutin::config::ConfigTemplateBuilder;
-use glutin::context::{ContextApi, ContextAttributesBuilder, PossiblyCurrentContext, Version};
-use glutin::display::GetGlDisplay;
+use glutin::context::{ContextAttributesBuilder, Version};
+use glutin::display::Display;
 use glutin::prelude::*;
 use glutin::surface::{Surface, SurfaceAttributesBuilder, WindowSurface};
-use raw_window_handle::{HasWindowHandle, HasDisplayHandle};
-use winit::dpi::LogicalSize;
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::{Window, WindowBuilder};
@@ -26,7 +25,7 @@ use crate::cava_manager::CavaManager;
 use crate::wallpaper::WallpaperAnalyzer;
 
 // -----------------------------------------------------------------------------
-// Shaders (sin cambios)
+// Shaders
 // -----------------------------------------------------------------------------
 
 const VERTEX_SHADER_SRC: &str = r#"#version 430 core
@@ -119,7 +118,7 @@ fn link_program(vs: GLuint, fs: GLuint) -> Result<GLuint> {
 }
 
 // -----------------------------------------------------------------------------
-// Renderer con winit/glutin
+// Renderer con winit/glutin (pantalla completa transparente)
 // -----------------------------------------------------------------------------
 
 pub struct WaylandRenderer {
@@ -165,7 +164,7 @@ impl WaylandRenderer {
         let reader = self.cava_manager.take_reader()?;
         let audio_rx = start_audio_reader(Box::new(reader), bar_count);
 
-        // Crear event loop y ventana transparente en pantalla completa
+        // Crear event loop y ventana
         let event_loop = EventLoop::new()?;
         let window = WindowBuilder::new()
             .with_title("cava-bg")
@@ -175,47 +174,45 @@ impl WaylandRenderer {
             .with_fullscreen(Some(winit::window::Fullscreen::Borderless(None)))
             .build(&event_loop)?;
 
-        // Obtener el tamaño de la ventana (pantalla completa)
         let size = window.inner_size();
-        let width = size.width;
-        let height = size.height;
-        info!("Window size: {}x{}", width, height);
+        info!("Window size: {}x{}", size.width, size.height);
 
-        // Crear contexto OpenGL
-        let display = window.display_handle()?.as_raw();
+        // Configurar OpenGL con glutin
+        let display_handle = window.display_handle()?.as_raw();
         let window_handle = window.window_handle()?.as_raw();
         let template = ConfigTemplateBuilder::new()
             .with_alpha_size(8)
             .with_transparency(true)
             .build();
-        let gl_display = glutin::display::Display::new(display, template).context("Failed to create display")?;
+        let gl_display = unsafe { Display::new(display_handle, template).context("Failed to create display")? };
         let config = gl_display
-            .find_configs()
-            .map_err(|e| anyhow!("No config found: {}", e))?
+            .find_configs(template)
+            .map_err(|e| anyhow!("No configs: {}", e))?
             .next()
             .ok_or_else(|| anyhow!("No suitable config"))?;
         let context_attributes = ContextAttributesBuilder::new()
-            .with_context_api(ContextApi::OpenGl(Some(Version::new(4, 3))))
+            .with_context_api(glutin::context::ContextApi::OpenGl(Some(Version::new(4, 3))))
             .build(Some(window_handle));
-        let not_current_context = gl_display
-            .create_context(&config, &context_attributes)
-            .context("Failed to create context")?;
-
+        let not_current_context = unsafe {
+            gl_display
+                .create_context(&config, &context_attributes)
+                .context("Failed to create context")?
+        };
         let attrs = SurfaceAttributesBuilder::<WindowSurface>::new().build(window_handle, size.width, size.height);
-        let surface = not_current_context
-            .create_surface(&gl_display, attrs)
-            .context("Failed to create surface")?;
+        let surface = unsafe {
+            not_current_context
+                .create_surface(&gl_display, attrs)
+                .context("Failed to create surface")?
+        };
         let context = not_current_context.make_current(&surface).context("Failed to make current")?;
 
         // Cargar funciones OpenGL
         gl::load_with(|s| {
-            gl_display
-                .get_proc_address(s)
-                .map(|f| f as *const std::ffi::c_void)
-                .unwrap_or(std::ptr::null())
+            let cstr = CString::new(s).unwrap();
+            gl_display.get_proc_address(&cstr).cast()
         });
 
-        // Inicializar OpenGL (shaders, VBO, etc.)
+        // Inicializar OpenGL
         let vs = compile_shader(gl::VERTEX_SHADER, VERTEX_SHADER_SRC)?;
         let fs = compile_shader(gl::FRAGMENT_SHADER, FRAGMENT_SHADER_SRC)?;
         let program = link_program(vs, fs)?;
@@ -237,7 +234,6 @@ impl WaylandRenderer {
             gl::BindVertexArray(0);
         }
 
-        // Variables de audio y temporización
         let mut last_audio = vec![0.0; bar_count as usize];
         let frame_duration = Duration::from_secs_f64(1.0 / framerate as f64);
         let mut last_frame = Instant::now();
@@ -252,85 +248,135 @@ impl WaylandRenderer {
 
         info!("Winit/Glutin renderer running. Press Ctrl+C to exit.");
 
-        // Bucle de eventos
-        event_loop.run(move |event, elwt| {
-            if !running.load(Ordering::SeqCst) {
-                elwt.exit();
-                return;
-            }
-
-            match event {
-                Event::WindowEvent { event, .. } => match event {
-                    WindowEvent::CloseRequested => {
-                        running.store(false, Ordering::SeqCst);
-                        elwt.exit();
-                    }
-                    WindowEvent::RedrawRequested => {
-                        // Leer audio no bloqueante
-                        while let Ok(audio) = audio_rx.try_recv() {
-                            last_audio = audio;
-                        }
-
-                        // Dibujar
-                        let total_gap = (bar_count as f32 - 1.0) * bar_gap;
-                        let bar_width = (2.0 - total_gap) / bar_count as f32;
-                        let gap_width = bar_gap;
-
-                        let mut vertices = Vec::with_capacity(bar_count as usize * 4 * 2);
-                        for i in 0..bar_count as usize {
-                            let x1 = -1.0 + i as f32 * (bar_width + gap_width);
-                            let x2 = x1 + bar_width;
-                            let height = last_audio[i];
-                            let y_top = -1.0 + 2.0 * height;
-                            let y_bottom = -1.0;
-                            vertices.extend_from_slice(&[x1, y_bottom, x1, y_top, x2, y_bottom, x2, y_top]);
-                        }
-
-                        unsafe {
-                            gl::Enable(gl::BLEND);
-                            gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-                            gl::ClearColor(background[0], background[1], background[2], background[3]);
-                            gl::Clear(gl::COLOR_BUFFER_BIT);
-
-                            gl::UseProgram(program);
-                            gl::BindVertexArray(vao);
-                            gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
-                            gl::BufferData(
-                                gl::ARRAY_BUFFER,
-                                (vertices.len() * std::mem::size_of::<f32>()) as GLsizeiptr,
-                                vertices.as_ptr() as *const _,
-                                gl::DYNAMIC_DRAW,
-                            );
-
-                            for i in 0..bar_count as usize {
-                                let color = colors[i % colors.len()];
-                                gl::Uniform4f(bar_color_loc, color[0], color[1], color[2], color[3]);
-                                gl::DrawArrays(gl::TRIANGLE_STRIP, (i * 4) as GLint, 4);
-                            }
-
-                            gl::BindVertexArray(0);
-                            gl::Disable(gl::BLEND);
-                        }
-
-                        surface.swap_buffers(&gl_display).unwrap_or_else(|e| error!("Swap buffers: {}", e));
-                        last_frame = Instant::now();
-                    }
-                    _ => {}
-                },
-                Event::AboutToWait => {
-                    let now = Instant::now();
-                    let elapsed = now - last_frame;
-                    if elapsed < frame_duration {
-                        let sleep = frame_duration - elapsed;
-                        std::thread::sleep(sleep);
-                    }
-                    window.request_redraw();
-                }
-                _ => {}
-            }
+        // Bucle de eventos (usando run_app para evitar deprecación)
+        event_loop.run_app(&mut App {
+            running,
+            audio_rx,
+            last_audio,
+            frame_duration,
+            last_frame,
+            program,
+            vao,
+            vbo,
+            bar_color_loc,
+            colors,
+            bar_count,
+            bar_gap,
+            background,
+            size,
+            surface,
+            context,
+            gl_display,
+            window,
         })?;
 
-        info!("Renderer stopped");
         Ok(())
+    }
+}
+
+struct App {
+    running: Arc<AtomicBool>,
+    audio_rx: Receiver<Vec<f32>>,
+    last_audio: Vec<f32>,
+    frame_duration: Duration,
+    last_frame: Instant,
+    program: GLuint,
+    vao: GLuint,
+    vbo: GLuint,
+    bar_color_loc: GLint,
+    colors: Vec<[f32; 4]>,
+    bar_count: u32,
+    bar_gap: f32,
+    background: [f32; 4],
+    size: winit::dpi::PhysicalSize<u32>,
+    surface: Surface<WindowSurface>,
+    context: glutin::context::PossiblyCurrentContext,
+    gl_display: Display,
+    window: Window,
+}
+
+impl winit::application::ApplicationHandler for App {
+    fn resumed(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {}
+    fn window_event(
+        &mut self,
+        _event_loop: &winit::event_loop::ActiveEventLoop,
+        _window_id: winit::window::WindowId,
+        event: WindowEvent,
+    ) {
+        match event {
+            WindowEvent::CloseRequested => {
+                self.running.store(false, Ordering::SeqCst);
+            }
+            WindowEvent::RedrawRequested => {
+                // Leer audio
+                while let Ok(audio) = self.audio_rx.try_recv() {
+                    self.last_audio = audio;
+                }
+
+                // Calcular geometría de barras
+                let total_gap = (self.bar_count as f32 - 1.0) * self.bar_gap;
+                let bar_width = (2.0 - total_gap) / self.bar_count as f32;
+                let gap_width = self.bar_gap;
+
+                let mut vertices = Vec::with_capacity(self.bar_count as usize * 4 * 2);
+                for i in 0..self.bar_count as usize {
+                    let x1 = -1.0 + i as f32 * (bar_width + gap_width);
+                    let x2 = x1 + bar_width;
+                    let height = self.last_audio[i];
+                    let y_top = -1.0 + 2.0 * height;
+                    let y_bottom = -1.0;
+                    vertices.extend_from_slice(&[x1, y_bottom, x1, y_top, x2, y_bottom, x2, y_top]);
+                }
+
+                unsafe {
+                    gl::Enable(gl::BLEND);
+                    gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+                    gl::ClearColor(self.background[0], self.background[1], self.background[2], self.background[3]);
+                    gl::Clear(gl::COLOR_BUFFER_BIT);
+
+                    gl::UseProgram(self.program);
+                    gl::BindVertexArray(self.vao);
+                    gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo);
+                    gl::BufferData(
+                        gl::ARRAY_BUFFER,
+                        (vertices.len() * std::mem::size_of::<f32>()) as GLsizeiptr,
+                        vertices.as_ptr() as *const _,
+                        gl::DYNAMIC_DRAW,
+                    );
+
+                    for i in 0..self.bar_count as usize {
+                        let color = self.colors[i % self.colors.len()];
+                        gl::Uniform4f(self.bar_color_loc, color[0], color[1], color[2], color[3]);
+                        gl::DrawArrays(gl::TRIANGLE_STRIP, (i * 4) as GLint, 4);
+                    }
+
+                    gl::BindVertexArray(0);
+                    gl::Disable(gl::BLEND);
+                }
+
+                self.surface.swap_buffers(&self.gl_display).unwrap_or_else(|e| error!("Swap buffers: {}", e));
+                self.last_frame = Instant::now();
+                self.window.request_redraw();
+            }
+            _ => {}
+        }
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
+        if !self.running.load(Ordering::SeqCst) {
+            _event_loop.exit();
+            return;
+        }
+        let now = Instant::now();
+        let elapsed = now - self.last_frame;
+        if elapsed < self.frame_duration {
+            let sleep = self.frame_duration - elapsed;
+            std::thread::sleep(sleep);
+        }
+        self.window.request_redraw();
+    }
+
+    fn exiting(&mut self, _event_loop: &winit::event_loop::ActiveEventLoop) {
+        info!("Exiting...");
     }
 }
