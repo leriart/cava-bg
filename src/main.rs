@@ -13,13 +13,15 @@ mod config;
 mod renderer;
 mod wallpaper;
 mod wayland;
+// mod wayland_simple_winit;
+// mod wayland_minimal_working;
 
 use cli::*;
 use config::*;
 use cava_manager::CavaManager;
 
 
-static RUNNING: AtomicBool = AtomicBool::new(true);
+// RUNNING flag is now managed by each renderer individually
 
 fn setup_ctrl_c_channel() -> Result<Receiver<()>> {
     let (sender, receiver) = bounded(100);
@@ -231,7 +233,7 @@ fn main() -> Result<()> {
             } else {
                 "Manual configuration"
             });
-            println!("Layer: Background (like wallpaper)");
+            println!("Layer: Top (above everything)");
             println!("Size: 0,0 (auto-size to output)");
             println!("Anchors: ALL (full coverage)");
             println!("========================================");
@@ -240,51 +242,28 @@ fn main() -> Result<()> {
             println!("  Press Ctrl+C to exit");
             println!();
             
-            // Setup Ctrl+C channel
-            let ctrl_c_receiver = setup_ctrl_c_channel()
-                .context("Failed to setup Ctrl+C handler")?;
-            
-            // Run Wayland renderer in a separate thread to allow Ctrl+C
-            let renderer_thread = std::thread::spawn(move || {
-                if let Err(e) = wayland_renderer.run() {
-                    eprintln!(" Wayland renderer error: {}", e);
+            // Run Wayland renderer directly (must be on main thread for winit)
+            // Ctrl+C is handled by the renderer itself
+            match wayland_renderer.run() {
+                Ok(_) => {
+                    println!("cava-bg stopped gracefully.");
+                    Ok(())
                 }
-            });
-            
-            // Wait for Ctrl+C
-            let _ = ctrl_c_receiver.recv();
-            println!("\nCtrl+C received, shutting down...");
-            
-            // Signal renderer to stop
-            RUNNING.store(false, Ordering::SeqCst);
-            
-            // Wait for renderer thread
-            let _ = renderer_thread.join();
-            
-            println!("cava-bg stopped gracefully.");
-            Ok(())
+                Err(e) => {
+                    eprintln!(" Wayland renderer error: {}", e);
+                    eprintln!("  Falling back to terminal mode...");
+                    
+                    // Run terminal renderer
+                    run_terminal_renderer(config, cava_manager)
+                }
+            }
         }
         Err(e) => {
             eprintln!(" Wayland renderer creation failed: {}", e);
             eprintln!("  Falling back to terminal mode...");
             
-            // Run terminal renderer with Ctrl+C handling
-            let ctrl_c_receiver = setup_ctrl_c_channel()
-                .context("Failed to setup Ctrl+C handler")?;
-            
-            let terminal_thread = std::thread::spawn(move || {
-                if let Err(e) = run_terminal_renderer(config, cava_manager) {
-                    eprintln!(" Terminal renderer error: {}", e);
-                }
-            });
-            
-            // Wait for Ctrl+C
-            let _ = ctrl_c_receiver.recv();
-            println!("\nCtrl+C received, shutting down...");
-            RUNNING.store(false, Ordering::SeqCst);
-            let _ = terminal_thread.join();
-            println!("cava-bg stopped gracefully.");
-            Ok(())
+            // Run terminal renderer
+            run_terminal_renderer(config, cava_manager)
         }
     }
 }
