@@ -1,5 +1,5 @@
 //! Wayland renderer using smithay-client-toolkit 0.19
-//! Fixed: waits for configure, uses real output size, works like swaybg
+//! Fixed: uses roundtrip, correct output size retrieval, waits for configure
 
 use anyhow::{anyhow, Context, Result};
 use log::{error, info, warn};
@@ -638,14 +638,13 @@ impl WaylandRenderer {
             .context("layer shell not available")?;
 
         // --- Get output size (like swaybg) ---
-        // Dispatch once to populate output_state
-        event_queue.dispatch(&mut (), Some(Duration::from_millis(100)))?;
+        // Perform a roundtrip to receive initial output info
+        event_queue.roundtrip(&mut ())?;
         let (output_width, output_height) = output_state
             .outputs()
-            .iter()
             .find_map(|output| {
                 output_state
-                    .info(output)
+                    .info(&output)
                     .map(|info| (info.logical_size.0, info.logical_size.1))
             })
             .unwrap_or((1920, 1080));
@@ -654,7 +653,7 @@ impl WaylandRenderer {
         let layer_surface = layer_shell.create_layer_surface(
             &qh,
             surface.clone(),
-            Layer::Overlay,  // Use Overlay to ensure visibility (like swaybg uses Background)
+            Layer::Overlay,  // Use Overlay to ensure visibility
             Some("cava-bg"),
             None,
         );
@@ -680,10 +679,10 @@ impl WaylandRenderer {
             framerate,
         );
 
-        // --- Wait for configure event (essential) ---
+        // --- Wait for configure event (using roundtrip) ---
         let start = Instant::now();
         while !app_state.configured && start.elapsed() < Duration::from_secs(2) {
-            event_queue.dispatch(&mut app_state, Some(Duration::from_millis(50)))?;
+            event_queue.roundtrip(&mut app_state)?;
         }
         if !app_state.configured {
             error!("Timeout waiting for layer configure");
