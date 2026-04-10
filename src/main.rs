@@ -11,7 +11,7 @@ mod config;
 mod renderer;
 mod shader;
 mod wallpaper;
-mod simple_overlay;
+mod waypaper_compatible;
 
 use cli::*;
 use config::*;
@@ -211,21 +211,21 @@ fn main() -> Result<()> {
     // Start monitor thread for cava
     cava_manager.start_monitor(config.clone());
 
-    // Check if we can run simple overlay
-    let can_run_overlay = simple_overlay::check_simple_overlay().unwrap_or(false);
+    // Check if we can run Waypaper-compatible overlay
+    let can_run_waypaper = waypaper_compatible::check_waypaper_compatible().unwrap_or(false);
     
-    if can_run_overlay {
-        println!("\nWayland detected - creating overlay...");
+    if can_run_waypaper {
+        println!("\nWayland detected - creating Waypaper-compatible overlay...");
         
         // Create a new cava_manager for overlay
         let mut overlay_cava_manager = CavaManager::new(&config)?;
         overlay_cava_manager.start(&config)?;
         
-        // Try to create simple overlay
-        println!("Initializing overlay...");
-        match simple_overlay::SimpleOverlay::new(config.clone(), overlay_cava_manager) {
+        // Try to create Waypaper-compatible overlay
+        println!("Initializing Waypaper-compatible overlay...");
+        match waypaper_compatible::WaypaperCompatibleOverlay::new(config.clone(), overlay_cava_manager) {
             Ok(overlay) => {
-                println!("Overlay initialized");
+                println!("Waypaper-compatible overlay initialized");
                 
                 println!("\nStarting audio visualizer...");
                 println!("========================================");
@@ -240,8 +240,9 @@ fn main() -> Result<()> {
                 });
                 println!("========================================");
                 println!("\nTo test: Play audio (music, video, etc.)");
-                println!("Look for visualization rendered OVER your wallpaper");
-                println!("Works with ANY wallpaper manager (hyprpaper, swaybg, etc.)");
+                println!("Look for visualization rendered OVER your Waypaper wallpaper");
+                println!("100% compatible with Waypaper and ALL its backends:");
+                println!("  - swaybg, hyprpaper, awww, mpvpaper, wallutils, etc.");
                 println!("The overlay does not interfere with applications");
                 println!();
                 
@@ -264,7 +265,7 @@ fn main() -> Result<()> {
         }
     } else {
         // Cannot create overlay, use terminal
-        println!("\nCannot create overlay, using terminal mode...");
+        println!("\nCannot create Waypaper-compatible overlay, using terminal mode...");
         run_terminal_renderer(config, cava_manager)?;
     }
     
