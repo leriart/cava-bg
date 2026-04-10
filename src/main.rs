@@ -5,13 +5,12 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-mod actual_window_solution;
 mod cava_manager;
 mod cli;
 mod config;
 mod renderer;
-mod shader;
 mod wallpaper;
+mod wayland;
 
 use cli::*;
 use config::*;
@@ -211,62 +210,50 @@ fn main() -> Result<()> {
     // Start monitor thread for cava
     cava_manager.start_monitor(config.clone());
 
-    // Check if we can run ACTUAL window solution
-    let can_run_actual = actual_window_solution::check_actual().unwrap_or(false);
+    // Try to create complete Wayland renderer
+    println!("\n🚀 Attempting to create complete Wayland renderer...");
     
-    if can_run_actual {
-        println!("\n✅ Wayland detected - creating ACTUAL visible window...");
-        
-        // Create a new cava_manager for window
-        let mut window_cava_manager = CavaManager::new(&config)?;
-        window_cava_manager.start(&config)?;
-        
-        // Try to create ACTUAL window
-        println!("Initializing ACTUAL window solution...");
-        match actual_window_solution::ActualWindowSolution::new(config.clone(), window_cava_manager) {
-            Ok(window) => {
-                println!("✅ ACTUAL window solution initialized");
-                
-                println!("\n🎵 Starting audio visualizer...");
-                println!("========================================");
-                println!("Status: Audio processing ACTIVE");
-                println!("Mode: Wayland (ACTUAL window over wallpaper)");
-                println!("Bars: {}", config.bars.amount);
-                println!("Framerate: {}", config.general.framerate);
-                println!("Colors: {}", if config.general.auto_colors {
-                    "Adaptive (from wallpaper)"
-                } else {
-                    "Manual configuration"
-                });
-                println!("========================================");
-                println!("\n🎧 To test: Play audio (music, video, etc.)");
-                println!("👀 You SHOULD see a window appear!");
-                println!("   - Look for yad/zenity/xterm window");
-                println!("   - Window is ACTUALLY visible");
-                println!("   - Audio visualization would render");
-                println!();
-                
-                // Run window
-                if let Err(e) = window.run() {
-                    eprintln!("❌ Error in window: {}", e);
-                    eprintln!("↪️  Falling back to terminal mode...");
-                    
-                    // Run terminal renderer
-                    run_terminal_renderer(config, cava_manager)?;
-                }
-            }
-            Err(e) => {
-                eprintln!("❌ Window initialization failed: {}", e);
+    // Create a new cava_manager for Wayland renderer
+    let wayland_cava_manager = cava_manager::CavaManager::new(&config)?;
+    
+    match wayland::WaylandRenderer::new(config.clone(), wayland_cava_manager) {
+        Ok(wayland_renderer) => {
+            println!("✅ Complete Wayland renderer created successfully!");
+            
+            println!("\n🎵 Starting audio visualizer...");
+            println!("========================================");
+            println!("Status: Audio processing ACTIVE");
+            println!("Mode: Wayland (full graphical rendering)");
+            println!("Bars: {}", config.bars.amount);
+            println!("Framerate: {}", config.general.framerate);
+            println!("Colors: {}", if config.general.auto_colors {
+                "Adaptive (from wallpaper)"
+            } else {
+                "Manual configuration"
+            });
+            println!("Layer: Background (over wallpaper)");
+            println!("========================================");
+            println!("\n🎧 To test: Play audio (music, video, etc.)");
+            println!("🖥️  Visualizer will appear as a transparent overlay");
+            println!("⏹️  Press Ctrl+C to exit");
+            println!();
+            
+            // Run Wayland renderer
+            if let Err(e) = wayland_renderer.run() {
+                eprintln!("❌ Wayland renderer error: {}", e);
                 eprintln!("↪️  Falling back to terminal mode...");
                 
-                // Run terminal renderer
+                // Run terminal renderer with original cava_manager
                 run_terminal_renderer(config, cava_manager)?;
             }
         }
-    } else {
-        // Cannot create actual window, use terminal
-        println!("\n⚠️  Cannot create ACTUAL window, using terminal mode...");
-        run_terminal_renderer(config, cava_manager)?;
+        Err(e) => {
+            eprintln!("❌ Wayland renderer creation failed: {}", e);
+            eprintln!("↪️  Falling back to terminal mode...");
+            
+            // Run terminal renderer
+            run_terminal_renderer(config, cava_manager)?;
+        }
     }
     
     println!("\ncava-bg stopping...");

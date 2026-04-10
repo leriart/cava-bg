@@ -153,6 +153,15 @@ impl CavaManager {
             }
         });
     }
+    
+    /// Take the reader from the cava manager (consumes the reader)
+    pub fn take_reader(&mut self) -> Result<std::io::BufReader<std::process::ChildStdout>> {
+        if let Some(reader) = self.reader.take() {
+            Ok(reader)
+        } else {
+            Err(anyhow::anyhow!("Cava reader not available"))
+        }
+    }
 }
 
 impl Drop for CavaManager {
