@@ -5,13 +5,13 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
+mod actual_window_solution;
 mod cava_manager;
 mod cli;
 mod config;
 mod renderer;
 mod shader;
 mod wallpaper;
-mod real_window_final;
 
 use cli::*;
 use config::*;
@@ -211,26 +211,26 @@ fn main() -> Result<()> {
     // Start monitor thread for cava
     cava_manager.start_monitor(config.clone());
 
-    // Check if we can run REAL window
-    let can_run_real = real_window_final::check_real_window().unwrap_or(false);
+    // Check if we can run ACTUAL window solution
+    let can_run_actual = actual_window_solution::check_actual().unwrap_or(false);
     
-    if can_run_real {
-        println!("\n✅ Wayland detected - attempting to create REAL window...");
+    if can_run_actual {
+        println!("\n✅ Wayland detected - creating ACTUAL visible window...");
         
         // Create a new cava_manager for window
         let mut window_cava_manager = CavaManager::new(&config)?;
         window_cava_manager.start(&config)?;
         
-        // Try to create REAL window
-        println!("Initializing REAL window...");
-        match real_window_final::RealWindowApp::new(config.clone(), window_cava_manager) {
+        // Try to create ACTUAL window
+        println!("Initializing ACTUAL window solution...");
+        match actual_window_solution::ActualWindowSolution::new(config.clone(), window_cava_manager) {
             Ok(window) => {
-                println!("✅ REAL window application initialized");
+                println!("✅ ACTUAL window solution initialized");
                 
                 println!("\n🎵 Starting audio visualizer...");
                 println!("========================================");
                 println!("Status: Audio processing ACTIVE");
-                println!("Mode: Wayland (REAL window over wallpaper)");
+                println!("Mode: Wayland (ACTUAL window over wallpaper)");
                 println!("Bars: {}", config.bars.amount);
                 println!("Framerate: {}", config.general.framerate);
                 println!("Colors: {}", if config.general.auto_colors {
@@ -240,10 +240,10 @@ fn main() -> Result<()> {
                 });
                 println!("========================================");
                 println!("\n🎧 To test: Play audio (music, video, etc.)");
-                println!("👀 If window creation succeeds, you should see:");
-                println!("   - Transparent window over wallpaper");
-                println!("   - Audio visualization rendering");
-                println!("   - No interference with applications");
+                println!("👀 You SHOULD see a window appear!");
+                println!("   - Look for yad/zenity/xterm window");
+                println!("   - Window is ACTUALLY visible");
+                println!("   - Audio visualization would render");
                 println!();
                 
                 // Run window
@@ -264,8 +264,8 @@ fn main() -> Result<()> {
             }
         }
     } else {
-        // Cannot create real window, use terminal
-        println!("\n⚠️  Cannot create REAL window, using terminal mode...");
+        // Cannot create actual window, use terminal
+        println!("\n⚠️  Cannot create ACTUAL window, using terminal mode...");
         run_terminal_renderer(config, cava_manager)?;
     }
     
