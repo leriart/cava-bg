@@ -13,24 +13,24 @@ homepage = "https://github.com/leriart/cava-bg"
 documentation = "https://github.com/leriart/cava-bg#readme"
 
 [dependencies]
-wayland-client = "0.31"
-wayland-egl = "0.31"
-wayland-backend = "0.3"
-smithay-client-toolkit = "0.18"
-calloop = "0.12"
-khronos-egl = "6.0"
-gl = "0.14"
-toml = "0.8"
 anyhow = "1.0"
-thiserror = "1.0"
 log = "0.4"
-env_logger = "0.11"
+env_logger = "0.10"
+ctrlc = "3.4"
+gl = "0.14.0"
+khronos-egl = { version = "6.0.0", features = ["static", "1_0", "1_1", "1_2", "1_3", "1_4", "1_5"] }
+smithay-client-toolkit = { git = "https://github.com/Smithay/client-toolkit.git" }
+wayland-client = "0.31.2"
+wayland-egl = "0.32.0"
+wayland-protocols = "0.31.2"
+wayland-protocols-wlr = "0.3.1"
+toml = "0.8"
+thiserror = "1.0"
 clap = { version = "4.0", features = ["derive"] }
 dirs = "5.0"
 serde = { version = "1.0", features = ["derive"] }
 image = "0.24"
 walkdir = "2.5"
-ctrlc = "3.4"
 which = "6.0"
 
 [build-dependencies]
