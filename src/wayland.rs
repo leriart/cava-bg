@@ -1,8 +1,8 @@
-//! Wayland renderer using smithay-client-toolkit 0.19
-//! Fixed: uses roundtrip, correct output size retrieval, waits for configure
+//! Wayland renderer usando solo wayland-client (sin smithay-client-toolkit)
+//! Inspirado en swaybg y otros clientes de wlr-layer-shell
 
 use anyhow::{anyhow, Context, Result};
-use log::{error, info, warn};
+use log::{error, info, warn, debug};
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -12,21 +12,12 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{bounded, Receiver, TryRecvError};
 use gl::types::*;
 use khronos_egl as egl;
-use smithay_client_toolkit::shell::wlr_layer::{
-    Anchor, Layer, LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
-};
-use smithay_client_toolkit::{
-    compositor::{CompositorHandler, CompositorState},
-    output::{OutputHandler, OutputState},
-    registry::{ProvidesRegistryState, RegistryState},
-    delegate_compositor, delegate_layer, delegate_output, delegate_registry,
-};
-use wayland_client::protocol::wl_output::Transform;
+use wayland_client::protocol::{wl_compositor, wl_output, wl_registry, wl_shm, wl_surface};
 use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::{
     globals::registry_queue_init,
-    Connection, EventQueue, Proxy, QueueHandle,
+    Connection, Dispatch, EventQueue, Proxy, QueueHandle,
 };
 use wayland_egl::WlEglSurface;
 
@@ -35,7 +26,7 @@ use crate::cava_manager::CavaManager;
 use crate::wallpaper::WallpaperAnalyzer;
 
 // -----------------------------------------------------------------------------
-// Shaders
+// Shaders (sin cambios)
 // -----------------------------------------------------------------------------
 
 const VERTEX_SHADER_SRC: &str = r#"#version 430 core
@@ -88,18 +79,44 @@ fn start_audio_reader(
 }
 
 // -----------------------------------------------------------------------------
-// Application state
+// Declaración de protocolos wlr-layer-shell (manualmente)
+// -----------------------------------------------------------------------------
+
+wayland_client::scoped_event! {
+    pub enum LayerShellEvent {
+        // zwlr_layer_shell_v1
+        ZwlrLayerShellV1 => event_enum! {
+            // No events
+        },
+        // zwlr_layer_surface_v1
+        ZwlrLayerSurfaceV1 => event_enum! {
+            Configure { serial: u32, width: u32, height: u32 },
+            Closed,
+        },
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Estado de la aplicación (sin smithay-client-toolkit)
 // -----------------------------------------------------------------------------
 
 struct AppState {
-    // Wayland objects
+    // Conexión y cola
     conn: Connection,
-    registry_state: RegistryState,
-    compositor_state: CompositorState,
-    output_state: OutputState,
-    layer_shell: LayerShell,
-    layer_surface: LayerSurface,
-    surface: WlSurface,
+    event_queue: EventQueue<Self>,
+
+    // Objetos Wayland
+    registry: wl_registry::WlRegistry,
+    compositor: wl_compositor::WlCompositor,
+    surface: wl_surface::WlSurface,
+    layer_shell: ZwlrLayerShellV1,
+    layer_surface: ZwlrLayerSurfaceV1,
+
+    // Información de salida (monitor)
+    output: Option<wl_output::WlOutput>,
+    output_width: i32,
+    output_height: i32,
+    configured: bool,
 
     // EGL / OpenGL
     egl_instance: Option<egl::Instance<egl::Static>>,
@@ -111,14 +128,9 @@ struct AppState {
     vao: GLuint,
     vbo: GLuint,
     bar_color_loc: GLint,
-
-    // Geometry
-    width: i32,
-    height: i32,
-    configured: bool,
     graphics_initialized: bool,
 
-    // Bar parameters
+    // Parámetros visuales
     bar_count: u32,
     bar_gap: f32,
     background_color: [f32; 4],
@@ -137,28 +149,28 @@ struct AppState {
 impl AppState {
     fn new(
         conn: Connection,
-        registry_state: RegistryState,
-        compositor_state: CompositorState,
-        output_state: OutputState,
-        layer_shell: LayerShell,
-        layer_surface: LayerSurface,
-        surface: WlSurface,
-        audio_receiver: Receiver<Vec<f32>>,
+        event_queue: EventQueue<Self>,
+        registry: wl_registry::WlRegistry,
         bar_count: u32,
         bar_gap: f32,
         background_color: [f32; 4],
         gradient_colors: Vec<[f32; 4]>,
+        audio_receiver: Receiver<Vec<f32>>,
         running: Arc<AtomicBool>,
         framerate: u32,
     ) -> Self {
         Self {
             conn,
-            registry_state,
-            compositor_state,
-            output_state,
-            layer_shell,
-            layer_surface,
-            surface,
+            event_queue,
+            registry,
+            compositor: wl_compositor::WlCompositor::dummy(),
+            surface: wl_surface::WlSurface::dummy(),
+            layer_shell: ZwlrLayerShellV1::dummy(),
+            layer_surface: ZwlrLayerSurfaceV1::dummy(),
+            output: None,
+            output_width: 0,
+            output_height: 0,
+            configured: false,
             egl_instance: None,
             egl_display: None,
             egl_context: None,
@@ -168,9 +180,6 @@ impl AppState {
             vao: 0,
             vbo: 0,
             bar_color_loc: 0,
-            width: 0,
-            height: 0,
-            configured: false,
             graphics_initialized: false,
             bar_count,
             bar_gap,
@@ -185,7 +194,9 @@ impl AppState {
     }
 
     fn init_graphics(&mut self) -> Result<()> {
-        info!("Initializing EGL/OpenGL at {}x{}", self.width, self.height);
+        let width = self.output_width;
+        let height = self.output_height;
+        info!("Initializing EGL/OpenGL at {}x{}", width, height);
 
         let egl = egl::Instance::new(egl::Static);
         let display = unsafe {
@@ -221,7 +232,7 @@ impl AppState {
         let context = egl.create_context(display, config, None, &ctx_attribs)
             .map_err(|e| anyhow!("EGL context: {:?}", e))?;
 
-        let wl_egl_surface = WlEglSurface::new(self.surface.id(), self.width, self.height)
+        let wl_egl_surface = WlEglSurface::new(self.surface.id(), width, height)
             .context("WlEglSurface creation")?;
         let egl_surface = unsafe {
             egl.create_window_surface(
@@ -243,9 +254,10 @@ impl AppState {
         });
 
         unsafe {
-            gl::Viewport(0, 0, self.width as GLsizei, self.height as GLsizei);
+            gl::Viewport(0, 0, width, height);
         }
 
+        // Compilar shaders
         let vs = compile_shader(gl::VERTEX_SHADER, VERTEX_SHADER_SRC)?;
         let fs = compile_shader(gl::FRAGMENT_SHADER, FRAGMENT_SHADER_SRC)?;
         let program = link_program(vs, fs)?;
@@ -265,14 +277,7 @@ impl AppState {
             gl::GenBuffers(1, &mut vbo);
             gl::BindVertexArray(vao);
             gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
-            gl::VertexAttribPointer(
-                0,
-                2,
-                gl::FLOAT,
-                gl::FALSE,
-                2 * std::mem::size_of::<f32>() as GLsizei,
-                std::ptr::null(),
-            );
+            gl::VertexAttribPointer(0, 2, gl::FLOAT, gl::FALSE, 2 * std::mem::size_of::<f32>() as GLsizei, std::ptr::null());
             gl::EnableVertexAttribArray(0);
             gl::BindVertexArray(0);
         }
@@ -307,7 +312,7 @@ impl AppState {
     }
 
     fn draw(&mut self) -> Result<()> {
-        if !self.graphics_initialized || self.width == 0 || self.height == 0 {
+        if !self.graphics_initialized || self.output_width == 0 || self.output_height == 0 {
             return Ok(());
         }
 
@@ -403,7 +408,127 @@ impl AppState {
     }
 }
 
-// Helper functions
+// -----------------------------------------------------------------------------
+// Implementación de Dispatch para AppState
+// -----------------------------------------------------------------------------
+
+impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
+    fn event(
+        state: &mut Self,
+        registry: &wl_registry::WlRegistry,
+        event: wl_registry::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_registry::Event::Global { name, interface, version } => {
+                info!("Global: {} v{}", interface, version);
+                if interface == "wl_compositor" {
+                    let compositor = registry.bind::<wl_compositor::WlCompositor>(name, version);
+                    state.compositor = compositor;
+                } else if interface == "zwlr_layer_shell_v1" {
+                    let layer_shell = registry.bind::<ZwlrLayerShellV1>(name, version);
+                    state.layer_shell = layer_shell;
+                } else if interface == "wl_output" {
+                    let output = registry.bind::<wl_output::WlOutput>(name, version);
+                    state.output = Some(output);
+                }
+            }
+            wl_registry::Event::GlobalRemove { .. } => {}
+        }
+    }
+}
+
+impl Dispatch<wl_compositor::WlCompositor, ()> for AppState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wl_compositor::WlCompositor,
+        _event: wl_compositor::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<wl_output::WlOutput, ()> for AppState {
+    fn event(
+        state: &mut Self,
+        output: &wl_output::WlOutput,
+        event: wl_output::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_output::Event::Mode { width, height, .. } => {
+                if state.output.as_ref() == Some(output) {
+                    state.output_width = width as i32;
+                    state.output_height = height as i32;
+                    info!("Output size: {}x{}", width, height);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<wl_surface::WlSurface, ()> for AppState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wl_surface::WlSurface,
+        _event: wl_surface::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ZwlrLayerShellV1, ()> for AppState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &ZwlrLayerShellV1,
+        _event: LayerShellEvent::ZwlrLayerShellV1,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+    }
+}
+
+impl Dispatch<ZwlrLayerSurfaceV1, ()> for AppState {
+    fn event(
+        state: &mut Self,
+        _proxy: &ZwlrLayerSurfaceV1,
+        event: LayerShellEvent::ZwlrLayerSurfaceV1,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        match event {
+            LayerShellEvent::ZwlrLayerSurfaceV1::Configure { serial, width, height } => {
+                info!("Layer configure: {}x{} (serial {})", width, height, serial);
+                state.output_width = width as i32;
+                state.output_height = height as i32;
+                state.configured = true;
+                // Acusar recibo del configure
+                state.layer_surface.ack_configure(serial);
+                state.surface.commit();
+            }
+            LayerShellEvent::ZwlrLayerSurfaceV1::Closed => {
+                info!("Layer surface closed");
+                state.running.store(false, Ordering::SeqCst);
+            }
+        }
+    }
+}
+
+// -----------------------------------------------------------------------------
+// Funciones auxiliares de shader
+// -----------------------------------------------------------------------------
+
 fn compile_shader(shader_type: GLenum, src: &str) -> Result<GLuint> {
     unsafe {
         let shader = gl::CreateShader(shader_type);
@@ -441,139 +566,7 @@ fn link_program(vs: GLuint, fs: GLuint) -> Result<GLuint> {
 }
 
 // -----------------------------------------------------------------------------
-// Trait implementations for smithay-client-toolkit 0.19
-// -----------------------------------------------------------------------------
-
-impl CompositorHandler for AppState {
-    fn scale_factor_changed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &WlSurface,
-        _new_factor: i32,
-    ) {
-    }
-    fn transform_changed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &WlSurface,
-        _new_transform: Transform,
-    ) {
-    }
-    fn frame(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &WlSurface,
-        _time: u32,
-    ) {
-    }
-    fn surface_enter(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &WlSurface,
-        _output: &WlOutput,
-    ) {
-    }
-    fn surface_leave(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &WlSurface,
-        _output: &WlOutput,
-    ) {
-    }
-}
-
-impl OutputHandler for AppState {
-    fn output_state(&mut self) -> &mut OutputState {
-        &mut self.output_state
-    }
-    fn new_output(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _output: WlOutput,
-    ) {
-    }
-    fn update_output(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _output: WlOutput,
-    ) {
-    }
-    fn output_destroyed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _output: WlOutput,
-    ) {
-    }
-}
-
-impl LayerShellHandler for AppState {
-    fn closed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _layer_surface: &LayerSurface,
-    ) {
-        info!("Layer surface closed");
-        self.running.store(false, Ordering::SeqCst);
-    }
-    fn configure(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _layer_surface: &LayerSurface,
-        configure: LayerSurfaceConfigure,
-        _serial: u32,
-    ) {
-        self.width = configure.new_size.0 as i32;
-        self.height = configure.new_size.1 as i32;
-        self.configured = true;
-        info!("Layer configured: {}x{}", self.width, self.height);
-        if self.graphics_initialized {
-            unsafe {
-                gl::Viewport(0, 0, self.width, self.height);
-            }
-        }
-    }
-}
-
-impl ProvidesRegistryState for AppState {
-    fn registry(&mut self) -> &mut RegistryState {
-        &mut self.registry_state
-    }
-    fn runtime_add_global(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _id: u32,
-        _interface: &str,
-        _version: u32,
-    ) {
-    }
-    fn runtime_remove_global(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _id: u32,
-        _interface: &str,
-    ) {
-    }
-}
-
-delegate_compositor!(AppState);
-delegate_output!(AppState);
-delegate_layer!(AppState);
-delegate_registry!(AppState);
-
-// -----------------------------------------------------------------------------
-// Public Renderer
+// Renderer público
 // -----------------------------------------------------------------------------
 
 pub struct WaylandRenderer {
@@ -596,7 +589,7 @@ impl WaylandRenderer {
             return Err(anyhow!("WAYLAND_DISPLAY not set"));
         }
 
-        // Get gradient colors
+        // Colores
         let colors = if self.config.general.auto_colors {
             WallpaperAnalyzer::generate_gradient_colors(8)
                 .unwrap_or_else(|_| WallpaperAnalyzer::default_colors(8))
@@ -619,76 +612,63 @@ impl WaylandRenderer {
         let background = [0.0, 0.0, 0.0, 0.0];
         let framerate = self.config.general.framerate;
 
-        // Start audio reader thread
+        // Lector de audio
         let reader = self.cava_manager.take_reader()?;
         let audio_rx = start_audio_reader(Box::new(reader), bar_count);
 
-        // Connect to Wayland
+        // Conectar a Wayland
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
-        let (globals, mut event_queue) = registry_queue_init(&conn).context("Failed to init registry")?;
-        let qh = event_queue.handle();
+        let (globals, event_queue) = registry_queue_init(&conn).context("Failed to init registry")?;
+        let registry = globals.bind(1, &conn)?;
 
-        // Create state components
-        let registry_state = RegistryState::new(&globals);
-        let mut output_state = OutputState::new(&globals, &qh);
-        let compositor_state = CompositorState::bind(&globals, &qh)
-            .context("wl_compositor not available")?;
-        let surface = compositor_state.create_surface(&qh);
-        let layer_shell = LayerShell::bind(&globals, &qh)
-            .context("layer shell not available")?;
-
-        // --- Get output size (like swaybg) ---
-        // Perform a roundtrip to receive initial output info
-        event_queue.roundtrip(&mut ())?;
-        let (output_width, output_height) = output_state
-            .outputs()
-            .find_map(|output| {
-                output_state
-                    .info(&output)
-                    .map(|info| (info.logical_size.0, info.logical_size.1))
-            })
-            .unwrap_or((1920, 1080));
-        info!("Detected output size: {}x{}", output_width, output_height);
-
-        let layer_surface = layer_shell.create_layer_surface(
-            &qh,
-            surface.clone(),
-            Layer::Overlay,  // Use Overlay to ensure visibility
-            Some("cava-bg"),
-            None,
-        );
-        layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
-        layer_surface.set_exclusive_zone(-1);
-        layer_surface.set_size(output_width, output_height);
-        surface.commit();
-
+        // Crear estado inicial (con objetos dummy)
         let mut app_state = AppState::new(
             conn,
-            registry_state,
-            compositor_state,
-            output_state,
-            layer_shell,
-            layer_surface,
-            surface,
-            audio_rx,
+            event_queue,
+            registry,
             bar_count,
             bar_gap,
             background,
             colors,
+            audio_rx,
             self.running.clone(),
             framerate,
         );
 
-        // --- Wait for configure event (using roundtrip) ---
+        // Crear superficie y capa
+        let qh = app_state.event_queue.handle();
+        let surface = app_state.compositor.create_surface(&qh);
+        app_state.surface = surface;
+
+        // Crear layer surface
+        let layer_surface = app_state.layer_shell.get_layer_surface(
+            &qh,
+            &app_state.surface,
+            None, // output (None = todos)
+            Layer::Overlay as u32, // 2 = overlay, 1 = top, 0 = background
+            "cava-bg".to_string(),
+        );
+        layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer_surface.set_exclusive_zone(-1);
+        layer_surface.set_size(0, 0);
+        app_state.layer_surface = layer_surface;
+        app_state.surface.commit();
+
+        // Esperar a que configure nos dé el tamaño real
         let start = Instant::now();
         while !app_state.configured && start.elapsed() < Duration::from_secs(2) {
-            event_queue.roundtrip(&mut app_state)?;
+            app_state.event_queue.dispatch(&mut app_state, Some(Duration::from_millis(50)))?;
         }
         if !app_state.configured {
             error!("Timeout waiting for layer configure");
-            return Err(anyhow!("Layer not configured by compositor"));
+            return Err(anyhow!("Layer not configured"));
         }
-        info!("Layer configured after {:?}", start.elapsed());
+
+        // Inicializar gráficos
+        if let Err(e) = app_state.init_graphics() {
+            error!("Graphics init failed: {}", e);
+            return Err(e);
+        }
 
         // Ctrl+C handler
         let running_clone = self.running.clone();
@@ -699,24 +679,12 @@ impl WaylandRenderer {
 
         info!("Wayland renderer running. Press Ctrl+C to exit.");
 
-        // Main loop
+        // Bucle principal
         while app_state.running.load(Ordering::SeqCst) {
-            let _ = event_queue.dispatch_pending(&mut app_state);
-            let _ = event_queue.flush();
+            let _ = app_state.event_queue.dispatch_pending(&mut app_state);
+            let _ = app_state.event_queue.flush();
 
-            if !app_state.configured {
-                thread::sleep(Duration::from_millis(10));
-                continue;
-            }
-
-            if !app_state.graphics_initialized && app_state.width > 0 && app_state.height > 0 {
-                if let Err(e) = app_state.init_graphics() {
-                    error!("Graphics init failed: {}", e);
-                    break;
-                }
-            }
-
-            if app_state.graphics_initialized && app_state.last_frame.elapsed() >= app_state.frame_duration {
+            if app_state.last_frame.elapsed() >= app_state.frame_duration {
                 if let Err(e) = app_state.draw() {
                     error!("Draw error: {}", e);
                 }
@@ -730,4 +698,94 @@ impl WaylandRenderer {
         info!("Wayland renderer stopped");
         Ok(())
     }
+}
+
+// -----------------------------------------------------------------------------
+// Definiciones auxiliares (protocolos no estándar)
+// -----------------------------------------------------------------------------
+
+wayland_client::scoped_event! {
+    pub enum ZwlrLayerShellV1Event {}
+}
+
+pub type ZwlrLayerShellV1 = wayland_client::Proxy<ZwlrLayerShellV1Event>;
+
+impl ZwlrLayerShellV1 {
+    pub fn get_layer_surface(
+        &self,
+        qh: &QueueHandle<impl Dispatch<ZwlrLayerSurfaceV1, ()>>,
+        surface: &wl_surface::WlSurface,
+        output: Option<&wl_output::WlOutput>,
+        layer: u32,
+        namespace: String,
+    ) -> ZwlrLayerSurfaceV1 {
+        let id = self.id();
+        let conn = self.connection();
+        let obj = conn.create_proxy(qh, ());
+        conn.send_request(
+            &self,
+            &[wayland_client::sys::common::Argument::NewId(obj.id().as_raw()),
+              wayland_client::sys::common::Argument::Object(surface.id().as_raw()),
+              wayland_client::sys::common::Argument::Object(output.map(|o| o.id().as_raw()).unwrap_or(0)),
+              wayland_client::sys::common::Argument::Uint(layer),
+              wayland_client::sys::common::Argument::Str(namespace.as_bytes())],
+        );
+        obj
+    }
+}
+
+wayland_client::scoped_event! {
+    pub enum ZwlrLayerSurfaceV1Event {
+        Configure { serial: u32, width: u32, height: u32 },
+        Closed,
+    }
+}
+
+pub type ZwlrLayerSurfaceV1 = wayland_client::Proxy<ZwlrLayerSurfaceV1Event>;
+
+impl ZwlrLayerSurfaceV1 {
+    pub fn set_anchor(&self, anchor: u32) {
+        self.connection().send_request(
+            self,
+            &[wayland_client::sys::common::Argument::Uint(anchor)],
+        );
+    }
+
+    pub fn set_exclusive_zone(&self, zone: i32) {
+        self.connection().send_request(
+            self,
+            &[wayland_client::sys::common::Argument::Int(zone)],
+        );
+    }
+
+    pub fn set_size(&self, width: u32, height: u32) {
+        self.connection().send_request(
+            self,
+            &[wayland_client::sys::common::Argument::Uint(width),
+              wayland_client::sys::common::Argument::Uint(height)],
+        );
+    }
+
+    pub fn ack_configure(&self, serial: u32) {
+        self.connection().send_request(
+            self,
+            &[wayland_client::sys::common::Argument::Uint(serial)],
+        );
+    }
+}
+
+#[allow(dead_code)]
+mod Layer {
+    pub const BACKGROUND: u32 = 0;
+    pub const BOTTOM: u32 = 1;
+    pub const TOP: u32 = 2;
+    pub const OVERLAY: u32 = 3;
+}
+
+#[allow(dead_code)]
+mod Anchor {
+    pub const TOP: u32 = 1;
+    pub const BOTTOM: u32 = 2;
+    pub const LEFT: u32 = 4;
+    pub const RIGHT: u32 = 8;
 }
