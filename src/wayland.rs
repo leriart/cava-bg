@@ -1,8 +1,8 @@
-//! Wayland renderer usando solo wayland-client (sin smithay-client-toolkit)
-//! Inspirado en swaybg y otros clientes de wlr-layer-shell
+//! Wayland renderer using wayland-client + wayland-protocols (wlr-layer-shell)
+//! Basado en el ejemplo de swaybg.
 
 use anyhow::{anyhow, Context, Result};
-use log::{error, info, warn, debug};
+use log::{error, info, warn};
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -12,21 +12,22 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{bounded, Receiver, TryRecvError};
 use gl::types::*;
 use khronos_egl as egl;
-use wayland_client::protocol::{wl_compositor, wl_output, wl_registry, wl_shm, wl_surface};
-use wayland_client::protocol::wl_output::WlOutput;
-use wayland_client::protocol::wl_surface::WlSurface;
+use wayland_client::protocol::{wl_compositor, wl_output, wl_registry, wl_surface};
 use wayland_client::{
     globals::registry_queue_init,
     Connection, Dispatch, EventQueue, Proxy, QueueHandle,
 };
 use wayland_egl::WlEglSurface;
+use wayland_protocols::wlr::layer_shell::v1::client::{
+    zwlr_layer_shell_v1, zwlr_layer_surface_v1,
+};
 
 use crate::config::Config;
 use crate::cava_manager::CavaManager;
 use crate::wallpaper::WallpaperAnalyzer;
 
 // -----------------------------------------------------------------------------
-// Shaders (sin cambios)
+// Shaders
 // -----------------------------------------------------------------------------
 
 const VERTEX_SHADER_SRC: &str = r#"#version 430 core
@@ -79,40 +80,15 @@ fn start_audio_reader(
 }
 
 // -----------------------------------------------------------------------------
-// Declaración de protocolos wlr-layer-shell (manualmente)
-// -----------------------------------------------------------------------------
-
-wayland_client::scoped_event! {
-    pub enum LayerShellEvent {
-        // zwlr_layer_shell_v1
-        ZwlrLayerShellV1 => event_enum! {
-            // No events
-        },
-        // zwlr_layer_surface_v1
-        ZwlrLayerSurfaceV1 => event_enum! {
-            Configure { serial: u32, width: u32, height: u32 },
-            Closed,
-        },
-    }
-}
-
-// -----------------------------------------------------------------------------
-// Estado de la aplicación (sin smithay-client-toolkit)
+// AppState (implementa Dispatch para los objetos Wayland)
 // -----------------------------------------------------------------------------
 
 struct AppState {
-    // Conexión y cola
-    conn: Connection,
-    event_queue: EventQueue<Self>,
-
     // Objetos Wayland
-    registry: wl_registry::WlRegistry,
     compositor: wl_compositor::WlCompositor,
+    layer_shell: zwlr_layer_shell_v1::ZwlrLayerShellV1,
     surface: wl_surface::WlSurface,
-    layer_shell: ZwlrLayerShellV1,
-    layer_surface: ZwlrLayerSurfaceV1,
-
-    // Información de salida (monitor)
+    layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
     output: Option<wl_output::WlOutput>,
     output_width: i32,
     output_height: i32,
@@ -148,9 +124,6 @@ struct AppState {
 
 impl AppState {
     fn new(
-        conn: Connection,
-        event_queue: EventQueue<Self>,
-        registry: wl_registry::WlRegistry,
         bar_count: u32,
         bar_gap: f32,
         background_color: [f32; 4],
@@ -160,13 +133,10 @@ impl AppState {
         framerate: u32,
     ) -> Self {
         Self {
-            conn,
-            event_queue,
-            registry,
             compositor: wl_compositor::WlCompositor::dummy(),
+            layer_shell: zwlr_layer_shell_v1::ZwlrLayerShellV1::dummy(),
             surface: wl_surface::WlSurface::dummy(),
-            layer_shell: ZwlrLayerShellV1::dummy(),
-            layer_surface: ZwlrLayerSurfaceV1::dummy(),
+            layer_surface: zwlr_layer_surface_v1::ZwlrLayerSurfaceV1::dummy(),
             output: None,
             output_width: 0,
             output_height: 0,
@@ -193,14 +163,14 @@ impl AppState {
         }
     }
 
-    fn init_graphics(&mut self) -> Result<()> {
+    fn init_graphics(&mut self, conn: &Connection) -> Result<()> {
         let width = self.output_width;
         let height = self.output_height;
         info!("Initializing EGL/OpenGL at {}x{}", width, height);
 
         let egl = egl::Instance::new(egl::Static);
         let display = unsafe {
-            egl.get_display(self.conn.display().id().as_ptr() as *mut std::ffi::c_void)
+            egl.get_display(conn.display().id().as_ptr() as *mut std::ffi::c_void)
                 .ok_or_else(|| anyhow!("Failed to get EGL display"))?
         };
         egl.initialize(display)
@@ -277,7 +247,14 @@ impl AppState {
             gl::GenBuffers(1, &mut vbo);
             gl::BindVertexArray(vao);
             gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
-            gl::VertexAttribPointer(0, 2, gl::FLOAT, gl::FALSE, 2 * std::mem::size_of::<f32>() as GLsizei, std::ptr::null());
+            gl::VertexAttribPointer(
+                0,
+                2,
+                gl::FLOAT,
+                gl::FALSE,
+                2 * std::mem::size_of::<f32>() as GLsizei,
+                std::ptr::null(),
+            );
             gl::EnableVertexAttribArray(0);
             gl::BindVertexArray(0);
         }
@@ -409,7 +386,7 @@ impl AppState {
 }
 
 // -----------------------------------------------------------------------------
-// Implementación de Dispatch para AppState
+// Implementación de Dispatch para los objetos Wayland
 // -----------------------------------------------------------------------------
 
 impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
@@ -419,19 +396,19 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
         event: wl_registry::Event,
         _data: &(),
         _conn: &Connection,
-        _qh: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
     ) {
         match event {
             wl_registry::Event::Global { name, interface, version } => {
                 info!("Global: {} v{}", interface, version);
                 if interface == "wl_compositor" {
-                    let compositor = registry.bind::<wl_compositor::WlCompositor>(name, version);
+                    let compositor = registry.bind::<wl_compositor::WlCompositor, _, _>(name, version, qh, ());
                     state.compositor = compositor;
                 } else if interface == "zwlr_layer_shell_v1" {
-                    let layer_shell = registry.bind::<ZwlrLayerShellV1>(name, version);
+                    let layer_shell = registry.bind::<zwlr_layer_shell_v1::ZwlrLayerShellV1, _, _>(name, version, qh, ());
                     state.layer_shell = layer_shell;
                 } else if interface == "wl_output" {
-                    let output = registry.bind::<wl_output::WlOutput>(name, version);
+                    let output = registry.bind::<wl_output::WlOutput, _, _>(name, version, qh, ());
                     state.output = Some(output);
                 }
             }
@@ -486,11 +463,11 @@ impl Dispatch<wl_surface::WlSurface, ()> for AppState {
     }
 }
 
-impl Dispatch<ZwlrLayerShellV1, ()> for AppState {
+impl Dispatch<zwlr_layer_shell_v1::ZwlrLayerShellV1, ()> for AppState {
     fn event(
         _state: &mut Self,
-        _proxy: &ZwlrLayerShellV1,
-        _event: LayerShellEvent::ZwlrLayerShellV1,
+        _proxy: &zwlr_layer_shell_v1::ZwlrLayerShellV1,
+        _event: <zwlr_layer_shell_v1::ZwlrLayerShellV1 as Proxy>::Event,
         _data: &(),
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
@@ -498,29 +475,30 @@ impl Dispatch<ZwlrLayerShellV1, ()> for AppState {
     }
 }
 
-impl Dispatch<ZwlrLayerSurfaceV1, ()> for AppState {
+impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for AppState {
     fn event(
         state: &mut Self,
-        _proxy: &ZwlrLayerSurfaceV1,
-        event: LayerShellEvent::ZwlrLayerSurfaceV1,
+        _proxy: &zwlr_layer_surface_v1::ZwlrLayerSurfaceV1,
+        event: zwlr_layer_surface_v1::Event,
         _data: &(),
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
         match event {
-            LayerShellEvent::ZwlrLayerSurfaceV1::Configure { serial, width, height } => {
+            zwlr_layer_surface_v1::Event::Configure { serial, width, height } => {
                 info!("Layer configure: {}x{} (serial {})", width, height, serial);
                 state.output_width = width as i32;
                 state.output_height = height as i32;
                 state.configured = true;
-                // Acusar recibo del configure
+                // Acusar recibo
                 state.layer_surface.ack_configure(serial);
                 state.surface.commit();
             }
-            LayerShellEvent::ZwlrLayerSurfaceV1::Closed => {
+            zwlr_layer_surface_v1::Event::Closed => {
                 info!("Layer surface closed");
                 state.running.store(false, Ordering::SeqCst);
             }
+            _ => {}
         }
     }
 }
@@ -618,14 +596,12 @@ impl WaylandRenderer {
 
         // Conectar a Wayland
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
-        let (globals, event_queue) = registry_queue_init(&conn).context("Failed to init registry")?;
-        let registry = globals.bind(1, &conn)?;
+        let (globals, mut event_queue) = registry_queue_init::<AppState>(&conn)
+            .context("Failed to init registry")?;
+        let qh = event_queue.handle();
 
-        // Crear estado inicial (con objetos dummy)
+        // Estado inicial (con objetos dummy)
         let mut app_state = AppState::new(
-            conn,
-            event_queue,
-            registry,
             bar_count,
             bar_gap,
             background,
@@ -635,20 +611,42 @@ impl WaylandRenderer {
             framerate,
         );
 
-        // Crear superficie y capa
-        let qh = app_state.event_queue.handle();
-        let surface = app_state.compositor.create_surface(&qh);
+        // Registrar los objetos globales (el dispatch los llenará)
+        // Primero, registrar el registry en el event_queue para que los eventos lleguen
+        // Ya lo hicimos con registry_queue_init, que devuelve un event_queue asociado a AppState
+
+        // Ahora, después de algunos dispatch, los objetos estarán bindeados
+        // Hacemos un roundtrip para recibir los globales
+        event_queue.roundtrip(&mut app_state)?;
+
+        // Verificar que tenemos compositor y layer_shell
+        if app_state.compositor.is_dummy() {
+            return Err(anyhow!("wl_compositor not available"));
+        }
+        if app_state.layer_shell.is_dummy() {
+            return Err(anyhow!("zwlr_layer_shell_v1 not available"));
+        }
+
+        // Crear superficie
+        let surface = app_state.compositor.create_surface(&qh, ());
         app_state.surface = surface;
 
         // Crear layer surface
         let layer_surface = app_state.layer_shell.get_layer_surface(
             &qh,
             &app_state.surface,
-            None, // output (None = todos)
-            Layer::OVERLAY as u32, // 2 = overlay, 1 = top, 0 = background
-            "cava-bg".to_string(),
+            None, // output = None (todos)
+            zwlr_layer_shell_v1::Layer::Overlay,
+            Some("cava-bg".to_string()),
+            (),
         );
-        layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        // Anclar a todos los bordes
+        layer_surface.set_anchor(
+            zwlr_layer_surface_v1::Anchor::Top
+                | zwlr_layer_surface_v1::Anchor::Bottom
+                | zwlr_layer_surface_v1::Anchor::Left
+                | zwlr_layer_surface_v1::Anchor::Right,
+        );
         layer_surface.set_exclusive_zone(-1);
         layer_surface.set_size(0, 0);
         app_state.layer_surface = layer_surface;
@@ -657,8 +655,8 @@ impl WaylandRenderer {
         // Esperar a que configure nos dé el tamaño real
         let start = Instant::now();
         while !app_state.configured && start.elapsed() < Duration::from_secs(2) {
-            app_state.event_queue.dispatch_pending(&mut app_state)?;
-            app_state.event_queue.flush()?;
+            event_queue.dispatch_pending(&mut app_state)?;
+            event_queue.flush()?;
             thread::sleep(Duration::from_millis(10));
         }
         if !app_state.configured {
@@ -667,10 +665,7 @@ impl WaylandRenderer {
         }
 
         // Inicializar gráficos
-        if let Err(e) = app_state.init_graphics() {
-            error!("Graphics init failed: {}", e);
-            return Err(e);
-        }
+        app_state.init_graphics(&conn)?;
 
         // Ctrl+C handler
         let running_clone = self.running.clone();
@@ -683,8 +678,8 @@ impl WaylandRenderer {
 
         // Bucle principal
         while app_state.running.load(Ordering::SeqCst) {
-            let _ = app_state.event_queue.dispatch_pending(&mut app_state);
-            let _ = app_state.event_queue.flush();
+            let _ = event_queue.dispatch_pending(&mut app_state);
+            let _ = event_queue.flush();
 
             if app_state.last_frame.elapsed() >= app_state.frame_duration {
                 if let Err(e) = app_state.draw() {
@@ -700,94 +695,4 @@ impl WaylandRenderer {
         info!("Wayland renderer stopped");
         Ok(())
     }
-}
-
-// -----------------------------------------------------------------------------
-// Definiciones auxiliares (protocolos no estándar)
-// -----------------------------------------------------------------------------
-
-wayland_client::scoped_event! {
-    pub enum ZwlrLayerShellV1Event {}
-}
-
-pub type ZwlrLayerShellV1 = wayland_client::Proxy<ZwlrLayerShellV1Event>;
-
-impl ZwlrLayerShellV1 {
-    pub fn get_layer_surface(
-        &self,
-        qh: &QueueHandle<impl Dispatch<ZwlrLayerSurfaceV1, ()>>,
-        surface: &wl_surface::WlSurface,
-        output: Option<&wl_output::WlOutput>,
-        layer: u32,
-        namespace: String,
-    ) -> ZwlrLayerSurfaceV1 {
-        let id = self.id();
-        let conn = self.connection();
-        let obj = conn.create_proxy(qh, ());
-        conn.send_request(
-            &self,
-            &[wayland_client::sys::common::Argument::NewId(obj.id().as_raw()),
-              wayland_client::sys::common::Argument::Object(surface.id().as_raw()),
-              wayland_client::sys::common::Argument::Object(output.map(|o| o.id().as_raw()).unwrap_or(0)),
-              wayland_client::sys::common::Argument::Uint(layer),
-              wayland_client::sys::common::Argument::Str(namespace.as_bytes())],
-        );
-        obj
-    }
-}
-
-wayland_client::scoped_event! {
-    pub enum ZwlrLayerSurfaceV1Event {
-        Configure { serial: u32, width: u32, height: u32 },
-        Closed,
-    }
-}
-
-pub type ZwlrLayerSurfaceV1 = wayland_client::Proxy<ZwlrLayerSurfaceV1Event>;
-
-impl ZwlrLayerSurfaceV1 {
-    pub fn set_anchor(&self, anchor: u32) {
-        self.connection().send_request(
-            self,
-            &[wayland_client::sys::common::Argument::Uint(anchor)],
-        );
-    }
-
-    pub fn set_exclusive_zone(&self, zone: i32) {
-        self.connection().send_request(
-            self,
-            &[wayland_client::sys::common::Argument::Int(zone)],
-        );
-    }
-
-    pub fn set_size(&self, width: u32, height: u32) {
-        self.connection().send_request(
-            self,
-            &[wayland_client::sys::common::Argument::Uint(width),
-              wayland_client::sys::common::Argument::Uint(height)],
-        );
-    }
-
-    pub fn ack_configure(&self, serial: u32) {
-        self.connection().send_request(
-            self,
-            &[wayland_client::sys::common::Argument::Uint(serial)],
-        );
-    }
-}
-
-#[allow(dead_code)]
-mod Layer {
-    pub const BACKGROUND: u32 = 0;
-    pub const BOTTOM: u32 = 1;
-    pub const TOP: u32 = 2;
-    pub const OVERLAY: u32 = 3;
-}
-
-#[allow(dead_code)]
-mod Anchor {
-    pub const TOP: u32 = 1;
-    pub const BOTTOM: u32 = 2;
-    pub const LEFT: u32 = 4;
-    pub const RIGHT: u32 = 8;
 }
