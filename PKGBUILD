@@ -6,14 +6,14 @@ pkgdesc="Native CAVA audio visualizer for Hyprland with adaptive gradient colors
 arch=('x86_64')
 url="https://github.com/leriart/cava-bg"
 license=('MIT')
-depends=('cava' 'wayland' 'libxkbcommon')
+depends=('cava' 'wayland' 'libxkbcommon' 'gcc-libs')
 makedepends=('rust' 'cargo' 'pkg-config' 'wayland-protocols')
 source=("$pkgname-$pkgver.tar.gz::https://github.com/leriart/cava-bg/archive/refs/tags/$pkgver.tar.gz")
 sha256sums=('SKIP')
 
 build() {
   cd "$pkgname-$pkgver"
-  cargo build --release --locked
+  cargo build --release
 }
 
 check() {
