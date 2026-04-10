@@ -1,5 +1,5 @@
 //! Complete Wayland renderer for cava-bg
-//! Based on wallpaper-cava implementation
+//! Based on wallpaper-cava implementation with proper EGL API usage
 
 use anyhow::{anyhow, Context, Result};
 use log::{info, warn};
@@ -14,8 +14,9 @@ use crate::config::Config;
 use crate::cava_manager::CavaManager;
 use crate::wallpaper::WallpaperAnalyzer;
 
-// Wayland and EGL
+// Wayland and EGL - follow wallpaper-cava pattern
 use khronos_egl as egl;
+use egl::API as egl_api; // Important: alias egl::API as egl_api
 use gl::types::{GLsizei, GLsizeiptr};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
@@ -41,23 +42,37 @@ use wayland_client::{
 use wayland_egl::WlEglSurface;
 
 // ============================================================================
-// Shaders (simplified version)
+// Shaders (from wallpaper-cava)
 // ============================================================================
 
 const VERTEX_SHADER_SRC: &str = r#"
-#version 330 core
-layout (location = 0) in vec2 position;
+#version 430 core
+in vec2 position;
 void main() {
     gl_Position = vec4(position, 0.0, 1.0);
 }
 "#;
 
 const FRAGMENT_SHADER_SRC: &str = r#"
-#version 330 core
-uniform vec4 uColor;
+#version 430 core
+layout(std430, binding = 0) buffer GradientColors {
+    int gradient_colors_size;
+    vec4 gradient_colors[];
+};
+uniform vec2 WindowSize;
 out vec4 fragColor;
 void main() {
-    fragColor = uColor;
+    if (gradient_colors_size == 1) {
+        fragColor = gradient_colors[0];
+    } else {
+        float findex = (gl_FragCoord.y * float(gradient_colors_size - 1)) / WindowSize.y;
+        int index = int(findex);
+        float step = findex - float(index);
+        if (index == gradient_colors_size - 1) {
+            index--;
+        }
+        fragColor = mix(gradient_colors[index], gradient_colors[index + 1], step);
+    }
 }
 "#;
 
@@ -82,11 +97,14 @@ struct AppState {
     shader_program: u32,
     vao: u32,
     vbo: u32,
+    gradient_colors_ssbo: u32,
+    windows_size_location: i32,
     bar_count: u32,
     bar_gap: f32,
-    colors: Vec<[f32; 4]>,
-    running: Arc<AtomicBool>,
+    background_color: [f32; 4],
+    preferred_output_name: Option<String>,
     compositor: CompositorState,
+    running: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -101,21 +119,18 @@ impl AppState {
                     unpacked_data[unpacked_data_index] = (num as f32) / 65530.0;
                 }
 
-                // Calculate bar dimensions
+                // Calculate bar dimensions (from wallpaper-cava)
                 let bar_width: f32 =
                     2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
                 let bar_gap_width: f32 = bar_width * self.bar_gap;
 
-                // Generate vertices
+                // Generate vertices (from wallpaper-cava)
                 let mut vertices: Vec<f32> = vec![0.0; self.bar_count as usize * 8];
-                let _fwidth: f32 = self.width as f32;
-                let _fheight: f32 = self.height as f32;
+                let fwidth: f32 = self.width as f32;
+                let fheight: f32 = self.height as f32;
 
                 for i in 0..self.bar_count as usize {
                     let bar_height: f32 = 2.0 * unpacked_data[i] - 1.0;
-                    let color_idx = i % self.colors.len();
-                    let _color = self.colors[color_idx];
-                    
                     vertices[i * 8] = bar_gap_width * i as f32 + bar_width * i as f32 - 1.0;
                     vertices[i * 8 + 1] = bar_height;
                     vertices[i * 8 + 2] = bar_gap_width * i as f32 + bar_width * (i + 1) as f32 - 1.0;
@@ -137,26 +152,25 @@ impl AppState {
                     );
                     gl::Enable(gl::BLEND);
                     gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-                    gl::ClearColor(0.0, 0.0, 0.0, 0.0);
+                    gl::ClearColor(
+                        self.background_color[0],
+                        self.background_color[1],
+                        self.background_color[2],
+                        self.background_color[3],
+                    );
                     gl::Clear(gl::COLOR_BUFFER_BIT);
                     gl::UseProgram(self.shader_program);
-                    
-                    // Draw each bar with its color
-                    for i in 0..self.bar_count as usize {
-                        let color_idx = i % self.colors.len();
-                        let color = self.colors[color_idx];
-                        let color_loc = unsafe { gl::GetUniformLocation(self.shader_program, CString::new("uColor").unwrap().as_ptr()) };
-                        unsafe {
-                            gl::Uniform4f(color_loc, color[0], color[1], color[2], color[3]);
-                        }
-                        gl::DrawArrays(gl::TRIANGLE_STRIP, (i * 4) as i32, 4);
-                    }
-                    
+                    gl::Uniform2f(self.windows_size_location, fwidth, fheight);
+                    gl::DrawElements(
+                        gl::TRIANGLES,
+                        (self.bar_count as usize * 3 * std::mem::size_of::<u16>()) as GLsizei,
+                        gl::UNSIGNED_SHORT,
+                        ptr::null(),
+                    );
                     gl::BindVertexArray(0);
                 }
 
-                // Swap buffers
-                let egl_api = &egl::API;
+                // Swap buffers using egl_api (from wallpaper-cava)
                 egl_api.swap_buffers(self.egl_display, self.egl_surface)
                     .context("Failed to swap buffers")?;
                 self.surface.frame(qh, self.surface.clone());
@@ -182,23 +196,36 @@ impl OutputHandler for AppState {
         output: wl_output::WlOutput,
     ) {
         if let Some(info) = self.output_state.info(&output) {
-            let old_surface = self.surface.clone();
-            self.surface = self.compositor.create_surface(qh);
-            self.layer_surface = self.layer_shell.create_layer_surface(
-                qh,
-                self.surface.clone(),
-                Layer::Bottom,
-                Some("cava-bg"),
-                Some(&output),
-            );
-            if let Some(logical_size) = info.logical_size {
-                self.width = logical_size.0 as u32;
-                self.height = logical_size.1 as u32;
+            let mut need_configuration = false;
+            if let Some(output_name) = info.name {
+                if let Some(preferred_output_name) = self.preferred_output_name.clone() {
+                    if output_name == preferred_output_name {
+                        need_configuration = true;
+                    }
+                }
             }
-            self.layer_surface.set_size(self.width, self.height);
-            self.layer_surface.set_anchor(Anchor::TOP);
-            self.surface.commit();
-            old_surface.destroy();
+            if self.preferred_output_name.is_none() {
+                need_configuration = true;
+            }
+            if need_configuration {
+                let old_surface = self.surface.clone();
+                self.surface = self.compositor.create_surface(qh);
+                self.layer_surface = self.layer_shell.create_layer_surface(
+                    qh,
+                    self.surface.clone(),
+                    Layer::Bottom,
+                    Some("cava-bg"),
+                    Some(&output),
+                );
+                if let Some(logical_size) = info.logical_size {
+                    self.width = logical_size.0 as u32;
+                    self.height = logical_size.1 as u32;
+                }
+                self.layer_surface.set_size(self.width, self.height);
+                self.layer_surface.set_anchor(Anchor::TOP);
+                self.surface.commit();
+                old_surface.destroy();
+            }
         }
     }
 
@@ -340,12 +367,12 @@ impl WaylandRenderer {
         let bar_count = self.config.bars.amount as u32;
         let cava_reader = self.cava_manager.take_reader()?;
 
-        // 3. Connect to Wayland
+        // 3. Connect to Wayland (from wallpaper-cava)
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
         let (globals, event_queue) = registry_queue_init(&conn).context("Failed to init registry")?;
         let qh = event_queue.handle();
 
-        // 4. Create event loop
+        // 4. Create event loop (from wallpaper-cava)
         let mut event_loop: EventLoop<AppState> =
             EventLoop::try_new().context("Failed to initialize event loop")?;
         let loop_handle = event_loop.handle();
@@ -353,7 +380,7 @@ impl WaylandRenderer {
             .insert(loop_handle)
             .map_err(|e| anyhow!("Failed to insert wayland source: {:?}", e))?;
 
-        // 5. Initialize compositor and layer shell
+        // 5. Initialize compositor and layer shell (from wallpaper-cava)
         let compositor = CompositorState::bind(&globals, &qh).context("wl_compositor not available")?;
         let surface = compositor.create_surface(&qh);
         let layer_shell = LayerShell::bind(&globals, &qh).context("layer shell not available")?;
@@ -368,8 +395,7 @@ impl WaylandRenderer {
         layer_surface.set_anchor(Anchor::TOP);
         surface.commit();
 
-        // 6. Initialize EGL
-        let egl_api = &egl::API;
+        // 6. Initialize EGL (from wallpaper-cava)
         egl_api.bind_api(egl::OPENGL_API).context("Failed to bind OpenGL API")?;
         let egl_display = unsafe {
             egl_api.get_display(conn.display().id().as_ptr() as *mut std::ffi::c_void)
@@ -390,8 +416,8 @@ impl WaylandRenderer {
             .context("No suitable EGL config found")?;
 
         const CONTEXT_ATTRIBUTES: [i32; 7] = [
-            egl::CONTEXT_MAJOR_VERSION, 3,
-            egl::CONTEXT_MINOR_VERSION, 3,
+            egl::CONTEXT_MAJOR_VERSION, 4,
+            egl::CONTEXT_MINOR_VERSION, 6,
             egl::CONTEXT_OPENGL_PROFILE_MASK,
             egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
             egl::NONE,
@@ -424,7 +450,7 @@ impl WaylandRenderer {
 
         gl::load_with(|name| egl_api.get_proc_address(name).unwrap() as *const std::ffi::c_void);
 
-        // 7. Compile shaders
+        // 7. Compile shaders (from wallpaper-cava)
         let vert_shader_source = CString::new(VERTEX_SHADER_SRC).unwrap();
         let vert_shader = unsafe { gl::CreateShader(gl::VERTEX_SHADER) };
         unsafe {
@@ -472,15 +498,61 @@ impl WaylandRenderer {
             }
         }
 
-        // 8. Create buffers
+        // 8. Create buffers (from wallpaper-cava)
         let mut vbo = 0;
         let mut vao = 0;
+        let mut ebo = 0;
+        let mut gradient_colors_ssbo = 0;
+
+        // Prepare gradient colors buffer (from wallpaper-cava)
+        let gradient_colors_size = colors.len() as i32;
+        let mut buffer_data: Vec<u8> = (gradient_colors_size).to_le_bytes().to_vec();
+        buffer_data.extend([0, 0, 0, 0].repeat(3)); // Fix for vec4 alignment
+        for color in colors.iter() {
+            for color_value in color {
+                buffer_data.extend_from_slice(&color_value.to_le_bytes());
+            }
+        }
+
+        // Create indices (from wallpaper-cava)
+        let mut indices: Vec<u16> = vec![0; bar_count as usize * 6];
+        for i in 0..bar_count as usize {
+            indices[i * 6] = i as u16 * 4;
+            indices[i * 6 + 1] = i as u16 * 4 + 1;
+            indices[i * 6 + 2] = i as u16 * 4 + 2;
+            indices[i * 6 + 3] = i as u16 * 4 + 1;
+            indices[i * 6 + 4] = i as u16 * 4 + 2;
+            indices[i * 6 + 5] = i as u16 * 4 + 3;
+        }
+
+        let window_size_string = CString::new("WindowSize").unwrap();
+        let windows_size_location = unsafe {
+            gl::GetUniformLocation(shader_program, window_size_string.as_ptr())
+        };
 
         unsafe {
             gl::GenVertexArrays(1, &mut vao);
             gl::BindVertexArray(vao);
             gl::GenBuffers(1, &mut vbo);
+            gl::GenBuffers(1, &mut ebo);
+            gl::GenBuffers(1, &mut gradient_colors_ssbo);
             gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
+            gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, ebo);
+            gl::BufferData(
+                gl::ELEMENT_ARRAY_BUFFER,
+                (indices.len() * std::mem::size_of::<u16>()) as GLsizeiptr,
+                indices.as_ptr() as *const std::ffi::c_void,
+                gl::STATIC_DRAW,
+            );
+            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, gradient_colors_ssbo);
+            gl::BufferData(
+                gl::SHADER_STORAGE_BUFFER,
+                buffer_data.len() as GLsizeiptr,
+                buffer_data.as_ptr() as *const std::ffi::c_void,
+                gl::STATIC_DRAW,
+            );
+            gl::BindBufferBase(gl::SHADER_STORAGE_BUFFER, 0, gradient_colors_ssbo);
+            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
             gl::VertexAttribPointer(
                 0,
                 2,
@@ -511,11 +583,14 @@ impl WaylandRenderer {
             shader_program,
             vao,
             vbo,
+            gradient_colors_ssbo,
+            windows_size_location,
             bar_count,
             bar_gap: self.config.bars.gap,
-            colors: colors.clone(),
-            running: self.running.clone(),
+            background_color: [0.0, 0.0, 0.0, 0.0], // Transparent background
+            preferred_output_name: None,
             compositor,
+            running: self.running.clone(),
         };
 
         info!("✅ Wayland renderer started");
@@ -530,7 +605,7 @@ impl WaylandRenderer {
             running_clone.store(false, Ordering::SeqCst);
         }).context("Failed to set Ctrl+C handler")?;
 
-        // 11. Run event loop
+        // 11. Run event loop (from wallpaper-cava)
         let frame_duration = Duration::from_secs(1) / self.config.general.framerate;
         event_loop
             .run(frame_duration, &mut app_state, |_| {})
