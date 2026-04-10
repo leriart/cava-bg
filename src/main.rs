@@ -231,7 +231,7 @@ fn main() -> Result<()> {
             } else {
                 "Manual configuration"
             });
-            println!("Layer: Background (over wallpaper)");
+            println!("Layer: Top (above wallpaper, below windows)");
             println!("========================================");
             println!("\n To test: Play audio (music, video, etc.)");
             println!("  Visualizer will appear as a transparent overlay");

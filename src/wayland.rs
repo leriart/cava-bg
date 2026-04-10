@@ -213,7 +213,7 @@ impl OutputHandler for AppState {
                 self.layer_surface = self.layer_shell.create_layer_surface(
                     qh,
                     self.surface.clone(),
-                    Layer::Bottom,
+                    Layer::Top,  // Changed from Bottom to Top
                     Some("cava-bg"),
                     Some(&output),
                 );
@@ -222,7 +222,9 @@ impl OutputHandler for AppState {
                     self.height = logical_size.1 as u32;
                 }
                 self.layer_surface.set_size(self.width, self.height);
-                self.layer_surface.set_anchor(Anchor::TOP);
+                // Combine all anchors to cover entire screen
+                self.layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+                self.layer_surface.set_exclusive_zone(-1);   // -1 means no exclusive zone
                 self.surface.commit();
                 old_surface.destroy();
             }
@@ -387,12 +389,15 @@ impl WaylandRenderer {
         let layer_surface = layer_shell.create_layer_surface(
             &qh,
             surface.clone(),
-            Layer::Bottom,
+            Layer::Top,  // Changed from Bottom to Top - appears above wallpaper but below windows
             Some("cava-bg"),
             None,
         );
-        layer_surface.set_size(256, 256);
-        layer_surface.set_anchor(Anchor::TOP);
+        // Initial size - will be updated when we get output info
+        layer_surface.set_size(1920, 1080);
+        // Combine all anchors to cover entire screen
+        layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer_surface.set_exclusive_zone(-1);   // -1 means no exclusive zone, doesn't push windows
         surface.commit();
 
         // 6. Initialize EGL (from wallpaper-cava)
@@ -569,8 +574,8 @@ impl WaylandRenderer {
         let mut app_state = AppState {
             registry_state: RegistryState::new(&globals),
             output_state: OutputState::new(&globals, &qh),
-            width: 256,
-            height: 256,
+            width: 1920,  // Initial size
+            height: 1080,
             layer_shell,
             layer_surface,
             surface,
@@ -595,7 +600,8 @@ impl WaylandRenderer {
 
         info!("Wayland renderer started");
         info!("Colors: {} | Bars: {}", colors.len(), bar_count);
-        info!("Window: {}x{}", app_state.width, app_state.height);
+        info!("Layer: Top (above wallpaper, below windows)");
+        info!("Anchor: TOP|BOTTOM|LEFT|RIGHT (full screen coverage)");
         info!("Press Ctrl+C to exit");
 
         // 10. Signal handler - use the global signal handler from main.rs
