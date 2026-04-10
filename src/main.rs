@@ -11,7 +11,7 @@ mod config;
 mod renderer;
 mod shader;
 mod wallpaper;
-mod wallpaper_cava_final;
+mod simple_overlay;
 
 use cli::*;
 use config::*;
@@ -211,26 +211,26 @@ fn main() -> Result<()> {
     // Start monitor thread for cava
     cava_manager.start_monitor(config.clone());
 
-    // Check if we can run final wallpaper-cava
-    let can_run_final = wallpaper_cava_final::check_final().unwrap_or(false);
+    // Check if we can run simple overlay
+    let can_run_overlay = simple_overlay::check_simple_overlay().unwrap_or(false);
     
-    if can_run_final {
-        println!("\nWayland detected - creating window...");
+    if can_run_overlay {
+        println!("\nWayland detected - creating overlay...");
         
-        // Create a new cava_manager for window
-        let mut window_cava_manager = CavaManager::new(&config)?;
-        window_cava_manager.start(&config)?;
+        // Create a new cava_manager for overlay
+        let mut overlay_cava_manager = CavaManager::new(&config)?;
+        overlay_cava_manager.start(&config)?;
         
-        // Try to create final wallpaper-cava window
-        println!("Initializing window...");
-        match wallpaper_cava_final::WallpaperCavaFinal::new(config.clone(), window_cava_manager) {
-            Ok(window) => {
-                println!("Window initialized");
+        // Try to create simple overlay
+        println!("Initializing overlay...");
+        match simple_overlay::SimpleOverlay::new(config.clone(), overlay_cava_manager) {
+            Ok(overlay) => {
+                println!("Overlay initialized");
                 
                 println!("\nStarting audio visualizer...");
                 println!("========================================");
                 println!("Status: Audio processing ACTIVE");
-                println!("Mode: Wayland (window on wallpaper)");
+                println!("Mode: Wayland (overlay on wallpaper)");
                 println!("Bars: {}", config.bars.amount);
                 println!("Framerate: {}", config.general.framerate);
                 println!("Colors: {}", if config.general.auto_colors {
@@ -240,13 +240,14 @@ fn main() -> Result<()> {
                 });
                 println!("========================================");
                 println!("\nTo test: Play audio (music, video, etc.)");
-                println!("Look for a transparent window on your wallpaper");
-                println!("The window does not interfere with applications");
+                println!("Look for visualization rendered OVER your wallpaper");
+                println!("Works with ANY wallpaper manager (hyprpaper, swaybg, etc.)");
+                println!("The overlay does not interfere with applications");
                 println!();
                 
-                // Run window
-                if let Err(e) = window.run() {
-                    eprintln!("Error in window: {}", e);
+                // Run overlay
+                if let Err(e) = overlay.run() {
+                    eprintln!("Error in overlay: {}", e);
                     eprintln!("Falling back to terminal mode...");
                     
                     // Run terminal renderer
@@ -254,7 +255,7 @@ fn main() -> Result<()> {
                 }
             }
             Err(e) => {
-                eprintln!("Window initialization failed: {}", e);
+                eprintln!("Overlay initialization failed: {}", e);
                 eprintln!("Falling back to terminal mode...");
                 
                 // Run terminal renderer
@@ -262,8 +263,8 @@ fn main() -> Result<()> {
             }
         }
     } else {
-        // Cannot create window, use terminal
-        println!("\nCannot create window, using terminal mode...");
+        // Cannot create overlay, use terminal
+        println!("\nCannot create overlay, using terminal mode...");
         run_terminal_renderer(config, cava_manager)?;
     }
     
