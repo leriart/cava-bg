@@ -8,7 +8,7 @@ url="https://github.com/leriart/cava-bg"
 license=('MIT')
 depends=('cava' 'wayland' 'libxkbcommon')
 makedepends=('rust' 'cargo' 'pkg-config' 'wayland-protocols')
-source=("$pkgname-$pkgver.tar.gz::https://github.com/leriart/cava-bg/archive/refs/tags/v$pkgver.tar.gz")
+source=("$pkgname-$pkgver.tar.gz::https://github.com/leriart/cava-bg/archive/refs/tags/$pkgver.tar.gz")
 sha256sums=('SKIP')
 
 build() {
