@@ -1,7 +1,7 @@
 //! Wayland renderer using smithay-client-toolkit 0.19
 
 use anyhow::{anyhow, Context, Result};
-use log::{debug, error, info, warn};
+use log::{error, info, warn};
 use std::ffi::CString;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -20,11 +20,12 @@ use smithay_client_toolkit::{
     registry::{ProvidesRegistryState, RegistryState},
     delegate_compositor, delegate_layer, delegate_output, delegate_registry,
 };
+use wayland_client::protocol::wl_output::Transform;
 use wayland_client::protocol::wl_output::WlOutput;
 use wayland_client::protocol::wl_surface::WlSurface;
 use wayland_client::{
     globals::registry_queue_init,
-    Connection, DispatchData, EventQueue, Proxy, QueueHandle,
+    Connection, EventQueue, Proxy, QueueHandle,
 };
 use wayland_egl::WlEglSurface;
 
@@ -447,7 +448,7 @@ impl CompositorHandler for AppState {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _surface: &WlSurface,
-        _new_transform: wl_output::Transform,
+        _new_transform: Transform,
     ) {
     }
     fn frame(
@@ -666,10 +667,8 @@ impl WaylandRenderer {
         // Main loop
         while app_state.running.load(Ordering::SeqCst) {
             // Dispatch pending events (non‑blocking)
-            event_queue.dispatch_pending(&mut app_state).unwrap_or_else(|e| {
-                error!("Event dispatch error: {}", e);
-            });
-            event_queue.flush().unwrap_or_else(|e| error!("Flush error: {}", e));
+            let _ = event_queue.dispatch_pending(&mut app_state);
+            let _ = event_queue.flush();
 
             if !app_state.configured {
                 thread::sleep(Duration::from_millis(10));
