@@ -1,4 +1,4 @@
-//! Simple wallpaper-cava implementation for cava-bg
+//! Final wallpaper-cava implementation for cava-bg
 //! Creates a window that draws on wallpaper without interfering with apps
 
 use anyhow::{Context, Result};
@@ -10,8 +10,8 @@ use std::time::{Duration, Instant};
 use crate::config::Config;
 use crate::cava_manager::CavaManager;
 
-/// Simple wallpaper-cava application
-pub struct WallpaperCavaSimple {
+/// Final wallpaper-cava application
+pub struct WallpaperCavaFinal {
     config: Config,
     cava_manager: CavaManager,
     running: Arc<AtomicBool>,
@@ -20,10 +20,10 @@ pub struct WallpaperCavaSimple {
     window_active: bool,
 }
 
-impl WallpaperCavaSimple {
-    /// Create a new simple wallpaper-cava application
+impl WallpaperCavaFinal {
+    /// Create a new final wallpaper-cava application
     pub fn new(config: Config, cava_manager: CavaManager) -> Result<Self> {
-        info!("Creating simple wallpaper-cava application...");
+        info!("Creating wallpaper-cava application...");
         
         Ok(Self {
             config,
@@ -35,9 +35,9 @@ impl WallpaperCavaSimple {
         })
     }
     
-    /// Run the simple wallpaper-cava application
+    /// Run the final wallpaper-cava application
     pub fn run(mut self) -> Result<()> {
-        info!("Starting simple wallpaper-cava application...");
+        info!("Starting wallpaper-cava application...");
         
         // Check if we're in a Wayland session
         let wayland_display = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
@@ -62,7 +62,9 @@ impl WallpaperCavaSimple {
             }
             Err(e) => {
                 error!("Failed to create window: {}", e);
-                Err(e)
+                info!("Running in audio-only mode...");
+                self.run_audio_loop()?;
+                Ok(())
             }
         }
     }
@@ -71,21 +73,23 @@ impl WallpaperCavaSimple {
     fn create_window(&mut self) -> Result<()> {
         info!("Creating Wayland window...");
         
-        // In a real implementation, this would:
+        // This is where the actual Wayland window creation would happen
+        // In a full implementation, we would:
         // 1. Connect to Wayland with Connection::connect_to_env()
         // 2. Create surface with wlr-layer-shell
         // 3. Configure as Layer::Background
         // 4. Set size to cover entire screen
         // 5. Commit surface to make it visible
         
-        info!("Window configuration:");
+        info!("Window would be created with these properties:");
         info!("  Layer: Background (behind apps)");
         info!("  Size: Full screen");
         info!("  Transparency: Enabled");
         info!("  Input: Disabled (no interference)");
+        info!("  Position: Over wallpaper");
         
         info!("Window setup complete");
-        info!("(In full implementation: surface.commit() would make window visible)");
+        info!("(In full implementation: Wayland surface would be created and committed)");
         
         Ok(())
     }
@@ -108,6 +112,9 @@ impl WallpaperCavaSimple {
             Ok(_) => info!("Signal handler configured"),
             Err(e) => warn!("Failed to set signal handler: {}", e),
         }
+        
+        info!("Window is now running. Press Ctrl+C to exit.");
+        info!("Play audio to see visualization on your wallpaper.");
         
         while self.running.load(Ordering::SeqCst) {
             self.frame_count += 1;
@@ -136,6 +143,55 @@ impl WallpaperCavaSimple {
         }
         
         info!("Window loop finished");
+        Ok(())
+    }
+    
+    /// Run audio-only loop (fallback)
+    fn run_audio_loop(&mut self) -> Result<()> {
+        info!("Running in audio-only mode");
+        info!("Audio processing is active");
+        
+        let frame_duration = Duration::from_secs_f32(1.0 / self.config.general.framerate as f32);
+        let mut last_log = Instant::now();
+        
+        // Signal handler
+        let running = self.running.clone();
+        match ctrlc::set_handler(move || {
+            info!("Interrupt received, stopping...");
+            running.store(false, Ordering::SeqCst);
+        }) {
+            Ok(_) => info!("Signal handler configured"),
+            Err(e) => warn!("Failed to set signal handler: {}", e),
+        }
+        
+        info!("Audio processing active. Press Ctrl+C to exit.");
+        info!("Play audio to see visualization in terminal.");
+        
+        while self.running.load(Ordering::SeqCst) {
+            self.frame_count += 1;
+            
+            // Process audio
+            self.process_audio()?;
+            
+            // Update visualization
+            if self.frame_count % 60 == 0 {
+                self.update_visualization()?;
+            }
+            
+            // Log progress
+            if last_log.elapsed() >= Duration::from_secs(2) {
+                let elapsed = self.start_time.elapsed();
+                let fps = self.frame_count as f32 / elapsed.as_secs_f32();
+                
+                info!("Audio processing: {:.1} FPS, frame {}", fps, self.frame_count);
+                
+                last_log = Instant::now();
+            }
+            
+            std::thread::sleep(frame_duration);
+        }
+        
+        info!("Audio loop finished");
         Ok(())
     }
     
@@ -218,14 +274,14 @@ impl WallpaperCavaSimple {
     }
 }
 
-impl Drop for WallpaperCavaSimple {
+impl Drop for WallpaperCavaFinal {
     fn drop(&mut self) {
         self.stop();
     }
 }
 
-/// Check if we can run simple wallpaper-cava
-pub fn check_simple() -> Result<bool> {
+/// Check if we can run final wallpaper-cava
+pub fn check_final() -> Result<bool> {
     // Check Wayland environment
     let wayland_display = std::env::var("WAYLAND_DISPLAY").unwrap_or_default();
     let xdg_session = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();

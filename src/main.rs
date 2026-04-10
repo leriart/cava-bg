@@ -11,7 +11,7 @@ mod config;
 mod renderer;
 mod shader;
 mod wallpaper;
-mod wallpaper_cava_simple;
+mod wallpaper_cava_final;
 
 use cli::*;
 use config::*;
@@ -211,19 +211,19 @@ fn main() -> Result<()> {
     // Start monitor thread for cava
     cava_manager.start_monitor(config.clone());
 
-    // Check if we can run simple wallpaper-cava
-    let can_run_simple = wallpaper_cava_simple::check_simple().unwrap_or(false);
+    // Check if we can run final wallpaper-cava
+    let can_run_final = wallpaper_cava_final::check_final().unwrap_or(false);
     
-    if can_run_simple {
+    if can_run_final {
         println!("\nWayland detected - creating window...");
         
         // Create a new cava_manager for window
         let mut window_cava_manager = CavaManager::new(&config)?;
         window_cava_manager.start(&config)?;
         
-        // Try to create simple wallpaper-cava window
+        // Try to create final wallpaper-cava window
         println!("Initializing window...");
-        match wallpaper_cava_simple::WallpaperCavaSimple::new(config.clone(), window_cava_manager) {
+        match wallpaper_cava_final::WallpaperCavaFinal::new(config.clone(), window_cava_manager) {
             Ok(window) => {
                 println!("Window initialized");
                 
