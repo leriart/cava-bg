@@ -11,7 +11,7 @@ mod config;
 mod renderer;
 mod shader;
 mod wallpaper;
-mod wayland_working;
+mod wallpaper_cava_simple;
 
 use cli::*;
 use config::*;
@@ -211,59 +211,59 @@ fn main() -> Result<()> {
     // Start monitor thread for cava
     cava_manager.start_monitor(config.clone());
 
-    // Check if we can create a WORKING Wayland window
-    let can_create_working = wayland_working::check_working().unwrap_or(false);
+    // Check if we can run simple wallpaper-cava
+    let can_run_simple = wallpaper_cava_simple::check_simple().unwrap_or(false);
     
-    if can_create_working {
-        println!("\n🎯 Wayland detectado - creando ventana FUNCIONAL...");
+    if can_run_simple {
+        println!("\nWayland detected - creating window...");
         
-        // Create a new cava_manager for working window
-        let mut working_cava_manager = CavaManager::new(&config)?;
-        working_cava_manager.start(&config)?;
+        // Create a new cava_manager for window
+        let mut window_cava_manager = CavaManager::new(&config)?;
+        window_cava_manager.start(&config)?;
         
-        // Try to create WORKING window
-        println!("🚀 Inicializando ventana Wayland FUNCIONAL...");
-        match wayland_working::WaylandWorking::new(config.clone(), working_cava_manager) {
-            Ok(working_window) => {
-                println!("✅ Ventana FUNCIONAL inicializada");
+        // Try to create simple wallpaper-cava window
+        println!("Initializing window...");
+        match wallpaper_cava_simple::WallpaperCavaSimple::new(config.clone(), window_cava_manager) {
+            Ok(window) => {
+                println!("Window initialized");
                 
-                println!("\n🎵 Iniciando visualizador de audio...");
+                println!("\nStarting audio visualizer...");
                 println!("========================================");
-                println!("Estado: Procesamiento de audio ACTIVO");
-                println!("Modo: Wayland (ventana sobre wallpaper)");
-                println!("Barras: {}", config.bars.amount);
-                println!("FPS: {}", config.general.framerate);
-                println!("Colores: {}", if config.general.auto_colors {
-                    "Adaptativos (del wallpaper)"
+                println!("Status: Audio processing ACTIVE");
+                println!("Mode: Wayland (window on wallpaper)");
+                println!("Bars: {}", config.bars.amount);
+                println!("Framerate: {}", config.general.framerate);
+                println!("Colors: {}", if config.general.auto_colors {
+                    "Adaptive (from wallpaper)"
                 } else {
-                    "Configuración manual"
+                    "Manual configuration"
                 });
                 println!("========================================");
-                println!("\n🎧 Para probar: Reproduce audio (música, video, etc.)");
-                println!("👀 ¡Busca una ventana transparente sobre tu wallpaper!");
-                println!("💡 La ventana NO interfiere con apps");
+                println!("\nTo test: Play audio (music, video, etc.)");
+                println!("Look for a transparent window on your wallpaper");
+                println!("The window does not interfere with applications");
                 println!();
                 
-                // Run WORKING window
-                if let Err(e) = working_window.run() {
-                    eprintln!("❌ Error en ventana FUNCIONAL: {}", e);
-                    eprintln!("↪️  Volviendo a modo terminal...");
+                // Run window
+                if let Err(e) = window.run() {
+                    eprintln!("Error in window: {}", e);
+                    eprintln!("Falling back to terminal mode...");
                     
                     // Run terminal renderer
                     run_terminal_renderer(config, cava_manager)?;
                 }
             }
             Err(e) => {
-                eprintln!("❌ Inicialización de ventana FUNCIONAL falló: {}", e);
-                eprintln!("↪️  Volviendo a modo terminal...");
+                eprintln!("Window initialization failed: {}", e);
+                eprintln!("Falling back to terminal mode...");
                 
                 // Run terminal renderer
                 run_terminal_renderer(config, cava_manager)?;
             }
         }
     } else {
-        // Cannot create WORKING window, use terminal
-        println!("\n⚠️  No se puede crear ventana FUNCIONAL, usando modo terminal...");
+        // Cannot create window, use terminal
+        println!("\nCannot create window, using terminal mode...");
         run_terminal_renderer(config, cava_manager)?;
     }
     
