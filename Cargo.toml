@@ -17,6 +17,7 @@ anyhow = "1.0"
 log = "0.4"
 env_logger = "0.10"
 ctrlc = "3.4"
+crossbeam-channel = "0.5"
 gl = "0.14.0"
 khronos-egl = { version = "6.0.0", features = ["static", "1_0", "1_1", "1_2", "1_3", "1_4", "1_5"] }
 smithay-client-toolkit = { git = "https://github.com/Smithay/client-toolkit.git" }

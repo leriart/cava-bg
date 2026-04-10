@@ -1,5 +1,6 @@
 //! Complete Wayland renderer for cava-bg
-//! Based on wallpaper-cava implementation with proper EGL API usage
+//! Uses swaybg pattern: Layer::Background, size 0,0, all anchors
+//! Renders audio visualization with OpenGL
 
 use anyhow::{anyhow, Context, Result};
 use log::{info, warn};
@@ -14,9 +15,8 @@ use crate::config::Config;
 use crate::cava_manager::CavaManager;
 use crate::wallpaper::WallpaperAnalyzer;
 
-// Wayland and EGL - follow wallpaper-cava pattern
+// Wayland and EGL
 use khronos_egl as egl;
-use egl::API as egl_api; // Important: alias egl::API as egl_api
 use gl::types::{GLsizei, GLsizeiptr};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
@@ -119,12 +119,12 @@ impl AppState {
                     unpacked_data[unpacked_data_index] = (num as f32) / 65530.0;
                 }
 
-                // Calculate bar dimensions (from wallpaper-cava)
+                // Calculate bar dimensions
                 let bar_width: f32 =
                     2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
                 let bar_gap_width: f32 = bar_width * self.bar_gap;
 
-                // Generate vertices (from wallpaper-cava)
+                // Generate vertices
                 let mut vertices: Vec<f32> = vec![0.0; self.bar_count as usize * 8];
                 let fwidth: f32 = self.width as f32;
                 let fheight: f32 = self.height as f32;
@@ -163,15 +163,15 @@ impl AppState {
                     gl::Uniform2f(self.windows_size_location, fwidth, fheight);
                     gl::DrawElements(
                         gl::TRIANGLES,
-                        (self.bar_count as usize * 3 * std::mem::size_of::<u16>()) as GLsizei,
+                        (self.bar_count as usize * 6) as GLsizei,  // 6 indices per bar (2 triangles)
                         gl::UNSIGNED_SHORT,
                         ptr::null(),
                     );
                     gl::BindVertexArray(0);
                 }
 
-                // Swap buffers using egl_api (from wallpaper-cava)
-                egl_api.swap_buffers(self.egl_display, self.egl_surface)
+                // Swap buffers using egl::API (singleton)
+                egl::API.swap_buffers(self.egl_display, self.egl_surface)
                     .context("Failed to swap buffers")?;
                 self.surface.frame(qh, self.surface.clone());
                 Ok(())
@@ -213,7 +213,7 @@ impl OutputHandler for AppState {
                 self.layer_surface = self.layer_shell.create_layer_surface(
                     qh,
                     self.surface.clone(),
-                    Layer::Top,  // Changed from Bottom to Top
+                    Layer::Background, // Like swaybg
                     Some("cava-bg"),
                     Some(&output),
                 );
@@ -221,10 +221,10 @@ impl OutputHandler for AppState {
                     self.width = logical_size.0 as u32;
                     self.height = logical_size.1 as u32;
                 }
-                self.layer_surface.set_size(self.width, self.height);
-                // Combine all anchors to cover entire screen
+                // Use size 0,0 to let compositor decide full size (swaybg pattern)
+                self.layer_surface.set_size(0, 0);
                 self.layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
-                self.layer_surface.set_exclusive_zone(-1);   // -1 means no exclusive zone
+                self.layer_surface.set_exclusive_zone(-1);
                 self.surface.commit();
                 old_surface.destroy();
             }
@@ -323,9 +323,16 @@ impl LayerShellHandler for AppState {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
         _layer: &LayerSurface,
-        _configure: LayerSurfaceConfigure,
+        configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
+        // Update dimensions from configure
+        let (width, height) = configure.new_size;
+        if width > 0 && height > 0 {
+            self.width = width;
+            self.height = height;
+            self.wl_egl_surface.resize(width as i32, height as i32, 0, 0);
+        }
     }
 }
 
@@ -369,12 +376,12 @@ impl WaylandRenderer {
         let bar_count = self.config.bars.amount as u32;
         let cava_reader = self.cava_manager.take_reader()?;
 
-        // 3. Connect to Wayland (from wallpaper-cava)
+        // 3. Connect to Wayland
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
         let (globals, event_queue) = registry_queue_init(&conn).context("Failed to init registry")?;
         let qh = event_queue.handle();
 
-        // 4. Create event loop (from wallpaper-cava)
+        // 4. Create event loop
         let mut event_loop: EventLoop<AppState> =
             EventLoop::try_new().context("Failed to initialize event loop")?;
         let loop_handle = event_loop.handle();
@@ -382,31 +389,30 @@ impl WaylandRenderer {
             .insert(loop_handle)
             .map_err(|e| anyhow!("Failed to insert wayland source: {:?}", e))?;
 
-        // 5. Initialize compositor and layer shell (from wallpaper-cava)
+        // 5. Initialize compositor and layer shell
         let compositor = CompositorState::bind(&globals, &qh).context("wl_compositor not available")?;
         let surface = compositor.create_surface(&qh);
         let layer_shell = LayerShell::bind(&globals, &qh).context("layer shell not available")?;
         let layer_surface = layer_shell.create_layer_surface(
             &qh,
             surface.clone(),
-            Layer::Top,  // Changed from Bottom to Top - appears above wallpaper but below windows
+            Layer::Background, // Like swaybg
             Some("cava-bg"),
             None,
         );
-        // Initial size - will be updated when we get output info
-        layer_surface.set_size(1920, 1080);
-        // Combine all anchors to cover entire screen
+        // Use size 0,0 to let compositor fill screen
+        layer_surface.set_size(0, 0);
         layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
-        layer_surface.set_exclusive_zone(-1);   // -1 means no exclusive zone, doesn't push windows
+        layer_surface.set_exclusive_zone(-1);
         surface.commit();
 
-        // 6. Initialize EGL (from wallpaper-cava)
-        egl_api.bind_api(egl::OPENGL_API).context("Failed to bind OpenGL API")?;
+        // 6. Initialize EGL
+        egl::API.bind_api(egl::OPENGL_API).context("Failed to bind OpenGL API")?;
         let egl_display = unsafe {
-            egl_api.get_display(conn.display().id().as_ptr() as *mut std::ffi::c_void)
+            egl::API.get_display(conn.display().id().as_ptr() as *mut std::ffi::c_void)
                 .context("Failed to get EGL display")?
         };
-        egl_api.initialize(egl_display).context("Failed to initialize EGL")?;
+        egl::API.initialize(egl_display).context("Failed to initialize EGL")?;
 
         const ATTRIBUTES: [i32; 9] = [
             egl::RED_SIZE, 8,
@@ -416,7 +422,7 @@ impl WaylandRenderer {
             egl::NONE,
         ];
 
-        let egl_config = egl_api.choose_first_config(egl_display, &ATTRIBUTES)
+        let egl_config = egl::API.choose_first_config(egl_display, &ATTRIBUTES)
             .context("Failed to choose EGL config")?
             .context("No suitable EGL config found")?;
 
@@ -428,17 +434,18 @@ impl WaylandRenderer {
             egl::NONE,
         ];
 
-        let egl_context = egl_api.create_context(
+        let egl_context = egl::API.create_context(
             egl_display,
             egl_config,
             None,
             &CONTEXT_ATTRIBUTES,
         ).context("Failed to create EGL context")?;
 
+        // Create WlEglSurface with initial size (will be updated on configure)
         let wl_egl_surface = WlEglSurface::new(surface.id(), 256, 256)
             .context("Failed to create Wayland EGL surface")?;
         let egl_surface = unsafe {
-            egl_api.create_window_surface(
+            egl::API.create_window_surface(
                 egl_display,
                 egl_config,
                 wl_egl_surface.ptr() as egl::NativeWindowType,
@@ -446,16 +453,16 @@ impl WaylandRenderer {
             ).context("Failed to create EGL window surface")?
         };
 
-        egl_api.make_current(
+        egl::API.make_current(
             egl_display,
             Some(egl_surface),
             Some(egl_surface),
             Some(egl_context),
         ).context("Failed to make EGL context current")?;
 
-        gl::load_with(|name| egl_api.get_proc_address(name).unwrap() as *const std::ffi::c_void);
+        gl::load_with(|name| egl::API.get_proc_address(name).unwrap() as *const std::ffi::c_void);
 
-        // 7. Compile shaders (from wallpaper-cava)
+        // 7. Compile shaders
         let vert_shader_source = CString::new(VERTEX_SHADER_SRC).unwrap();
         let vert_shader = unsafe { gl::CreateShader(gl::VERTEX_SHADER) };
         unsafe {
@@ -466,6 +473,24 @@ impl WaylandRenderer {
                 std::ptr::null(),
             );
             gl::CompileShader(vert_shader);
+            
+            // Check compilation status
+            let mut status = gl::FALSE as gl::types::GLint;
+            gl::GetShaderiv(vert_shader, gl::COMPILE_STATUS, &mut status);
+            if status != 1 {
+                let mut error_log_size: gl::types::GLint = 0;
+                gl::GetShaderiv(vert_shader, gl::INFO_LOG_LENGTH, &mut error_log_size);
+                let mut error_log: Vec<u8> = Vec::with_capacity(error_log_size as usize);
+                gl::GetShaderInfoLog(
+                    vert_shader,
+                    error_log_size,
+                    &mut error_log_size,
+                    error_log.as_mut_ptr() as *mut _,
+                );
+                error_log.set_len(error_log_size as usize);
+                let log = String::from_utf8(error_log).unwrap();
+                return Err(anyhow!("Vertex shader compilation error: {}", log));
+            }
         }
 
         let frag_shader_source = CString::new(FRAGMENT_SHADER_SRC).unwrap();
@@ -478,6 +503,24 @@ impl WaylandRenderer {
                 std::ptr::null(),
             );
             gl::CompileShader(frag_shader);
+            
+            // Check compilation status
+            let mut status = gl::FALSE as gl::types::GLint;
+            gl::GetShaderiv(frag_shader, gl::COMPILE_STATUS, &mut status);
+            if status != 1 {
+                let mut error_log_size: gl::types::GLint = 0;
+                gl::GetShaderiv(frag_shader, gl::INFO_LOG_LENGTH, &mut error_log_size);
+                let mut error_log: Vec<u8> = Vec::with_capacity(error_log_size as usize);
+                gl::GetShaderInfoLog(
+                    frag_shader,
+                    error_log_size,
+                    &mut error_log_size,
+                    error_log.as_mut_ptr() as *mut _,
+                );
+                error_log.set_len(error_log_size as usize);
+                let log = String::from_utf8(error_log).unwrap();
+                return Err(anyhow!("Fragment shader compilation error: {}", log));
+            }
         }
 
         let shader_program = unsafe { gl::CreateProgram() };
@@ -503,13 +546,13 @@ impl WaylandRenderer {
             }
         }
 
-        // 8. Create buffers (from wallpaper-cava)
+        // 8. Create buffers
         let mut vbo = 0;
         let mut vao = 0;
         let mut ebo = 0;
         let mut gradient_colors_ssbo = 0;
 
-        // Prepare gradient colors buffer (from wallpaper-cava)
+        // Prepare gradient colors buffer
         let gradient_colors_size = colors.len() as i32;
         let mut buffer_data: Vec<u8> = (gradient_colors_size).to_le_bytes().to_vec();
         buffer_data.extend([0, 0, 0, 0].repeat(3)); // Fix for vec4 alignment
@@ -519,7 +562,7 @@ impl WaylandRenderer {
             }
         }
 
-        // Create indices (from wallpaper-cava)
+        // Create indices
         let mut indices: Vec<u16> = vec![0; bar_count as usize * 6];
         for i in 0..bar_count as usize {
             indices[i * 6] = i as u16 * 4;
@@ -574,8 +617,8 @@ impl WaylandRenderer {
         let mut app_state = AppState {
             registry_state: RegistryState::new(&globals),
             output_state: OutputState::new(&globals, &qh),
-            width: 1920,  // Initial size
-            height: 1080,
+            width: 256,  // Initial, will be updated by configure
+            height: 256,
             layer_shell,
             layer_surface,
             surface,
@@ -593,26 +636,41 @@ impl WaylandRenderer {
             bar_count,
             bar_gap: self.config.bars.gap,
             background_color: [0.0, 0.0, 0.0, 0.0], // Transparent background
-            preferred_output_name: None,
+            preferred_output_name: self.config.general.preferred_output.clone(),
             compositor,
             running: self.running.clone(),
         };
 
-        info!("Wayland renderer started");
+        info!("Wayland renderer started (swaybg pattern)");
         info!("Colors: {} | Bars: {}", colors.len(), bar_count);
-        info!("Layer: Top (above wallpaper, below windows)");
-        info!("Anchor: TOP|BOTTOM|LEFT|RIGHT (full screen coverage)");
+        info!("Layer: Background (above wallpaper, below windows)");
+        info!("Anchors: all (full screen)");
         info!("Press Ctrl+C to exit");
 
-        // 10. Signal handler - use the global signal handler from main.rs
-        // Note: ctrlc::set_handler() can only be called once per process
-        // The handler is already set in main.rs, so we just use the running flag
+        // 10. Signal handling - using the running flag set by main.rs
+        // Ctrl+C handler is already set up in main.rs
+        info!("Signal handler: Using global running flag");
 
-        // 11. Run event loop (from wallpaper-cava)
+        // 11. Run event loop with running check
         let frame_duration = Duration::from_secs(1) / self.config.general.framerate;
-        event_loop
-            .run(frame_duration, &mut app_state, |_| {})
-            .context("Event loop failed")?;
+        
+        // Run event loop while running flag is true
+        while self.running.load(Ordering::SeqCst) {
+            // Process events with timeout
+            match event_loop.dispatch(Some(frame_duration), &mut app_state) {
+                Ok(_) => {
+                    // Events processed successfully
+                }
+                Err(e) => {
+                    if self.running.load(Ordering::SeqCst) {
+                        return Err(anyhow!("Event loop error: {:?}", e));
+                    } else {
+                        // Normal shutdown
+                        break;
+                    }
+                }
+            }
+        }
 
         // 12. Cleanup
         info!("Wayland renderer stopped");

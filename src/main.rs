@@ -4,6 +4,8 @@ use std::fs;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use crossbeam_channel::{bounded, Receiver, select, tick};
+use std::time::Duration;
 
 mod cava_manager;
 mod cli;
@@ -19,15 +21,25 @@ use cava_manager::CavaManager;
 
 static RUNNING: AtomicBool = AtomicBool::new(true);
 
+fn setup_ctrl_c_channel() -> Result<Receiver<()>> {
+    let (sender, receiver) = bounded(100);
+    
+    ctrlc::set_handler(move || {
+        let _ = sender.send(());
+    })?;
+    
+    Ok(receiver)
+}
+
 fn handle_signal() -> Arc<AtomicBool> {
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
 
-    ctrlc::set_handler(move || {
+    // Setup Ctrl+C handler
+    let _ = ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
         RUNNING.store(false, Ordering::SeqCst);
-    })
-    .expect("Error setting Ctrl-C handler");
+    });
 
     running
 }
@@ -210,8 +222,8 @@ fn main() -> Result<()> {
     // Start monitor thread for cava
     cava_manager.start_monitor(config.clone());
 
-    // Try to create complete Wayland renderer
-    println!("\n Attempting to create complete Wayland renderer...");
+    // Try to create complete Wayland renderer (swaybg pattern)
+    println!("\n Attempting to create complete Wayland renderer (swaybg pattern)...");
     
     // Create a new cava_manager for Wayland renderer
     let wayland_cava_manager = cava_manager::CavaManager::new(&config)?;
@@ -231,33 +243,60 @@ fn main() -> Result<()> {
             } else {
                 "Manual configuration"
             });
-            println!("Layer: Top (above wallpaper, below windows)");
+            println!("Layer: Background (like wallpaper)");
+            println!("Size: 0,0 (auto-size to output)");
+            println!("Anchors: ALL (full coverage)");
             println!("========================================");
             println!("\n To test: Play audio (music, video, etc.)");
             println!("  Visualizer will appear as a transparent overlay");
             println!("  Press Ctrl+C to exit");
             println!();
             
-            // Run Wayland renderer
-            if let Err(e) = wayland_renderer.run() {
-                eprintln!(" Wayland renderer error: {}", e);
-                eprintln!("  Falling back to terminal mode...");
-                
-                // Run terminal renderer with original cava_manager
-                run_terminal_renderer(config, cava_manager)?;
-            }
+            // Setup Ctrl+C channel
+            let ctrl_c_receiver = setup_ctrl_c_channel()
+                .context("Failed to setup Ctrl+C handler")?;
+            
+            // Run Wayland renderer in a separate thread to allow Ctrl+C
+            let renderer_thread = std::thread::spawn(move || {
+                if let Err(e) = wayland_renderer.run() {
+                    eprintln!(" Wayland renderer error: {}", e);
+                }
+            });
+            
+            // Wait for Ctrl+C
+            let _ = ctrl_c_receiver.recv();
+            println!("\nCtrl+C received, shutting down...");
+            
+            // Signal renderer to stop
+            RUNNING.store(false, Ordering::SeqCst);
+            
+            // Wait for renderer thread
+            let _ = renderer_thread.join();
+            
+            println!("cava-bg stopped gracefully.");
+            Ok(())
         }
         Err(e) => {
             eprintln!(" Wayland renderer creation failed: {}", e);
             eprintln!("  Falling back to terminal mode...");
             
-            // Run terminal renderer
-            run_terminal_renderer(config, cava_manager)?;
+            // Run terminal renderer with Ctrl+C handling
+            let ctrl_c_receiver = setup_ctrl_c_channel()
+                .context("Failed to setup Ctrl+C handler")?;
+            
+            let terminal_thread = std::thread::spawn(move || {
+                if let Err(e) = run_terminal_renderer(config, cava_manager) {
+                    eprintln!(" Terminal renderer error: {}", e);
+                }
+            });
+            
+            // Wait for Ctrl+C
+            let _ = ctrl_c_receiver.recv();
+            println!("\nCtrl+C received, shutting down...");
+            RUNNING.store(false, Ordering::SeqCst);
+            let _ = terminal_thread.join();
+            println!("cava-bg stopped gracefully.");
+            Ok(())
         }
     }
-    
-    println!("\ncava-bg stopping...");
-    info!("cava-bg shutting down.");
-    
-    Ok(())
 }
