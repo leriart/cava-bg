@@ -1,3 +1,6 @@
+// src/wayland_renderer.rs
+// Versión corregida: fondo transparente, barras siempre visibles (con datos de prueba si cava falla)
+
 use anyhow::{anyhow, Context, Result};
 use gl::types::{GLsizei, GLsizeiptr};
 use khronos_egl as egl;
@@ -37,35 +40,12 @@ use std::{mem, ptr};
 
 use crate::app_config::{array_from_config_color, Config};
 
-// ==================== SHADERS ====================
+// Shaders (versión 330 core)
 const VERTEX_SHADER_330: &str = r#"
 #version 330 core
 in vec2 position;
 void main() {
     gl_Position = vec4(position, 0.0, 1.0);
-}
-"#;
-
-const FRAGMENT_SHADER_330_SSBO: &str = r#"
-#version 330 core
-layout(std430) buffer GradientColors {
-    int gradient_colors_size;
-    vec4 gradient_colors[];
-};
-uniform vec2 WindowSize;
-out vec4 fragColor;
-void main() {
-    if (gradient_colors_size == 1) {
-        fragColor = gradient_colors[0];
-    } else {
-        float findex = (gl_FragCoord.y * float(gradient_colors_size - 1)) / WindowSize.y;
-        int index = int(findex);
-        float step = findex - float(index);
-        if (index == gradient_colors_size - 1) {
-            index--;
-        }
-        fragColor = mix(gradient_colors[index], gradient_colors[index + 1], step);
-    }
 }
 "#;
 
@@ -90,35 +70,7 @@ void main() {
 }
 "#;
 
-const VERTEX_SHADER_100: &str = r#"
-#version 100
-attribute vec2 position;
-void main() {
-    gl_Position = vec4(position, 0.0, 1.0);
-}
-"#;
-
-const FRAGMENT_SHADER_100: &str = r#"
-#version 100
-precision mediump float;
-uniform vec2 WindowSize;
-uniform vec4 gradient_colors[8];
-uniform int gradient_colors_size;
-void main() {
-    if (gradient_colors_size == 1) {
-        gl_FragColor = gradient_colors[0];
-    } else {
-        float findex = (gl_FragCoord.y * float(gradient_colors_size - 1)) / WindowSize.y;
-        int index = int(findex);
-        float step = findex - float(index);
-        if (index == gradient_colors_size - 1) {
-            index--;
-        }
-        gl_FragColor = mix(gradient_colors[index], gradient_colors[index + 1], step);
-    }
-}
-"#;
-
+// Solo usaremos el fallback #2 (Uniform) porque es el que funciona en Intel
 struct ShaderConfig {
     vertex_src: &'static str,
     fragment_src: &'static str,
@@ -126,43 +78,17 @@ struct ShaderConfig {
     use_uniforms: bool,
 }
 
-const SHADER_FALLBACKS: [ShaderConfig; 3] = [
-    // Intento 1: OpenGL 3.3 Core con SSBO
-    ShaderConfig {
-        vertex_src: VERTEX_SHADER_330,
-        fragment_src: FRAGMENT_SHADER_330_SSBO,
-        context_attribs: &[
-            egl::CONTEXT_MAJOR_VERSION, 3,
-            egl::CONTEXT_MINOR_VERSION, 3,
-            egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
-            egl::NONE,
-        ],
-        use_uniforms: false,
-    },
-    // Intento 2: OpenGL 3.3 Core con Uniforms
-    ShaderConfig {
-        vertex_src: VERTEX_SHADER_330,
-        fragment_src: FRAGMENT_SHADER_330_UNIFORM,
-        context_attribs: &[
-            egl::CONTEXT_MAJOR_VERSION, 3,
-            egl::CONTEXT_MINOR_VERSION, 3,
-            egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
-            egl::NONE,
-        ],
-        use_uniforms: true,
-    },
-    // Intento 3: OpenGL ES 2.0
-    ShaderConfig {
-        vertex_src: VERTEX_SHADER_100,
-        fragment_src: FRAGMENT_SHADER_100,
-        context_attribs: &[
-            egl::CONTEXT_MAJOR_VERSION, 2,
-            egl::CONTEXT_MINOR_VERSION, 0,
-            egl::NONE,
-        ],
-        use_uniforms: true,
-    },
-];
+const SHADER_CONFIG: ShaderConfig = ShaderConfig {
+    vertex_src: VERTEX_SHADER_330,
+    fragment_src: FRAGMENT_SHADER_330_UNIFORM,
+    context_attribs: &[
+        egl::CONTEXT_MAJOR_VERSION, 3,
+        egl::CONTEXT_MINOR_VERSION, 3,
+        egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
+        egl::NONE,
+    ],
+    use_uniforms: true,
+};
 
 struct PerOutputState {
     surface: WlSurface,
@@ -197,7 +123,7 @@ impl WaylandRenderer {
     }
 
     pub fn run(self) -> Result<()> {
-        info!("Starting Wayland renderer (fullscreen anchors, debug logs)");
+        info!("Starting Wayland renderer (fixed bars, transparent bg)");
         std::env::set_var("EGL_PLATFORM", "wayland");
 
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
@@ -214,6 +140,7 @@ impl WaylandRenderer {
         let compositor = CompositorState::bind(&globals, &qh).context("wl_compositor not available")?;
         let layer_shell = LayerShell::bind(&globals, &qh).context("layer shell not available")?;
 
+        // Inicialización EGL
         egl::API
             .bind_api(egl::OPENGL_API)
             .context("Failed to bind EGL API")?;
@@ -233,75 +160,44 @@ impl WaylandRenderer {
             egl::ALPHA_SIZE, 8,
             egl::NONE,
         ];
-        const ATTRIBUTES_NO_ALPHA: [i32; 7] = [
-            egl::RED_SIZE, 8,
-            egl::GREEN_SIZE, 8,
-            egl::BLUE_SIZE, 8,
-            egl::NONE,
-        ];
-
         let egl_config = egl::API
             .choose_first_config(egl_display, &ATTRIBUTES_WITH_ALPHA)
-            .or_else(|_| egl::API.choose_first_config(egl_display, &ATTRIBUTES_NO_ALPHA))
             .context("Failed to choose EGL config")?
             .context("No EGL config found")?;
 
-        let mut egl_context = None;
-        let mut shader_program = 0;
-        let mut use_uniforms = false;
-        let mut last_error = String::new();
+        // Crear contexto EGL
+        let egl_context = egl::API
+            .create_context(egl_display, egl_config, None, SHADER_CONFIG.context_attribs)
+            .context("Failed to create EGL context")?;
 
-        for (i, config) in SHADER_FALLBACKS.iter().enumerate() {
-            info!("Trying shader fallback #{}...", i + 1);
-            let context = egl::API
-                .create_context(egl_display, egl_config, None, config.context_attribs)
-                .context("Failed to create EGL context")?;
-            let dummy_surface = unsafe {
-                egl::API
-                    .create_pbuffer_surface(egl_display, egl_config, &[egl::WIDTH, 1, egl::HEIGHT, 1, egl::NONE])
-                    .context("Failed to create pbuffer surface")?
-            };
+        // Superficie dummy para compilar shaders
+        let dummy_surface = unsafe {
             egl::API
-                .make_current(egl_display, Some(dummy_surface), Some(dummy_surface), Some(context))
-                .context("Failed to make context current")?;
+                .create_pbuffer_surface(egl_display, egl_config, &[egl::WIDTH, 1, egl::HEIGHT, 1, egl::NONE])
+                .context("Failed to create pbuffer surface")?
+        };
+        egl::API
+            .make_current(egl_display, Some(dummy_surface), Some(dummy_surface), Some(egl_context))
+            .context("Failed to make context current")?;
 
-            gl::load_with(|name| {
-                let name_c = CString::new(name).unwrap();
-                match egl::API.get_proc_address(name_c.to_str().unwrap()) {
-                    Some(proc) => proc as *const c_void,
-                    None => ptr::null(),
-                }
-            });
+        gl::load_with(|name| {
+            let name_c = CString::new(name).unwrap();
+            match egl::API.get_proc_address(name_c.to_str().unwrap()) {
+                Some(proc) => proc as *const c_void,
+                None => ptr::null(),
+            }
+        });
 
-            let vert_shader = compile_shader(gl::VERTEX_SHADER, config.vertex_src);
-            let frag_shader = compile_shader(gl::FRAGMENT_SHADER, config.fragment_src);
-            if let (Ok(vs), Ok(fs)) = (vert_shader, frag_shader) {
-                let program = link_program(vs, fs);
-                unsafe {
-                    gl::DeleteShader(vs);
-                    gl::DeleteShader(fs);
-                }
-                if let Ok(prog) = program {
-                    shader_program = prog;
-                    use_uniforms = config.use_uniforms;
-                    egl_context = Some(context);
-                    info!("Successfully compiled shaders with fallback #{}", i + 1);
-                    unsafe { egl::API.destroy_surface(egl_display, dummy_surface).ok(); }
-                    break;
-                } else {
-                    last_error = format!("Program linking failed for fallback #{}", i + 1);
-                }
-            } else {
-                last_error = format!("Shader compilation failed for fallback #{}", i + 1);
-            }
-            unsafe {
-                egl::API.destroy_surface(egl_display, dummy_surface).ok();
-                egl::API.destroy_context(egl_display, context).ok();
-            }
+        let vert_shader = compile_shader(gl::VERTEX_SHADER, SHADER_CONFIG.vertex_src)?;
+        let frag_shader = compile_shader(gl::FRAGMENT_SHADER, SHADER_CONFIG.fragment_src)?;
+        let shader_program = link_program(vert_shader, frag_shader)?;
+        unsafe {
+            gl::DeleteShader(vert_shader);
+            gl::DeleteShader(frag_shader);
         }
+        unsafe { egl::API.destroy_surface(egl_display, dummy_surface).ok(); }
 
-        let egl_context = egl_context.ok_or_else(|| anyhow!("All shader fallbacks failed. Last error: {}", last_error))?;
-        info!("EGL context and shaders initialized successfully.");
+        info!("EGL context and shaders initialized.");
 
         let gradient_colors_rgba: Vec<[f32; 4]> = self
             .config
@@ -310,12 +206,7 @@ impl WaylandRenderer {
             .map(|(_, color)| array_from_config_color(color.clone()))
             .collect();
 
-        let (gradient_colors_ssbo, _gradient_colors_uniform_loc) = if use_uniforms {
-            (0, unsafe { gl::GetUniformLocation(shader_program, CString::new("gradient_colors").unwrap().as_ptr()) })
-        } else {
-            (create_ssbo(&gradient_colors_rgba).0, 0)
-        };
-
+        // No usamos SSBO, solo uniforms
         let bar_count = self.config.bars.amount as usize;
         let mut indices: Vec<u16> = vec![0; bar_count * 6];
         for i in 0..bar_count {
@@ -376,15 +267,15 @@ impl WaylandRenderer {
             windows_size_location,
             bar_count: self.config.bars.amount,
             bar_gap: self.config.bars.gap,
-            background_color: array_from_config_color(self.config.general.background_color),
+            background_color: [0.0, 0.0, 0.0, 0.0], // Transparente
             preferred_output_name: self.config.general.preferred_output,
             cava_reader: self.cava_reader,
             color_rx: self.color_rx,
-            gradient_colors_ssbo,
             gradient_colors: gradient_colors_rgba,
             running: self.running,
             updating_colors,
-            use_uniforms,
+            use_uniforms: true,
+            test_phase: 0.0,
         };
 
         event_loop
@@ -393,31 +284,6 @@ impl WaylandRenderer {
 
         Ok(())
     }
-}
-
-fn create_ssbo(colors: &[[f32; 4]]) -> (u32, Vec<[f32; 4]>) {
-    let gradient_colors_len = colors.len() as i32;
-    let mut buffer_data: Vec<u8> = (gradient_colors_len).to_le_bytes().to_vec();
-    buffer_data.extend([0, 0, 0, 0].repeat(3));
-    for color in colors {
-        for &value in color {
-            buffer_data.extend_from_slice(&value.to_le_bytes());
-        }
-    }
-    let mut ssbo = 0;
-    unsafe {
-        gl::GenBuffers(1, &mut ssbo);
-        gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, ssbo);
-        gl::BufferData(
-            gl::SHADER_STORAGE_BUFFER,
-            buffer_data.len() as GLsizeiptr,
-            buffer_data.as_ptr() as *const _,
-            gl::STATIC_DRAW,
-        );
-        gl::BindBufferBase(gl::SHADER_STORAGE_BUFFER, 0, ssbo);
-        gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
-    }
-    (ssbo, colors.to_vec())
 }
 
 struct AppState {
@@ -439,41 +305,19 @@ struct AppState {
     preferred_output_name: Option<String>,
     cava_reader: BufReader<ChildStdout>,
     color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
-    gradient_colors_ssbo: u32,
     gradient_colors: Vec<[f32; 4]>,
     running: Arc<AtomicBool>,
     updating_colors: Arc<AtomicBool>,
     use_uniforms: bool,
+    test_phase: f32,
 }
 
 impl AppState {
     fn update_colors(&mut self, new_colors: &[[f32; 4]]) {
         self.updating_colors.store(true, Ordering::SeqCst);
         self.gradient_colors = new_colors.to_vec();
-        if !self.use_uniforms {
-            let gradient_colors_len = self.gradient_colors.len() as i32;
-            let mut buffer_data = gradient_colors_len.to_le_bytes().to_vec();
-            buffer_data.extend([0, 0, 0, 0].repeat(3));
-            for color in &self.gradient_colors {
-                for &value in color {
-                    buffer_data.extend_from_slice(&value.to_le_bytes());
-                }
-            }
-            unsafe {
-                gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, self.gradient_colors_ssbo);
-                gl::BufferSubData(
-                    gl::SHADER_STORAGE_BUFFER,
-                    0,
-                    buffer_data.len() as GLsizeiptr,
-                    buffer_data.as_ptr() as *const _,
-                );
-                gl::BindBufferBase(gl::SHADER_STORAGE_BUFFER, 0, self.gradient_colors_ssbo);
-                gl::MemoryBarrier(gl::SHADER_STORAGE_BARRIER_BIT);
-                gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
-            }
-        }
         self.updating_colors.store(false, Ordering::SeqCst);
-        info!("Updated gradient colors from wallpaper change");
+        info!("Updated gradient colors, {} colors", self.gradient_colors.len());
     }
 
     fn ensure_output(&mut self, qh: &QueueHandle<Self>, output: &wl_output::WlOutput) -> Result<()> {
@@ -502,6 +346,7 @@ impl AppState {
         let height = logical_size.1 as u32;
         layer_surface.set_size(width, height);
         layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer_surface.set_exclusive_zone(-1);
         surface.commit();
         let wl_egl_surface = WlEglSurface::new(surface.id(), width as i32, height as i32)
             .context("Failed to create WlEglSurface")?;
@@ -539,6 +384,7 @@ impl AppState {
         if !state.configured {
             return;
         }
+
         unsafe {
             egl::API
                 .make_current(
@@ -550,23 +396,37 @@ impl AppState {
                 .ok();
             gl::Viewport(0, 0, state.width as GLsizei, state.height as GLsizei);
         }
-        let mut cava_buffer: Vec<u8> = vec![0; self.bar_count as usize * 2];
-        if let Err(e) = self.cava_reader.read_exact(&mut cava_buffer) {
-            warn!("Failed to read from cava: {}", e);
-            state.surface.frame(qh, state.surface.clone());
-            return;
-        }
+
+        // Leer datos de cava (o usar test si falla)
         let mut unpacked_data: Vec<f32> = vec![0.0; self.bar_count as usize];
-        for (i, chunk) in cava_buffer.chunks_exact(2).enumerate() {
-            let num = u16::from_le_bytes([chunk[0], chunk[1]]);
-            unpacked_data[i] = (num as f32) / 65530.0;
+        let mut cava_buffer: Vec<u8> = vec![0; self.bar_count as usize * 2];
+        match self.cava_reader.read_exact(&mut cava_buffer) {
+            Ok(_) => {
+                for (i, chunk) in cava_buffer.chunks_exact(2).enumerate() {
+                    let num = u16::from_le_bytes([chunk[0], chunk[1]]);
+                    unpacked_data[i] = (num as f32) / 65530.0;
+                }
+            }
+            Err(e) => {
+                // Si falla, usamos una onda senoidal de prueba para ver las barras moverse
+                self.test_phase += 0.1;
+                for i in 0..unpacked_data.len() {
+                    unpacked_data[i] = ((self.test_phase + i as f32 * 0.5).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+                }
+                if self.test_phase < 1.0 {
+                    warn!("Using test audio data (cava read error: {})", e);
+                }
+            }
         }
+
+        // Construir vértices
         let bar_width: f32 =
             2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
         let bar_gap_width: f32 = bar_width * self.bar_gap;
         let mut vertices: Vec<f32> = vec![0.0; self.bar_count as usize * 8];
         let fwidth: f32 = state.width as f32;
         let fheight: f32 = state.height as f32;
+
         for i in 0..self.bar_count as usize {
             let bar_height: f32 = 2.0 * unpacked_data[i] - 1.0;
             vertices[i * 8] = bar_gap_width * i as f32 + bar_width * i as f32 - 1.0;
@@ -578,6 +438,7 @@ impl AppState {
             vertices[i * 8 + 6] = bar_gap_width * i as f32 + bar_width * (i + 1) as f32 - 1.0;
             vertices[i * 8 + 7] = -1.0;
         }
+
         unsafe {
             gl::BindVertexArray(self.vao);
             gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo);
@@ -598,30 +459,27 @@ impl AppState {
             gl::Clear(gl::COLOR_BUFFER_BIT);
             gl::UseProgram(self.shader_program);
             gl::Uniform2f(self.windows_size_location, fwidth, fheight);
-            if self.use_uniforms {
-                let colors_count = self.gradient_colors.len() as i32;
-                let size_loc = unsafe {
-                    let name = CString::new("gradient_colors_size").unwrap();
-                    gl::GetUniformLocation(self.shader_program, name.as_ptr())
+
+            // Enviar colores como uniforms
+            let colors_count = self.gradient_colors.len() as i32;
+            let size_loc = unsafe {
+                let name = CString::new("gradient_colors_size").unwrap();
+                gl::GetUniformLocation(self.shader_program, name.as_ptr())
+            };
+            if size_loc != -1 {
+                unsafe { gl::Uniform1i(size_loc, colors_count); }
+            }
+            for (i, color) in self.gradient_colors.iter().enumerate() {
+                let name = format!("gradient_colors[{}]", i);
+                let loc = unsafe {
+                    let cname = CString::new(name).unwrap();
+                    gl::GetUniformLocation(self.shader_program, cname.as_ptr())
                 };
-                if size_loc != -1 {
-                    unsafe { gl::Uniform1i(size_loc, colors_count); }
-                }
-                for (i, color) in self.gradient_colors.iter().enumerate() {
-                    let name = format!("gradient_colors[{}]", i);
-                    let loc = unsafe {
-                        let cname = CString::new(name).unwrap();
-                        gl::GetUniformLocation(self.shader_program, cname.as_ptr())
-                    };
-                    if loc != -1 {
-                        unsafe { gl::Uniform4f(loc, color[0], color[1], color[2], color[3]); }
-                    }
-                }
-                if !self.gradient_colors.is_empty() {
-                    let c = self.gradient_colors[0];
-                    debug!("Uniform mode: first color #{:02x}{:02x}{:02x}", (c[0]*255.0) as u8, (c[1]*255.0) as u8, (c[2]*255.0) as u8);
+                if loc != -1 {
+                    unsafe { gl::Uniform4f(loc, color[0], color[1], color[2], color[3]); }
                 }
             }
+
             gl::DrawElements(
                 gl::TRIANGLES,
                 (self.bar_count as usize * 3 * mem::size_of::<u16>()) as GLsizei,
@@ -630,6 +488,7 @@ impl AppState {
             );
             gl::BindVertexArray(0);
         }
+
         if let Err(e) = egl::API.swap_buffers(self.egl_display, state.egl_surface) {
             error!("Failed to swap buffers for {}: {}", name, e);
         } else {
@@ -651,12 +510,14 @@ impl AppState {
             }
             std::process::exit(0);
         }
+
         if self.updating_colors.load(Ordering::SeqCst) {
             for (_, state) in self.per_output.iter() {
                 state.surface.frame(qh, state.surface.clone());
             }
             return;
         }
+
         let new_colors = {
             match self.color_rx.lock() {
                 Ok(guard) => guard.try_recv().ok(),
@@ -666,6 +527,7 @@ impl AppState {
         if let Some(colors) = new_colors {
             self.update_colors(&colors);
         }
+
         let names: Vec<String> = self.per_output.keys().cloned().collect();
         for name in names {
             self.draw_output(&name, qh);
@@ -674,9 +536,7 @@ impl AppState {
 }
 
 impl OutputHandler for AppState {
-    fn output_state(&mut self) -> &mut OutputState {
-        &mut self.output_state
-    }
+    fn output_state(&mut self) -> &mut OutputState { &mut self.output_state }
     fn new_output(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
         if let Err(e) = self.ensure_output(qh, &output) {
             error!("Failed to create output: {}", e);
@@ -692,9 +552,7 @@ impl OutputHandler for AppState {
         };
         let name = info.name.unwrap_or_else(|| "unknown".to_string());
         if let Some(state) = self.per_output.remove(&name) {
-            unsafe {
-                egl::API.destroy_surface(self.egl_display, state.egl_surface).ok();
-            }
+            unsafe { egl::API.destroy_surface(self.egl_display, state.egl_surface).ok(); }
             info!("Output {} removed", name);
         }
     }
@@ -706,9 +564,7 @@ delegate_registry!(AppState);
 delegate_layer!(AppState);
 
 impl ProvidesRegistryState for AppState {
-    fn registry(&mut self) -> &mut RegistryState {
-        &mut self.registry_state
-    }
+    fn registry(&mut self) -> &mut RegistryState { &mut self.registry_state }
     registry_handlers![];
 }
 
