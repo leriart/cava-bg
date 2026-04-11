@@ -1,10 +1,11 @@
 mod app_config;
 mod wallpaper;
-mod wayland_renderer;
 mod cava_backend;
+mod wgpu_renderer;
+mod sdl2_renderer;   // elimina esta línea si no quieres fallback
 
 use anyhow::{Context, Result};
-use log::{error, info};
+use log::{error, info, warn};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -17,7 +18,8 @@ use std::time::{Duration, SystemTime};
 
 use app_config::Config;
 use cava_backend::CavaBackend;
-use wayland_renderer::WaylandRenderer;
+use wgpu_renderer::WgpuRenderer;
+use sdl2_renderer::Sdl2Renderer;
 
 const CONFIG_DIR: &str = "cava-bg";
 const CONFIG_FILE: &str = "config.toml";
@@ -26,7 +28,6 @@ fn main() -> Result<()> {
     env_logger::init();
 
     let args: Vec<String> = env::args().collect();
-
     if args.len() >= 2 && args[1] == "kill" {
         return kill_existing_instance();
     }
@@ -70,9 +71,10 @@ fn main() -> Result<()> {
     let r = running.clone();
     ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
-    }).expect("Error setting Ctrl-C handler");
+    })
+    .expect("Error setting Ctrl-C handler");
 
-    // Canal para actualizaciones de colores
+    // Canal para actualizaciones de colores (desde el hilo de wallpaper)
     let (color_tx, color_rx) = mpsc::channel();
     let shared_color_rx = Arc::new(Mutex::new(color_rx));
 
@@ -129,13 +131,39 @@ fn main() -> Result<()> {
     let (_cava_backend, audio_rx) = CavaBackend::new(bar_count, &config)
         .context("Failed to start cava backend")?;
 
-    info!("Starting Wayland renderer (OpenGL 3.0)");
-    let renderer = WaylandRenderer::new(config, audio_rx, shared_color_rx, running);
-    renderer.run()?;
+    // Intentar primero con wgpu
+    info!("Starting Wgpu universal renderer");
+    let wgpu_result = WgpuRenderer::new(
+        config.clone(),
+        audio_rx.clone(),
+        shared_color_rx.clone(),
+        running.clone(),
+    )
+    .run();
+
+    if let Err(e) = wgpu_result {
+        warn!("Wgpu renderer failed: {}. Falling back to SDL2 renderer.", e);
+        info!("Starting SDL2 fallback renderer...");
+        let colors: Vec<[f32; 4]> = config
+            .colors
+            .values()
+            .map(|c| app_config::array_from_config_color(c.clone()))
+            .collect();
+        let mut sdl2_renderer = Sdl2Renderer::new(
+            bar_count,
+            config.bars.gap,
+            colors,
+            audio_rx,
+            shared_color_rx,
+            running,
+        )?;
+        sdl2_renderer.run()?;
+    }
 
     Ok(())
 }
 
+// Funciones auxiliares (sin cambios respecto a tu código original)
 fn get_config_path(args: &[String]) -> PathBuf {
     if args.len() == 3 && args[1] == "--config" {
         return PathBuf::from(&args[2]);
