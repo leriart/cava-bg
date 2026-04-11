@@ -9,6 +9,29 @@ pub struct Config {
     pub smoothing: SmoothingConfig,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        let mut colors = HashMap::new();
+        let default_colors = vec![
+            "#94e2d5", "#89dceb", "#74c7ec", "#89b4fa",
+            "#cba6f7", "#f5c2e7", "#eba0ac", "#f38ba8"
+        ];
+        for (i, hex) in default_colors.iter().enumerate() {
+            colors.insert(
+                format!("gradient_color_{}", i + 1),
+                ConfigColor::Simple(hex.to_string()),
+            );
+        }
+
+        Config {
+            general: GeneralConfig::default(),
+            bars: BarConfig::default(),
+            colors,
+            smoothing: SmoothingConfig::default(),
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GeneralConfig {
     pub framerate: u32,
@@ -18,6 +41,19 @@ pub struct GeneralConfig {
     pub preferred_output: Option<String>,
     #[serde(default = "default_auto_colors")]
     pub auto_colors: bool,
+}
+
+impl Default for GeneralConfig {
+    fn default() -> Self {
+        Self {
+            framerate: 60,
+            background_color: ConfigColor::Simple("#000000".to_string()),
+            autosens: Some(true),
+            sensitivity: Some(1.0),
+            preferred_output: None,
+            auto_colors: true,
+        }
+    }
 }
 
 fn default_auto_colors() -> bool {
@@ -30,11 +66,30 @@ pub struct BarConfig {
     pub gap: f32,
 }
 
+impl Default for BarConfig {
+    fn default() -> Self {
+        Self {
+            amount: 8,
+            gap: 0.1,
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SmoothingConfig {
     pub monstercat: Option<f32>,
     pub waves: Option<i32>,
     pub noise_reduction: Option<f32>,
+}
+
+impl Default for SmoothingConfig {
+    fn default() -> Self {
+        Self {
+            monstercat: Some(1.0),
+            waves: Some(0),
+            noise_reduction: Some(0.8),
+        }
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
