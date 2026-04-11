@@ -1,5 +1,5 @@
 // src/wayland_renderer.rs
-// Shaders embebidos, EGL robusto para Intel/NVIDIA, multi‑monitor con contexto compartido.
+// Soporte multi-monitor, fallback EGL/Shader para compatibilidad con hardware antiguo.
 
 use anyhow::{anyhow, Context, Result};
 use gl::types::{GLsizei, GLsizeiptr};
@@ -40,8 +40,10 @@ use std::{mem, ptr};
 
 use crate::app_config::{array_from_config_color, Config};
 
-// Shaders embebidos (versión 330 core para máxima compatibilidad)
-const VERTEX_SHADER_SRC: &str = r#"
+// ==================== SHADERS PARA DIFERENTES VERSIONES ====================
+
+// Versión 1: OpenGL 3.3 Core con SSBO (moderno)
+const VERTEX_SHADER_330: &str = r#"
 #version 330 core
 in vec2 position;
 void main() {
@@ -49,7 +51,7 @@ void main() {
 }
 "#;
 
-const FRAGMENT_SHADER_SRC: &str = r#"
+const FRAGMENT_SHADER_330_SSBO: &str = r#"
 #version 330 core
 layout(std430) buffer GradientColors {
     int gradient_colors_size;
@@ -71,6 +73,104 @@ void main() {
     }
 }
 "#;
+
+// Versión 2: OpenGL 3.3 Core con Uniform array (fallback si SSBO no funciona)
+const FRAGMENT_SHADER_330_UNIFORM: &str = r#"
+#version 330 core
+uniform vec2 WindowSize;
+uniform vec4 gradient_colors[8];
+uniform int gradient_colors_size;
+out vec4 fragColor;
+void main() {
+    if (gradient_colors_size == 1) {
+        fragColor = gradient_colors[0];
+    } else {
+        float findex = (gl_FragCoord.y * float(gradient_colors_size - 1)) / WindowSize.y;
+        int index = int(findex);
+        float step = findex - float(index);
+        if (index == gradient_colors_size - 1) {
+            index--;
+        }
+        fragColor = mix(gradient_colors[index], gradient_colors[index + 1], step);
+    }
+}
+"#;
+
+// Versión 3: OpenGL ES 2.0 (compatible con hardware muy antiguo)
+const VERTEX_SHADER_100: &str = r#"
+#version 100
+attribute vec2 position;
+void main() {
+    gl_Position = vec4(position, 0.0, 1.0);
+}
+"#;
+
+const FRAGMENT_SHADER_100: &str = r#"
+#version 100
+precision mediump float;
+uniform vec2 WindowSize;
+uniform vec4 gradient_colors[8];
+uniform int gradient_colors_size;
+void main() {
+    if (gradient_colors_size == 1) {
+        gl_FragColor = gradient_colors[0];
+    } else {
+        float findex = (gl_FragCoord.y * float(gradient_colors_size - 1)) / WindowSize.y;
+        int index = int(findex);
+        float step = findex - float(index);
+        if (index == gradient_colors_size - 1) {
+            index--;
+        }
+        gl_FragColor = mix(gradient_colors[index], gradient_colors[index + 1], step);
+    }
+}
+"#;
+
+// Estructura para almacenar la configuración de shader que funcionó
+struct ShaderConfig {
+    vertex_src: &'static str,
+    fragment_src: &'static str,
+    context_attribs: [i32; 7],
+    use_uniforms: bool,
+}
+
+const SHADER_FALLBACKS: [ShaderConfig; 3] = [
+    // Intento 1: OpenGL 3.3 Core con SSBO
+    ShaderConfig {
+        vertex_src: VERTEX_SHADER_330,
+        fragment_src: FRAGMENT_SHADER_330_SSBO,
+        context_attribs: [
+            egl::CONTEXT_MAJOR_VERSION, 3,
+            egl::CONTEXT_MINOR_VERSION, 3,
+            egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
+            egl::NONE,
+        ],
+        use_uniforms: false,
+    },
+    // Intento 2: OpenGL 3.3 Core con Uniforms (si SSBO falla)
+    ShaderConfig {
+        vertex_src: VERTEX_SHADER_330,
+        fragment_src: FRAGMENT_SHADER_330_UNIFORM,
+        context_attribs: [
+            egl::CONTEXT_MAJOR_VERSION, 3,
+            egl::CONTEXT_MINOR_VERSION, 3,
+            egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
+            egl::NONE,
+        ],
+        use_uniforms: true,
+    },
+    // Intento 3: OpenGL ES 2.0 (máxima compatibilidad)
+    ShaderConfig {
+        vertex_src: VERTEX_SHADER_100,
+        fragment_src: FRAGMENT_SHADER_100,
+        context_attribs: [
+            egl::CONTEXT_MAJOR_VERSION, 2,
+            egl::CONTEXT_MINOR_VERSION, 0,
+            egl::NONE,
+        ],
+        use_uniforms: true,
+    },
+];
 
 struct PerOutputState {
     surface: WlSurface,
@@ -105,7 +205,7 @@ impl WaylandRenderer {
     }
 
     pub fn run(self) -> Result<()> {
-        info!("Starting Wayland renderer (multi-monitor, shared EGL context)");
+        info!("Starting Wayland renderer (multi-monitor, shader fallback)");
         std::env::set_var("EGL_PLATFORM", "wayland");
 
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
@@ -135,7 +235,7 @@ impl WaylandRenderer {
             .initialize(egl_display)
             .context("Failed to initialize EGL")?;
 
-        // Intentar con canal alfa, luego sin él
+        // Configuración de EGL (intentar con y sin alfa)
         const ATTRIBUTES_WITH_ALPHA: [i32; 9] = [
             egl::RED_SIZE, 8,
             egl::GREEN_SIZE, 8,
@@ -156,35 +256,76 @@ impl WaylandRenderer {
             .context("Failed to choose EGL config")?
             .context("No EGL config found")?;
 
-        // Contexto OpenGL 3.3 para máxima compatibilidad
-        const CONTEXT_ATTRIBUTES: [i32; 7] = [
-            egl::CONTEXT_MAJOR_VERSION, 3,
-            egl::CONTEXT_MINOR_VERSION, 3,
-            egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
-            egl::NONE,
-        ];
+        // Intentar cada configuración de shader hasta que una funcione
+        let mut egl_context = None;
+        let mut shader_program = 0;
+        let mut use_uniforms = false;
+        let mut last_error = String::new();
 
-        let egl_context = egl::API
-            .create_context(egl_display, egl_config, None, &CONTEXT_ATTRIBUTES)
-            .context("Failed to create EGL context")?;
+        for (i, config) in SHADER_FALLBACKS.iter().enumerate() {
+            info!("Trying shader fallback #{}...", i + 1);
+            
+            // Crear contexto EGL para esta versión
+            let context = egl::API
+                .create_context(egl_display, egl_config, None, &config.context_attribs)
+                .context("Failed to create EGL context")?;
+            
+            // Hacer el contexto current temporalmente (necesitamos una superficie dummy)
+            // Usamos una superficie de 1x1 para la compilación
+            let dummy_surface = unsafe {
+                egl::API
+                    .create_pbuffer_surface(egl_display, egl_config, &[egl::WIDTH, 1, egl::HEIGHT, 1, egl::NONE])
+                    .context("Failed to create pbuffer surface")?
+            };
+            egl::API
+                .make_current(egl_display, Some(dummy_surface), Some(dummy_surface), Some(context))
+                .context("Failed to make context current")?;
 
-        // Carga de funciones OpenGL
-        gl::load_with(|name| {
-            let name_c = CString::new(name).unwrap();
-            match egl::API.get_proc_address(name_c.to_str().unwrap()) {
-                Some(proc) => proc as *const c_void,
-                None => ptr::null(),
+            // Cargar funciones OpenGL
+            gl::load_with(|name| {
+                let name_c = CString::new(name).unwrap();
+                match egl::API.get_proc_address(name_c.to_str().unwrap()) {
+                    Some(proc) => proc as *const c_void,
+                    None => ptr::null(),
+                }
+            });
+
+            // Compilar shaders
+            let vert_shader = compile_shader(gl::VERTEX_SHADER, config.vertex_src);
+            let frag_shader = compile_shader(gl::FRAGMENT_SHADER, config.fragment_src);
+            
+            if let (Ok(vs), Ok(fs)) = (vert_shader, frag_shader) {
+                let program = link_program(vs, fs);
+                unsafe {
+                    gl::DeleteShader(vs);
+                    gl::DeleteShader(fs);
+                }
+                
+                if let Ok(prog) = program {
+                    shader_program = prog;
+                    use_uniforms = config.use_uniforms;
+                    egl_context = Some(context);
+                    info!("Successfully compiled shaders with fallback #{}", i + 1);
+                    unsafe { egl::API.destroy_surface(egl_display, dummy_surface).ok(); }
+                    break;
+                } else {
+                    last_error = format!("Program linking failed for fallback #{}", i + 1);
+                }
+            } else {
+                last_error = format!("Shader compilation failed for fallback #{}", i + 1);
             }
-        });
-
-        let vert_shader = compile_shader(gl::VERTEX_SHADER, VERTEX_SHADER_SRC)?;
-        let frag_shader = compile_shader(gl::FRAGMENT_SHADER, FRAGMENT_SHADER_SRC)?;
-        let shader_program = link_program(vert_shader, frag_shader)?;
-        unsafe {
-            gl::DeleteShader(vert_shader);
-            gl::DeleteShader(frag_shader);
+            
+            // Limpiar antes de probar el siguiente
+            unsafe {
+                egl::API.destroy_surface(egl_display, dummy_surface).ok();
+                egl::API.destroy_context(egl_display, context).ok();
+            }
         }
 
+        let egl_context = egl_context.ok_or_else(|| anyhow!("All shader fallbacks failed. Last error: {}", last_error))?;
+        info!("EGL context and shaders initialized successfully.");
+
+        // Crear recursos OpenGL
         let gradient_colors_rgba: Vec<[f32; 4]> = self
             .config
             .colors
@@ -192,7 +333,11 @@ impl WaylandRenderer {
             .map(|(_, color)| array_from_config_color(color.clone()))
             .collect();
 
-        let (gradient_colors_ssbo, _) = create_ssbo(&gradient_colors_rgba);
+        let (gradient_colors_ssbo, gradient_colors_uniform_loc) = if use_uniforms {
+            (0, unsafe { gl::GetUniformLocation(shader_program, CString::new("gradient_colors").unwrap().as_ptr()) })
+        } else {
+            (create_ssbo(&gradient_colors_rgba).0, 0)
+        };
 
         let bar_count = self.config.bars.amount as usize;
         let mut indices: Vec<u16> = vec![0; bar_count * 6];
@@ -259,9 +404,11 @@ impl WaylandRenderer {
             cava_reader: self.cava_reader,
             color_rx: self.color_rx,
             gradient_colors_ssbo,
+            gradient_colors_uniform_loc,
             gradient_colors: gradient_colors_rgba,
             running: self.running,
             updating_colors,
+            use_uniforms,
         };
 
         event_loop
@@ -318,35 +465,41 @@ struct AppState {
     cava_reader: BufReader<ChildStdout>,
     color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
     gradient_colors_ssbo: u32,
+    gradient_colors_uniform_loc: i32,
     gradient_colors: Vec<[f32; 4]>,
     running: Arc<AtomicBool>,
     updating_colors: Arc<AtomicBool>,
+    use_uniforms: bool,
 }
 
 impl AppState {
     fn update_colors(&mut self, new_colors: &[[f32; 4]]) {
         self.updating_colors.store(true, Ordering::SeqCst);
-
         self.gradient_colors = new_colors.to_vec();
-        let gradient_colors_len = self.gradient_colors.len() as i32;
-        let mut buffer_data = gradient_colors_len.to_le_bytes().to_vec();
-        buffer_data.extend([0, 0, 0, 0].repeat(3));
-        for color in &self.gradient_colors {
-            for &value in color {
-                buffer_data.extend_from_slice(&value.to_le_bytes());
+
+        if self.use_uniforms {
+            // Para uniformes, simplemente actualizamos la copia local (se enviará en cada draw)
+        } else {
+            let gradient_colors_len = self.gradient_colors.len() as i32;
+            let mut buffer_data = gradient_colors_len.to_le_bytes().to_vec();
+            buffer_data.extend([0, 0, 0, 0].repeat(3));
+            for color in &self.gradient_colors {
+                for &value in color {
+                    buffer_data.extend_from_slice(&value.to_le_bytes());
+                }
             }
-        }
-        unsafe {
-            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, self.gradient_colors_ssbo);
-            gl::BufferSubData(
-                gl::SHADER_STORAGE_BUFFER,
-                0,
-                buffer_data.len() as GLsizeiptr,
-                buffer_data.as_ptr() as *const _,
-            );
-            gl::BindBufferBase(gl::SHADER_STORAGE_BUFFER, 0, self.gradient_colors_ssbo);
-            gl::MemoryBarrier(gl::SHADER_STORAGE_BARRIER_BIT);
-            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
+            unsafe {
+                gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, self.gradient_colors_ssbo);
+                gl::BufferSubData(
+                    gl::SHADER_STORAGE_BUFFER,
+                    0,
+                    buffer_data.len() as GLsizeiptr,
+                    buffer_data.as_ptr() as *const _,
+                );
+                gl::BindBufferBase(gl::SHADER_STORAGE_BUFFER, 0, self.gradient_colors_ssbo);
+                gl::MemoryBarrier(gl::SHADER_STORAGE_BARRIER_BIT);
+                gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
+            }
         }
 
         self.updating_colors.store(false, Ordering::SeqCst);
@@ -490,6 +643,21 @@ impl AppState {
             gl::Clear(gl::COLOR_BUFFER_BIT);
             gl::UseProgram(self.shader_program);
             gl::Uniform2f(self.windows_size_location, fwidth, fheight);
+
+            if self.use_uniforms {
+                // Enviar colores como uniform array
+                let loc = self.gradient_colors_uniform_loc;
+                let colors_count = self.gradient_colors.len() as i32;
+                let colors_loc = CString::new("gradient_colors_size").unwrap();
+                let size_loc = gl::GetUniformLocation(self.shader_program, colors_loc.as_ptr());
+                gl::Uniform1i(size_loc, colors_count);
+                for (i, color) in self.gradient_colors.iter().enumerate() {
+                    let name = format!("gradient_colors[{}]", i);
+                    let loc = gl::GetUniformLocation(self.shader_program, CString::new(name).unwrap().as_ptr());
+                    gl::Uniform4f(loc, color[0], color[1], color[2], color[3]);
+                }
+            }
+
             gl::DrawElements(
                 gl::TRIANGLES,
                 (self.bar_count as usize * 3 * mem::size_of::<u16>()) as GLsizei,
@@ -669,29 +837,18 @@ fn compile_shader(shader_type: u32, src: &str) -> Result<u32> {
         let mut success = 0;
         gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut success);
         if success == 0 {
-            // --- CORRECCIÓN: Obtener la longitud real del log ---
             let mut log_len = 0;
             gl::GetShaderiv(shader, gl::INFO_LOG_LENGTH, &mut log_len);
-            
-            // Crear un buffer del tamaño exacto necesario
             let mut log = vec![0u8; log_len as usize];
-            
-            // Obtener el log de error
             gl::GetShaderInfoLog(
                 shader,
                 log_len,
                 std::ptr::null_mut(),
                 log.as_mut_ptr() as *mut _,
             );
-            
-            // Convertir a String (manejando posibles errores de UTF-8)
             let msg = String::from_utf8_lossy(&log);
-            
-            // Imprimir el error de forma clara
             eprintln!("Error de compilación del Shader:\n{}", msg);
-            
-            // Devolver el error para que Rust lo maneje
-            return Err(anyhow::anyhow!("Shader compilation failed: {}", msg));
+            return Err(anyhow!("Shader compilation failed: {}", msg));
         }
         Ok(shader)
     }
@@ -706,9 +863,17 @@ fn link_program(vs: u32, fs: u32) -> Result<u32> {
         let mut success = 0;
         gl::GetProgramiv(prog, gl::LINK_STATUS, &mut success);
         if success == 0 {
-            let mut log = vec![0u8; 512];
-            gl::GetProgramInfoLog(prog, 512, ptr::null_mut(), log.as_mut_ptr() as *mut _);
+            let mut log_len = 0;
+            gl::GetProgramiv(prog, gl::INFO_LOG_LENGTH, &mut log_len);
+            let mut log = vec![0u8; log_len as usize];
+            gl::GetProgramInfoLog(
+                prog,
+                log_len,
+                std::ptr::null_mut(),
+                log.as_mut_ptr() as *mut _,
+            );
             let msg = String::from_utf8_lossy(&log);
+            eprintln!("Error de enlace del Programa:\n{}", msg);
             return Err(anyhow!("Program linking failed: {}", msg));
         }
         Ok(prog)
