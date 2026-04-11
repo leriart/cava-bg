@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use log::{debug, error, info, warn};
-use smithay_client_toolkit::reexports::calloop::timer::{Timer, TimeoutAction};
+use smithay_client_toolkit::reexports::calloop::timer::Timer;
 use smithay_client_toolkit::reexports::calloop::{EventLoop, LoopHandle};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::ProvidesRegistryState;
@@ -32,11 +32,10 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::app_config::{array_from_config_color, Config};
 
-// --- Shader WGSL (sin cambios) ---
 const SHADER_WGSL: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -181,29 +180,6 @@ impl WaylandRenderer {
 
         let frame_duration = Duration::from_secs_f64(1.0 / self.config.general.framerate as f64);
 
-        // Crear un temporizador que disparará periódicamente.
-        // Usamos `Timer::from_duration` para crear un temporizador que expira después de `frame_duration`.
-        let timer = Timer::from_duration(frame_duration);
-
-        // Insertar el temporizador en el bucle de eventos.
-        // El closure recibe `(TimeoutAction, &mut (), &mut AppState)`.
-        loop_handle
-            .insert_source(timer, move |action, _: &mut (), state: &mut AppState| {
-                if let TimeoutAction::Timeout(_) = action {
-                    // Se ha alcanzado el timeout: dibujar un frame.
-                    state.draw();
-                    // Reprogramar el temporizador para el siguiente frame.
-                    // Para ello, obtenemos un handle al temporizador desde el propio evento.
-                    // Nota: El closure recibe `action` que contiene `TimerHandle`.
-                    // Podemos usar `action.handle()` para obtener el handle.
-                    if let Some(handle) = action.handle() {
-                        // Configurar un nuevo timeout con la misma duración.
-                        handle.set_duration(state.frame_duration);
-                    }
-                }
-            })
-            .map_err(|e| anyhow::anyhow!("Failed to insert timer source: {:?}", e))?;
-
         let mut app_state = AppState {
             registry_state: RegistryState::new(&globals),
             output_state: OutputState::new(&globals, &qh),
@@ -222,6 +198,17 @@ impl WaylandRenderer {
             qh,
             loop_handle: loop_handle.clone(),
         };
+
+        // Crear e insertar el temporizador.
+        let timer = Timer::from_duration(frame_duration);
+        loop_handle
+            .insert_source(timer, move |_event: std::time::Instant, metadata: &mut TimerHandle, state: &mut AppState| {
+                // Este callback se ejecuta cada vez que el temporizador expira.
+                state.draw();
+                // Reprogramar el temporizador para el siguiente frame.
+                metadata.add_timeout(state.frame_duration);
+            })
+            .map_err(|e| anyhow::anyhow!("Failed to insert timer source: {:?}", e))?;
 
         event_loop
             .run(None, &mut app_state, |_| {})
