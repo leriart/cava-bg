@@ -493,7 +493,7 @@ impl AppState {
         let layer_surface = self.layer_shell.create_layer_surface(
             qh,
             surface.clone(),
-            Layer::Bottom,
+            Layer::Overlay,
             Some("cava-bg"),
             Some(output),
         );
@@ -502,6 +502,7 @@ impl AppState {
         let height = logical_size.1 as u32;
         layer_surface.set_size(width, height);
         layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        layer_surface.set_exclusive_zone(-1); 
         surface.commit();
         let wl_egl_surface = WlEglSurface::new(surface.id(), width as i32, height as i32)
             .context("Failed to create WlEglSurface")?;
