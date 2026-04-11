@@ -35,6 +35,9 @@ use crate::config::Config;
 const VERTEX_SHADER_SRC: &str = include_str!("shaders/vertex_shader.glsl");
 const FRAGMENT_SHADER_SRC: &str = include_str!("shaders/fragment_shader.glsl");
 
+// Factor de suavizado para el filtro exponencial (0.0 = muy suave, 1.0 = sin suavizado)
+const SMOOTHING_FACTOR: f32 = 0.65; // Ajusta entre 0.5 y 0.8 según prefieras
+
 pub struct WaylandRenderer {
     config: Config,
     cava_reader: BufReader<ChildStdout>,
@@ -95,7 +98,7 @@ impl WaylandRenderer {
         layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
         surface.commit();
 
-        // EGL – usando la instancia estática `egl::API` (como en el original)
+        // EGL
         egl::API.bind_api(egl::OPENGL_API).context("Failed to bind EGL API")?;
         let egl_display = unsafe {
             egl::API.get_display(conn.display().id().as_ptr() as *mut std::ffi::c_void)
@@ -216,6 +219,7 @@ impl WaylandRenderer {
             preferred_output: legacy_config.general.preferred_output.clone(),
             compositor,
             running: self.running.clone(),
+            previous_audio: Vec::new(), // Inicializar filtro
         };
 
         info!("Wayland renderer initialized, entering event loop");
@@ -304,6 +308,7 @@ struct AppState {
     preferred_output: Option<String>,
     compositor: CompositorState,
     running: Arc<AtomicBool>,
+    previous_audio: Vec<f32>, // Valores del frame anterior para suavizado
 }
 
 impl AppState {
@@ -323,6 +328,16 @@ impl AppState {
         for (i, chunk) in cava_buffer.chunks_exact(2).enumerate() {
             let val = u16::from_le_bytes([chunk[0], chunk[1]]) as f32 / 65530.0;
             unpacked[i] = val;
+        }
+
+        // Aplicar filtro exponencial (suavizado)
+        if self.previous_audio.is_empty() {
+            self.previous_audio = unpacked.clone();
+        } else {
+            for i in 0..bar_count {
+                unpacked[i] = SMOOTHING_FACTOR * unpacked[i] + (1.0 - SMOOTHING_FACTOR) * self.previous_audio[i];
+            }
+            self.previous_audio = unpacked.clone();
         }
 
         let bar_width = 2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);

@@ -27,6 +27,6 @@ gradient_color_7 = '#eba0ac'
 gradient_color_8 = '#f38ba8'
 
 [smoothing]
-monstercat = 0
+monstercat = 1          # 0, 1 o 2 (1 es más suave que 0)
 waves = 0
-noise_reduction = 0.77
+noise_reduction = 0.95  # Valor alto para mayor suavidad (0.77 por defecto)
