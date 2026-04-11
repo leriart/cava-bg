@@ -13,60 +13,61 @@ const COLOR_SMOOTHING_FACTOR: f32 = 0.7;
 pub struct WallpaperAnalyzer;
 
 impl WallpaperAnalyzer {
+    /// Encuentra el archivo de wallpaper actual preguntando **exclusivamente** a gestores conocidos.
+    /// No realiza búsquedas heurísticas en directorios.
     pub fn find_wallpaper() -> Option<PathBuf> {
-        // 1. mpvpaper
+        // 1. mpvpaper (el más probable según tu configuración)
         if let Some(path) = Self::from_mpvpaper() {
             log::debug!("Detected wallpaper via mpvpaper: {:?}", path);
             return Some(path);
         }
-        // 2. hyprctl hyprpaper
+        // 2. hyprpaper (vía hyprctl)
         if let Some(path) = Self::from_hyprctl_hyprpaper() {
             log::debug!("Detected wallpaper via hyprctl hyprpaper: {:?}", path);
             return Some(path);
         }
-        // 3. awww / swww
+        // 3. awww
         if let Some(path) = Self::from_swww_like("awww") {
             log::debug!("Detected wallpaper via awww: {:?}", path);
             return Some(path);
         }
+        // 4. swww
         if let Some(path) = Self::from_swww_like("swww") {
             log::debug!("Detected wallpaper via swww: {:?}", path);
             return Some(path);
         }
-        // 4. swaybg
+        // 5. swaybg
         if let Some(path) = Self::from_swaybg() {
             log::debug!("Detected wallpaper via swaybg: {:?}", path);
             return Some(path);
         }
-        // 5. hyprpaper.conf
+        // 6. hyprpaper (archivo de configuración)
         if let Some(path) = Self::from_hyprpaper_conf() {
             log::debug!("Detected wallpaper via hyprpaper.conf: {:?}", path);
             return Some(path);
         }
-        // 6. wpaperd
+        // 7. wpaperd
         if let Some(path) = Self::from_wpaperd() {
             log::debug!("Detected wallpaper via wpaperd: {:?}", path);
             return Some(path);
         }
-        // 7. wbg
+        // 8. wbg
         if let Some(path) = Self::from_wbg() {
             log::debug!("Detected wallpaper via wbg: {:?}", path);
             return Some(path);
         }
-        // 8. waypaper
+        // 9. waypaper
         if let Some(path) = Self::from_waypaper() {
             log::debug!("Detected wallpaper via waypaper config: {:?}", path);
             return Some(path);
         }
-        // 9. Fallback genérico
-        if let Some(path) = Self::fallback_most_recent() {
-            log::debug!("Fallback: using most recent image in wallpaper dirs: {:?}", path);
-            return Some(path);
-        }
+
+        // Si llegamos aquí, ningún gestor conocido está activo
+        log::warn!("No active wallpaper manager detected");
         None
     }
 
-    // --- Métodos de detección (igual que antes) ---
+    // --- Métodos de detección (los mismos de antes, pero sin fallback) ---
     fn from_hyprctl_hyprpaper() -> Option<PathBuf> {
         let output = Command::new("hyprctl")
             .args(["hyprpaper", "listloaded"])
@@ -219,41 +220,7 @@ impl WallpaperAnalyzer {
         None
     }
 
-    fn fallback_most_recent() -> Option<PathBuf> {
-        let mut candidates = Vec::new();
-        let dirs_to_check = vec![
-            dirs::picture_dir(),
-            dirs::picture_dir().map(|p| p.join("Wallpapers")),
-            dirs::picture_dir().map(|p| p.join("Wallpaper")),
-            dirs::config_dir().map(|p| p.join("hypr")),
-            dirs::config_dir().map(|p| p.join("sway")),
-        ];
-        for dir in dirs_to_check.into_iter().flatten() {
-            if dir.exists() {
-                if let Ok(entries) = std::fs::read_dir(dir) {
-                    for entry in entries.filter_map(|e| e.ok()) {
-                        let path = entry.path();
-                        if path.is_file() {
-                            if let Some(ext) = path.extension() {
-                                let ext = ext.to_string_lossy().to_lowercase();
-                                if matches!(ext.as_str(), "jpg"|"jpeg"|"png"|"bmp"|"webp"|"gif") {
-                                    candidates.push(path);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        candidates.sort_by_key(|p| {
-            std::fs::metadata(p)
-                .and_then(|m| m.modified())
-                .ok()
-        });
-        candidates.into_iter().last()
-    }
-
-    // --- Carga de imagen (soporta GIF y video) ---
+    // --- Carga de imagen ---
     fn load_image_from_path(path: &PathBuf) -> Result<image::DynamicImage> {
         let ext = path.extension()
             .and_then(|e| e.to_str())
@@ -301,7 +268,6 @@ impl WallpaperAnalyzer {
         }
     }
 
-    /// Genera una paleta de colores usando el algoritmo Median Cut (color-thief)
     pub fn generate_gradient_colors(num_colors: usize) -> Result<Vec<[f32; 4]>> {
         let wallpaper_path = match Self::find_wallpaper() {
             Some(path) => path,
@@ -324,11 +290,9 @@ impl WallpaperAnalyzer {
         let (width, height) = img.dimensions();
         log::debug!("Wallpaper dimensions: {}x{}", width, height);
 
-        // Convertir a RGB8 (color-thief espera un slice de bytes RGB)
         let rgb_img = img.to_rgb8();
         let pixels = rgb_img.as_raw();
 
-        // Obtener paleta de colores con color-thief (máximo 8 colores)
         let palette = get_palette(pixels, ColorFormat::Rgb, 10, num_colors as u8)
             .context("Failed to extract color palette")?;
 
@@ -337,14 +301,13 @@ impl WallpaperAnalyzer {
             .map(|c| [c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0, 1.0])
             .collect();
 
-        // Ordenar colores por luminosidad para un gradiente más natural
+        // Ordenar por luminosidad
         new_colors.sort_by(|a, b| {
             let lum_a = 0.299 * a[0] + 0.587 * a[1] + 0.114 * a[2];
             let lum_b = 0.299 * b[0] + 0.587 * b[1] + 0.114 * b[2];
             lum_a.partial_cmp(&lum_b).unwrap()
         });
 
-        // Suavizar con colores anteriores
         let mut prev_guard = PREVIOUS_COLORS.lock().unwrap();
         if !prev_guard.is_empty() && prev_guard.len() == new_colors.len() {
             for i in 0..new_colors.len() {
