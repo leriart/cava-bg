@@ -261,7 +261,7 @@ impl WaylandRenderer {
 
         info!("Entering event loop with frame duration {:?}", frame_duration);
         event_loop
-            .run(frame_duration, app_state, |_| {})
+            .run(frame_duration, &mut app_state, |_| {})
             .context("Event loop failed")?;
 
         Ok(())
