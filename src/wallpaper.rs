@@ -15,15 +15,19 @@ pub struct WallpaperAnalyzer;
 impl WallpaperAnalyzer {
     /// Encuentra el archivo de wallpaper actual explorando procesos y ubicaciones comunes.
     pub fn find_wallpaper() -> Result<Option<PathBuf>> {
-        // Intentar obtener de swaybg
+        // Intentar con awww
+        if let Some(path) = Self::from_swww() {
+            return Ok(Some(path));
+        }
+        // Intentar con swaybg
         if let Some(path) = Self::from_swaybg() {
             return Ok(Some(path));
         }
-        // Intentar obtener de hyprpaper
+        // Intentar con hyprpaper
         if let Some(path) = Self::from_hyprpaper() {
             return Ok(Some(path));
         }
-        // Intentar obtener de mpvpaper
+        // Intentar con mpvpaper
         if let Some(path) = Self::from_mpvpaper() {
             return Ok(Some(path));
         }
@@ -60,6 +64,24 @@ impl WallpaperAnalyzer {
             }
         }
         Ok(None)
+    }
+
+    fn from_swww() -> Option<PathBuf> {
+        let output = Command::new("swww").arg("query").output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        // La salida típica: "DP-1: /ruta/a/imagen.jpg"
+        for line in stdout.lines() {
+            if let Some((_monitor, path_str)) = line.split_once(':') {
+                let path = PathBuf::from(path_str.trim());
+                if path.exists() {
+                    return Some(path);
+                }
+            }
+        }
+        None
     }
 
     fn from_swaybg() -> Option<PathBuf> {
@@ -132,7 +154,6 @@ impl WallpaperAnalyzer {
                     return Ok(img);
                 }
             }
-            // Si falla ffmpeg, devolver error para usar colores por defecto
             anyhow::bail!("Could not extract frame from video");
         }
 

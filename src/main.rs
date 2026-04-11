@@ -12,13 +12,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use app_config::*;
 use wallpaper::WallpaperAnalyzer;
 use wayland_renderer::WaylandRenderer;
-
-use notify::{RecursiveMode, Watcher};
 
 fn main() -> Result<()> {
     env_logger::init();
@@ -119,38 +117,47 @@ fn main() -> Result<()> {
     // Canal para actualizaciones de color
     let (color_tx, color_rx) = mpsc::channel();
 
-    // Watcher de wallpaper (solo si auto_colors está activado)
+    // Hilo de vigilancia de wallpaper (polling cada 2 segundos)
     if auto_colors_enabled {
         let tx = color_tx.clone();
         thread::spawn(move || {
-            // Esperar un poco antes de iniciar el watcher
-            thread::sleep(Duration::from_secs(2));
-            if let Ok(Some(wallpaper_path)) = WallpaperAnalyzer::find_wallpaper() {
-                let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-                    if let Ok(event) = res {
-                        if event.kind.is_modify() || event.kind.is_create() {
-                            info!("Wallpaper file changed, regenerating colors...");
-                            if let Ok(colors) = WallpaperAnalyzer::generate_gradient_colors(8) {
-                                let _ = tx.send(colors);
+            let mut last_path: Option<std::path::PathBuf> = None;
+            let mut last_modified: Option<SystemTime> = None;
+            loop {
+                thread::sleep(Duration::from_secs(2));
+                match WallpaperAnalyzer::find_wallpaper() {
+                    Ok(Some(current_path)) => {
+                        // Obtener fecha de modificación
+                        let modified = std::fs::metadata(&current_path)
+                            .and_then(|m| m.modified())
+                            .ok();
+                        
+                        let path_changed = last_path.as_ref() != Some(&current_path);
+                        let time_changed = match (&last_modified, &modified) {
+                            (Some(l), Some(m)) => l != m,
+                            _ => true,
+                        };
+
+                        if path_changed || time_changed {
+                            info!("Wallpaper changed: {:?}", current_path);
+                            match WallpaperAnalyzer::generate_gradient_colors(8) {
+                                Ok(colors) => {
+                                    if tx.send(colors).is_err() {
+                                        error!("Failed to send new colors, stopping watcher.");
+                                        break;
+                                    }
+                                }
+                                Err(e) => error!("Failed to generate colors: {}", e),
                             }
+                            last_path = Some(current_path);
+                            last_modified = modified;
                         }
                     }
-                })
-                .expect("Failed to create watcher");
-
-                if watcher
-                    .watch(&wallpaper_path, RecursiveMode::NonRecursive)
-                    .is_ok()
-                {
-                    info!("Watching wallpaper for changes: {:?}", wallpaper_path);
-                    loop {
-                        thread::park();
+                    Ok(None) => {
+                        // Si no se encuentra wallpaper, no hacemos nada
                     }
-                } else {
-                    error!("Failed to watch wallpaper file");
+                    Err(e) => error!("Error finding wallpaper: {}", e),
                 }
-            } else {
-                error!("Could not find wallpaper to watch");
             }
         });
     }
