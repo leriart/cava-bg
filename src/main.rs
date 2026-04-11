@@ -1,7 +1,11 @@
+// src/main.rs
+// Punto de entrada principal con soporte para comando "kill", configuración en ~/.config/cava-bg/
+// y renderizador Wayland nativo (compatible con hardware antiguo).
+
 mod app_config;
 mod wallpaper;
+mod wayland_renderer;
 mod cava_backend;
-mod sdl2_renderer;
 
 use anyhow::{Context, Result};
 use log::{error, info};
@@ -14,7 +18,7 @@ use std::sync::Arc;
 
 use app_config::Config;
 use cava_backend::CavaBackend;
-use sdl2_renderer::Sdl2Renderer;
+use wayland_renderer::WaylandRenderer;
 
 const CONFIG_DIR: &str = "cava-bg";
 const CONFIG_FILE: &str = "config.toml";
@@ -82,22 +86,10 @@ fn main() -> Result<()> {
     let (_cava_backend, audio_rx) = CavaBackend::new(bar_count, &config)
         .context("Failed to start cava backend")?;
 
-    // Colores del degradado
-    let colors: Vec<[f32; 4]> = config.colors.values()
-        .map(|c| app_config::array_from_config_color(c.clone()))
-        .collect();
-
-    // Lanzar el renderizador SDL2 (compatible con cualquier hardware)
-    info!("Starting SDL2 renderer");
-    let mut sdl2_renderer = Sdl2Renderer::new(
-        bar_count,
-        config.bars.gap,
-        colors,
-        audio_rx,
-        running,
-    )?;
-
-    sdl2_renderer.run()?;
+    // Lanzar el renderizador Wayland nativo
+    info!("Starting Wayland renderer (OpenGL 3.0)");
+    let renderer = WaylandRenderer::new(config, audio_rx, running);
+    renderer.run()?;
 
     Ok(())
 }

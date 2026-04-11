@@ -143,7 +143,6 @@ pub fn array_from_config_color(color: ConfigColor) -> [f32; 4] {
 }
 
 impl Config {
-    /// Genera la configuración TOML para pasarle a cava por stdin.
     pub fn to_cava_raw_config(&self) -> String {
         let mut config = String::new();
         config.push_str("[general]\n");

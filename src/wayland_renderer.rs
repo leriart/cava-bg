@@ -1,7 +1,11 @@
+// src/wayland_renderer.rs
+// Renderizador nativo Wayland con OpenGL 3.0 (compatible con hardware Intel antiguo)
+// Corregido: transparencia, blending, geometría y manejo de audio.
+
 use anyhow::{anyhow, Context, Result};
 use gl::types::{GLsizei, GLsizeiptr, GLint};
 use khronos_egl as egl;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::ProvidesRegistryState;
@@ -117,6 +121,7 @@ impl WaylandRenderer {
             .initialize(egl_display)
             .context("Failed to initialize EGL")?;
 
+        // Configuración con canal alpha (8 bits)
         const ATTRIBUTES_WITH_ALPHA: [i32; 9] = [
             egl::RED_SIZE, 8,
             egl::GREEN_SIZE, 8,
@@ -129,6 +134,7 @@ impl WaylandRenderer {
             .context("Failed to choose EGL config")?
             .context("No EGL config found")?;
 
+        // Contexto OpenGL 3.0 con perfil de compatibilidad
         let context_attribs = [
             egl::CONTEXT_MAJOR_VERSION, 3,
             egl::CONTEXT_MINOR_VERSION, 0,
@@ -139,6 +145,7 @@ impl WaylandRenderer {
             .create_context(egl_display, egl_config, None, &context_attribs)
             .context("Failed to create EGL context")?;
 
+        // Superficie temporal para inicializar GL
         let dummy_surface = egl::API
             .create_pbuffer_surface(egl_display, egl_config, &[egl::WIDTH, 1, egl::HEIGHT, 1, egl::NONE])
             .context("Failed to create pbuffer surface")?;
@@ -146,6 +153,7 @@ impl WaylandRenderer {
             .make_current(egl_display, Some(dummy_surface), Some(dummy_surface), Some(egl_context))
             .context("Failed to make context current")?;
 
+        // Cargar funciones OpenGL
         gl::load_with(|name| {
             let name_c = CString::new(name).unwrap();
             match egl::API.get_proc_address(name_c.to_str().unwrap()) {
@@ -154,6 +162,7 @@ impl WaylandRenderer {
             }
         });
 
+        // Compilar shaders
         let vert_shader = compile_shader(gl::VERTEX_SHADER, VERTEX_SHADER_SRC)?;
         let frag_shader = compile_shader(gl::FRAGMENT_SHADER, FRAGMENT_SHADER_SRC)?;
         let shader_program = link_program(vert_shader, frag_shader)?;
@@ -164,6 +173,7 @@ impl WaylandRenderer {
         egl::API.destroy_surface(egl_display, dummy_surface).ok();
         info!("OpenGL context inicializado (legacy 3.0)");
 
+        // Colores iniciales desde configuración
         let gradient_colors_rgba: Vec<[f32; 4]> = self
             .config
             .colors
@@ -172,6 +182,7 @@ impl WaylandRenderer {
             .collect();
 
         let bar_count = self.config.bars.amount as usize;
+        // Índices para dos triángulos por barra (6 índices)
         let mut indices: Vec<u16> = vec![0; bar_count * 6];
         for i in 0..bar_count {
             let base = (i * 4) as u16;
@@ -237,7 +248,7 @@ impl WaylandRenderer {
             color_locs,
             bar_count: self.config.bars.amount,
             bar_gap: self.config.bars.gap,
-            background_color: [0.0, 0.0, 0.0, 0.0],
+            background_color: [0.0, 0.0, 0.0, 0.0], // Fondo completamente transparente
             preferred_output_name: self.config.general.preferred_output,
             audio_rx: self.audio_rx,
             gradient_colors: gradient_colors_rgba,
@@ -304,8 +315,9 @@ impl AppState {
         let width = logical_size.0 as u32;
         let height = logical_size.1 as u32;
         layer_surface.set_size(width, height);
+        // Anclar a todos los bordes para que ocupe toda la pantalla
         layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
-        layer_surface.set_exclusive_zone(-1);
+        layer_surface.set_exclusive_zone(-1); // No reservar espacio
         surface.commit();
         let wl_egl_surface = WlEglSurface::new(surface.id(), width as i32, height as i32)
             .context("Failed to create WlEglSurface")?;
@@ -357,11 +369,16 @@ impl AppState {
             gl::Viewport(0, 0, state.width as GLsizei, state.height as GLsizei);
         }
 
+        // Leer datos de audio (no bloqueante)
         let mut unpacked_data: Vec<f32> = vec![0.0; self.bar_count as usize];
         if let Ok(new_data) = self.audio_rx.try_recv() {
             unpacked_data = new_data;
+        } else {
+            // Si no hay datos nuevos, mantener silencio (barras a cero)
+            // No hacemos nada, unpacked_data ya está en cero.
         }
 
+        // Calcular geometría de barras
         let bar_width: f32 =
             2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
         let bar_gap_width: f32 = bar_width * self.bar_gap;
@@ -390,14 +407,11 @@ impl AppState {
                 vertices.as_ptr() as *const _,
                 gl::DYNAMIC_DRAW,
             );
+            // Habilitar blending para transparencia
             gl::Enable(gl::BLEND);
             gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-            gl::ClearColor(
-                self.background_color[0],
-                self.background_color[1],
-                self.background_color[2],
-                self.background_color[3],
-            );
+            // Limpiar con color totalmente transparente
+            gl::ClearColor(0.0, 0.0, 0.0, 0.0);
             gl::Clear(gl::COLOR_BUFFER_BIT);
             gl::UseProgram(self.shader_program);
             gl::Uniform2f(self.window_size_loc, state.width as f32, state.height as f32);
@@ -407,6 +421,7 @@ impl AppState {
                     gl::Uniform4f(self.color_locs[i], color[0], color[1], color[2], color[3]);
                 }
             }
+            // Número correcto de índices: bar_count * 6
             let index_count = (self.bar_count as usize * 6) as GLsizei;
             gl::DrawElements(gl::TRIANGLES, index_count, gl::UNSIGNED_SHORT, ptr::null());
             gl::BindVertexArray(0);
@@ -438,6 +453,7 @@ impl AppState {
     }
 }
 
+// Implementación de traits (OutputHandler, CompositorHandler, etc.)
 impl OutputHandler for AppState {
     fn output_state(&mut self) -> &mut OutputState { &mut self.output_state }
     fn new_output(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
