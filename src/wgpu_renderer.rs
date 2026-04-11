@@ -83,7 +83,6 @@ impl WgpuRenderer {
             .map(|c| crate::app_config::array_from_config_color(c.clone()))
             .collect();
 
-        // Mover todo el setup de wgpu dentro del closure para evitar problemas de préstamo
         event_loop.run(move |event, control_flow| {
             if !running.load(Ordering::SeqCst) {
                 control_flow.exit();
@@ -208,7 +207,6 @@ impl WgpuRenderer {
                 (surface, device, queue, surface_config, index_buffer, vertex_buffer, uniform_buffer, bind_group, render_pipeline)
             });
 
-            // Actualizar surface_config si es necesario (por ejemplo, redimensionamiento)
             let size = window.inner_size();
             if surface_config.width != size.width || surface_config.height != size.height {
                 surface_config.width = size.width;
@@ -220,7 +218,6 @@ impl WgpuRenderer {
                 Event::WindowEvent { event, .. } => match event {
                     WindowEvent::CloseRequested => control_flow.exit(),
                     WindowEvent::RedrawRequested => {
-                        // Actualizar colores
                         if let Ok(guard) = color_rx.lock() {
                             if let Ok(new_colors) = guard.try_recv() {
                                 let uniforms = Uniforms::new(&new_colors, surface_config.width as f32, surface_config.height as f32);
@@ -228,13 +225,11 @@ impl WgpuRenderer {
                             }
                         }
 
-                        // Leer audio
                         let mut bar_heights = vec![0.0; bar_count];
                         if let Ok(new_heights) = audio_rx.try_recv() {
                             bar_heights = new_heights;
                         }
 
-                        // Calcular vértices
                         let bar_width = 2.0 / (bar_count as f32 + (bar_count as f32 - 1.0) * bar_gap);
                         let bar_gap_width = bar_width * bar_gap;
                         let mut vertices = vec![0.0f32; bar_count * 8];
@@ -253,7 +248,6 @@ impl WgpuRenderer {
                         }
                         queue.write_buffer(&vertex_buffer, 0, bytemuck::cast_slice(&vertices));
 
-                        // Renderizar
                         let frame = match surface.get_current_texture() {
                             Ok(frame) => frame,
                             Err(_) => return,
@@ -299,5 +293,10 @@ impl WgpuRenderer {
                 _ => {}
             }
         });
+
+        // Necesario para cumplir con el tipo de retorno Result<()>.
+        // Esta línea nunca se ejecuta porque event_loop.run no retorna.
+        #[allow(unreachable_code)]
+        Ok(())
     }
 }
