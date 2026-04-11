@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Config {
     pub general: GeneralConfig,
@@ -15,6 +16,12 @@ pub struct GeneralConfig {
     pub autosens: Option<bool>,
     pub sensitivity: Option<f32>,
     pub preferred_output: Option<String>,
+    #[serde(default = "default_auto_colors")]
+    pub auto_colors: bool,
+}
+
+fn default_auto_colors() -> bool {
+    true
 }
 
 #[derive(Serialize, Deserialize, Debug)]

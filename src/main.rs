@@ -1,129 +1,150 @@
-mod cli;
-mod config;
-mod cava_manager;
+mod app_config;
 mod wallpaper;
 mod wayland_renderer;
 
 use anyhow::{Context, Result};
 use log::{error, info};
-use std::process::Command;
+use std::collections::HashMap;
+use std::fs;
+use std::io::{BufReader, Write};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
+
+use app_config::*;
+use wallpaper::WallpaperAnalyzer;
+use wayland_renderer::WaylandRenderer;
 
 use notify::{RecursiveMode, Watcher};
 
 fn main() -> Result<()> {
-    let cli = cli::Cli::parse();
+    env_logger::init();
 
-    if cli.version {
-        cli::Cli::show_version();
-        return Ok(());
-    }
-
-    cli.init_logging();
-
-    let mut config = config::Config::load(&cli.config).context("Failed to load config")?;
-
-    if cli.test_config {
-        println!("Testing configuration and wallpaper analysis...");
-        println!(
-            "Config loaded: framerate={}, bars={}",
-            config.general.framerate, config.bars.amount
-        );
-        if config.general.auto_colors {
-            match wallpaper::WallpaperAnalyzer::generate_gradient_colors(8) {
-                Ok(colors) => {
-                    println!("Generated {} colors from wallpaper:", colors.len());
-                    for (i, c) in colors.iter().enumerate() {
-                        let hex = format!(
-                            "#{:02x}{:02x}{:02x}",
-                            (c[0] * 255.0) as u8,
-                            (c[1] * 255.0) as u8,
-                            (c[2] * 255.0) as u8
-                        );
-                        println!("  {}: {} {:?}", i + 1, hex, c);
-                    }
-                }
-                Err(e) => println!("Failed to generate colors: {}", e),
-            }
+    let args: Vec<String> = std::env::args().collect();
+    let config_filename = if args.len() == 3 && args[1] == "--config" {
+        args[2].clone()
+    } else {
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+        let path = format!("{}/.config/wallpaper-cava/config.toml", home);
+        if fs::metadata(&path).is_ok() {
+            path
+        } else {
+            "config.toml".to_string()
         }
-        return Ok(());
-    }
+    };
 
-    if Command::new("cava").arg("--version").output().is_err() {
-        eprintln!("cava is not installed. Please install it first.");
-        eprintln!("  Arch: sudo pacman -S cava");
-        eprintln!("  Debian/Ubuntu: sudo apt install cava");
-        eprintln!("  Fedora: sudo dnf install cava");
-        return Ok(());
-    }
+    let config_str = fs::read_to_string(&config_filename)
+        .context("Unable to read config file")?;
+    let mut config: Config = toml::from_str(&config_str)
+        .map_err(|e| anyhow::anyhow!("Error parsing config: {}", e))?;
 
-    info!("Starting cava-bg v{}", env!("CARGO_PKG_VERSION"));
-
-    if config.general.auto_colors {
-        info!("Auto-colors enabled, analyzing wallpaper...");
-        match wallpaper::WallpaperAnalyzer::generate_gradient_colors(8) {
-            Ok(gradient) => {
-                config.colors.colors.clear();
-                for (i, &[r, g, b, a]) in gradient.iter().enumerate() {
+    // Auto-colors inicial
+    let auto_colors_enabled = config.general.auto_colors;
+    if auto_colors_enabled {
+        match WallpaperAnalyzer::generate_gradient_colors(8) {
+            Ok(generated) => {
+                info!("Auto-colors: replacing config colors with wallpaper palette");
+                config.colors.clear();
+                for (i, &color) in generated.iter().enumerate() {
                     let hex = format!(
                         "#{:02x}{:02x}{:02x}",
-                        (r * 255.0) as u8,
-                        (g * 255.0) as u8,
-                        (b * 255.0) as u8
+                        (color[0] * 255.0) as u8,
+                        (color[1] * 255.0) as u8,
+                        (color[2] * 255.0) as u8
                     );
-                    config.colors.colors.insert(
+                    config.colors.insert(
                         format!("gradient_color_{}", i + 1),
-                        config::Color::HexWithAlpha { hex, alpha: a },
+                        ConfigColor::Complex(HexColorConfig {
+                            hex,
+                            alpha: Some(color[3]),
+                        }),
                     );
                 }
-                info!("Generated {} gradient colors from wallpaper", gradient.len());
             }
             Err(e) => {
-                error!("Failed to extract colors from wallpaper: {}", e);
-                info!("Using default colors");
+                error!("Failed to generate auto colors: {}", e);
             }
         }
     }
 
-    let mut cava_manager =
-        cava_manager::CavaManager::new(&config).context("Failed to start cava manager")?;
-    let cava_reader = cava_manager
-        .take_reader()
-        .context("Failed to get cava reader")?;
+    // Configurar cava
+    let cava_output_config: HashMap<String, String> = HashMap::from([
+        ("method".into(), "raw".into()),
+        ("raw_target".into(), "/dev/stdout".into()),
+        ("bit_format".into(), "16bit".into()),
+    ]);
+    let cava_config = CavaConfig {
+        general: CavaGeneralConfig {
+            framerate: config.general.framerate,
+            bars: config.bars.amount,
+            autosens: config.general.autosens,
+            sensitivity: config.general.sensitivity,
+        },
+        smoothing: CavaSmoothingConfig {
+            monstercat: config.smoothing.monstercat,
+            waves: config.smoothing.waves,
+            noise_reduction: config.smoothing.noise_reduction,
+        },
+        output: cava_output_config,
+    };
+    let string_cava_config = toml::to_string(&cava_config).unwrap();
 
+    let mut cmd = Command::new("cava");
+    cmd.arg("-p").arg("/dev/stdin");
+    let mut cava_process = cmd
+        .stdout(Stdio::piped())
+        .stdin(Stdio::piped())
+        .spawn()
+        .context("failed to spawn cava process")?;
+
+    if let Some(mut stdin) = cava_process.stdin.take() {
+        stdin.write_all(string_cava_config.as_bytes())?;
+        stdin.flush()?;
+    }
+    let cava_stdout = cava_process.stdout.take().context("failed to get cava stdout")?;
+    let cava_reader = BufReader::new(cava_stdout);
+
+    // Control de ejecución
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
     })
-    .expect("Failed to set Ctrl+C handler");
+    .expect("Error setting Ctrl-C handler");
 
+    // Canal para actualizaciones de color
     let (color_tx, color_rx) = mpsc::channel();
 
-    if config.general.auto_colors {
+    // Iniciar watcher de wallpaper si auto_colors está activado
+    if auto_colors_enabled {
         let tx = color_tx.clone();
         thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs(1));
-            if let Ok(Some(wallpaper_path)) = wallpaper::WallpaperAnalyzer::find_wallpaper() {
+            // Esperar un poco para que el wallpaper inicial esté listo
+            thread::sleep(Duration::from_secs(1));
+            if let Ok(Some(wallpaper_path)) = WallpaperAnalyzer::find_wallpaper() {
                 let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-                    if let Ok(_event) = res {
-                        info!("Wallpaper changed, regenerating colors...");
-                        if let Ok(colors) = wallpaper::WallpaperAnalyzer::generate_gradient_colors(8) {
-                            tx.send(colors).ok();
+                    if let Ok(event) = res {
+                        if event.kind.is_modify() || event.kind.is_create() {
+                            info!("Wallpaper changed, regenerating colors...");
+                            if let Ok(colors) = WallpaperAnalyzer::generate_gradient_colors(8) {
+                                let _ = tx.send(colors);
+                            }
                         }
                     }
-                }).expect("Failed to create watcher");
-                
+                })
+                .expect("Failed to create watcher");
+
                 if watcher
                     .watch(&wallpaper_path, RecursiveMode::NonRecursive)
                     .is_ok()
                 {
                     info!("Watching wallpaper for changes: {:?}", wallpaper_path);
+                    // Mantener el hilo vivo
                     loop {
-                        std::thread::park();
+                        thread::park();
                     }
                 } else {
                     error!("Failed to watch wallpaper file");
@@ -132,12 +153,9 @@ fn main() -> Result<()> {
         });
     }
 
-    let wayland_renderer =
-        wayland_renderer::WaylandRenderer::new(config.clone(), cava_reader, color_rx, running);
-    if let Err(e) = wayland_renderer.run() {
-        error!("Wayland renderer failed: {}", e);
-        return Err(e);
-    }
+    // Iniciar renderer
+    let renderer = WaylandRenderer::new(config, cava_reader, color_rx, running.clone());
+    renderer.run()?;
 
     Ok(())
 }
