@@ -647,13 +647,38 @@ impl AppState {
 
             if self.use_uniforms {
                 let colors_count = self.gradient_colors.len() as i32;
-                let colors_loc = CString::new("gradient_colors_size").unwrap();
-                let size_loc = gl::GetUniformLocation(self.shader_program, colors_loc.as_ptr());
-                gl::Uniform1i(size_loc, colors_count);
+                
+                // Establecer el uniform de cantidad de colores
+                let size_loc = unsafe {
+                    let name = CString::new("gradient_colors_size").unwrap();
+                    gl::GetUniformLocation(self.shader_program, name.as_ptr())
+                };
+                if size_loc != -1 {
+                    unsafe { gl::Uniform1i(size_loc, colors_count); }
+                    debug!("Uniform 'gradient_colors_size' set to {}", colors_count);
+                } else {
+                    error!("Uniform 'gradient_colors_size' not found");
+                }
+                
+                // Establecer el array de colores
                 for (i, color) in self.gradient_colors.iter().enumerate() {
                     let name = format!("gradient_colors[{}]", i);
-                    let loc = gl::GetUniformLocation(self.shader_program, CString::new(name).unwrap().as_ptr());
-                    gl::Uniform4f(loc, color[0], color[1], color[2], color[3]);
+                    let loc = unsafe {
+                        let cname = CString::new(name.clone()).unwrap();
+                        gl::GetUniformLocation(self.shader_program, cname.as_ptr())
+                    };
+                    if loc != -1 {
+                        unsafe { gl::Uniform4f(loc, color[0], color[1], color[2], color[3]); }
+                    } else {
+                        error!("Uniform '{}' not found", name);
+                    }
+                }
+                
+                // Log del primer color para depuración
+                if !self.gradient_colors.is_empty() {
+                    let c = self.gradient_colors[0];
+                    info!("Uniform mode: first color set to #{:02x}{:02x}{:02x} (alpha: {:.2})",
+                        (c[0]*255.0) as u8, (c[1]*255.0) as u8, (c[2]*255.0) as u8, c[3]);
                 }
             }
 
