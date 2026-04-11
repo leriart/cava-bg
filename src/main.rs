@@ -9,8 +9,8 @@ use std::fs;
 use std::io::{BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
-use std::sync::Arc;
+use std::sync::mpsc::{self, Receiver};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
@@ -43,6 +43,7 @@ fn main() -> Result<()> {
 
     let auto_colors_enabled = config.general.auto_colors;
 
+    // Auto-colors inicial
     if auto_colors_enabled {
         match WallpaperAnalyzer::generate_gradient_colors(8) {
             Ok(generated) => {
@@ -70,43 +71,46 @@ fn main() -> Result<()> {
         }
     }
 
-    // Configurar cava
-    let cava_output_config: HashMap<String, String> = HashMap::from([
-        ("method".into(), "raw".into()),
-        ("raw_target".into(), "/dev/stdout".into()),
-        ("bit_format".into(), "16bit".into()),
-    ]);
-    let cava_config = CavaConfig {
-        general: CavaGeneralConfig {
-            framerate: config.general.framerate,
-            bars: config.bars.amount,
-            autosens: config.general.autosens,
-            sensitivity: config.general.sensitivity,
-        },
-        smoothing: CavaSmoothingConfig {
-            monstercat: config.smoothing.monstercat,
-            waves: config.smoothing.waves,
-            noise_reduction: config.smoothing.noise_reduction,
-        },
-        output: cava_output_config,
+    // Configurar cava (esto se ejecutará cada vez que reiniciemos el renderer)
+    let spawn_cava = || -> Result<BufReader<ChildStdout>> {
+        let cava_output_config: HashMap<String, String> = HashMap::from([
+            ("method".into(), "raw".into()),
+            ("raw_target".into(), "/dev/stdout".into()),
+            ("bit_format".into(), "16bit".into()),
+        ]);
+        let cava_config = CavaConfig {
+            general: CavaGeneralConfig {
+                framerate: config.general.framerate,
+                bars: config.bars.amount,
+                autosens: config.general.autosens,
+                sensitivity: config.general.sensitivity,
+            },
+            smoothing: CavaSmoothingConfig {
+                monstercat: config.smoothing.monstercat,
+                waves: config.smoothing.waves,
+                noise_reduction: config.smoothing.noise_reduction,
+            },
+            output: cava_output_config,
+        };
+        let string_cava_config = toml::to_string(&cava_config).unwrap();
+
+        let mut cmd = Command::new("cava");
+        cmd.arg("-p").arg("/dev/stdin");
+        let mut cava_process = cmd
+            .stdout(Stdio::piped())
+            .stdin(Stdio::piped())
+            .spawn()
+            .context("failed to spawn cava process")?;
+
+        if let Some(mut stdin) = cava_process.stdin.take() {
+            stdin.write_all(string_cava_config.as_bytes())?;
+            stdin.flush()?;
+        }
+        let cava_stdout = cava_process.stdout.take().context("failed to get cava stdout")?;
+        Ok(BufReader::new(cava_stdout))
     };
-    let string_cava_config = toml::to_string(&cava_config).unwrap();
 
-    let mut cmd = Command::new("cava");
-    cmd.arg("-p").arg("/dev/stdin");
-    let mut cava_process = cmd
-        .stdout(Stdio::piped())
-        .stdin(Stdio::piped())
-        .spawn()
-        .context("failed to spawn cava process")?;
-
-    if let Some(mut stdin) = cava_process.stdin.take() {
-        stdin.write_all(string_cava_config.as_bytes())?;
-        stdin.flush()?;
-    }
-    let cava_stdout = cava_process.stdout.take().context("failed to get cava stdout")?;
-    let cava_reader = BufReader::new(cava_stdout);
-
+    // Control de ejecución
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     ctrlc::set_handler(move || {
@@ -114,8 +118,11 @@ fn main() -> Result<()> {
     })
     .expect("Error setting Ctrl-C handler");
 
+    // Canal para actualizaciones de color
     let (color_tx, color_rx) = mpsc::channel();
+    let shared_color_rx = Arc::new(Mutex::new(color_rx));
 
+    // Hilo de vigilancia de wallpaper (único, no se reinicia)
     if auto_colors_enabled {
         let tx = color_tx.clone();
         thread::spawn(move || {
@@ -171,9 +178,28 @@ fn main() -> Result<()> {
     // Reinicio automático del renderer
     let mut retries = 0;
     loop {
-        let renderer = WaylandRenderer::new(config.clone(), cava_reader.try_clone().expect("Failed to clone cava reader"), color_rx.try_recv().ok().unwrap_or_else(|| vec![]), running.clone());
+        // Iniciar cava (nuevo proceso)
+        let cava_reader = match spawn_cava() {
+            Ok(r) => r,
+            Err(e) => {
+                error!("Failed to spawn cava: {}", e);
+                if retries >= MAX_RETRIES {
+                    break;
+                }
+                retries += 1;
+                thread::sleep(Duration::from_secs(2));
+                continue;
+            }
+        };
+
+        let renderer = WaylandRenderer::new(
+            config.clone(),
+            cava_reader,
+            shared_color_rx.clone(),
+            running.clone(),
+        );
         match renderer.run() {
-            Ok(()) => break, // Salida normal
+            Ok(()) => break, // Salida limpia
             Err(e) => {
                 error!("Renderer failed: {}", e);
                 if retries >= MAX_RETRIES {

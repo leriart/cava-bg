@@ -45,7 +45,7 @@ const FRAGMENT_SHADER_SRC: &str = include_str!("shaders/fragment_shader.glsl");
 pub struct WaylandRenderer {
     config: Config,
     cava_reader: BufReader<ChildStdout>,
-    color_rx: Receiver<Vec<[f32; 4]>>,
+    color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
     running: Arc<AtomicBool>,
 }
 
@@ -53,7 +53,7 @@ impl WaylandRenderer {
     pub fn new(
         config: Config,
         cava_reader: BufReader<ChildStdout>,
-        color_rx: Receiver<Vec<[f32; 4]>>,
+        color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
         running: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -292,6 +292,7 @@ struct AppState {
     gradient_colors: Vec<[f32; 4]>,
     running: Arc<AtomicBool>,
     updating_colors: Arc<AtomicBool>,
+    color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
 }
 
 impl AppState {
@@ -341,7 +342,7 @@ impl AppState {
             return;
         }
 
-        if let Ok(new_colors) = self.color_rx.try_recv() {
+        if let Ok(new_colors) = self.color_rx.lock().unwrap().try_recv() {
             self.update_colors(&new_colors);
         }
 

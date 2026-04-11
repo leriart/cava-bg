@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
     pub general: GeneralConfig,
     pub bars: BarConfig,
@@ -9,7 +9,7 @@ pub struct Config {
     pub smoothing: SmoothingConfig,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GeneralConfig {
     pub framerate: u32,
     pub background_color: ConfigColor,
@@ -24,13 +24,13 @@ fn default_auto_colors() -> bool {
     true
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BarConfig {
     pub amount: u32,
     pub gap: f32,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct SmoothingConfig {
     pub monstercat: Option<f32>,
     pub waves: Option<i32>,
@@ -50,14 +50,14 @@ pub struct HexColorConfig {
     pub alpha: Option<f32>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CavaConfig {
     pub general: CavaGeneralConfig,
     pub smoothing: CavaSmoothingConfig,
     pub output: HashMap<String, String>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CavaGeneralConfig {
     pub framerate: u32,
     pub bars: u32,
@@ -65,7 +65,7 @@ pub struct CavaGeneralConfig {
     pub sensitivity: Option<f32>,
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct CavaSmoothingConfig {
     pub monstercat: Option<f32>,
     pub waves: Option<i32>,
