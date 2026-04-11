@@ -4,8 +4,6 @@ use image::{GenericImageView, Pixel, RgbaImage};
 use log;
 use once_cell::sync::Lazy;
 use std::sync::Mutex;
-use std::time::Duration;
-use std::thread;
 
 static PREVIOUS_COLORS: Lazy<Mutex<Vec<[f32; 4]>>> = Lazy::new(|| Mutex::new(Vec::new()));
 const COLOR_SMOOTHING_FACTOR: f32 = 0.5;
@@ -13,27 +11,25 @@ const COLOR_SMOOTHING_FACTOR: f32 = 0.5;
 pub struct WallpaperAnalyzer;
 
 impl WallpaperAnalyzer {
-    /// Captura la pantalla actual y extrae una paleta de colores.
+    /// Captura la pantalla actual (primera salida) y extrae una paleta de colores.
     pub fn capture_and_extract_colors(num_colors: usize) -> Result<Vec<[f32; 4]>> {
-        // Obtener el primer monitor disponible
-        let monitors = gazo::Monitor::all().context("Failed to get monitors")?;
-        let monitor = monitors.first().context("No monitor found")?;
+        // Obtener todas las salidas
+        let outputs = gazo::get_outputs().context("Failed to get outputs")?;
+        let output = outputs.first().context("No output found")?;
 
-        log::info!("Capturing monitor: {:?}", monitor.name());
+        log::info!("Capturing output: {:?}", output.name);
 
         // Realizar la captura
-        let capture = gazo::capture_monitor(monitor).context("Failed to capture monitor")?;
+        let capture = gazo::capture_output(output).context("Failed to capture output")?;
 
-        // Los datos están en formato BGRA (8 bits por canal)
         let (width, height) = (capture.width(), capture.height());
         let data = capture.data();
         log::debug!("Captured image: {}x{}", width, height);
 
-        // Convertir a una imagen que podamos procesar
+        // Convertir a RgbaImage
         let img = RgbaImage::from_raw(width, height, data.to_vec())
             .context("Failed to create image from capture")?;
 
-        // Extraer colores
         let new_colors = Self::extract_and_generate_gradient(&img, num_colors);
 
         // Suavizar con colores anteriores
@@ -60,16 +56,10 @@ impl WallpaperAnalyzer {
         Ok(smoothed)
     }
 
-    /// Versión de compatibilidad para llamadas antiguas (cuando solo se usaba imagen estática).
-    pub fn generate_gradient_colors(num_colors: usize) -> Result<Vec<[f32; 4]>> {
-        Self::capture_and_extract_colors(num_colors)
-    }
-
     fn extract_and_generate_gradient(img: &RgbaImage, num_colors: usize) -> Vec<[f32; 4]> {
         let (width, height) = img.dimensions();
         let mut samples = Vec::new();
 
-        // Muestrear la imagen para obtener píxeles relevantes
         let step = (width * height / 10000).max(1);
         for y in (0..height).step_by(step as usize) {
             for x in (0..width).step_by(step as usize) {
@@ -96,7 +86,6 @@ impl WallpaperAnalyzer {
             }
         }
 
-        // Si no se encontraron muestras suficientes, usar un muestreo más denso
         if samples.is_empty() {
             for y in (0..height).step_by((step * 2) as usize) {
                 for x in (0..width).step_by((step * 2) as usize) {

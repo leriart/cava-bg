@@ -3,7 +3,7 @@ mod wallpaper;
 mod wayland_renderer;
 
 use anyhow::{Context, Result};
-use log::{error, info};
+use log::{error, info, warn};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufReader, Write};
@@ -17,8 +17,6 @@ use std::time::Duration;
 use app_config::*;
 use wallpaper::WallpaperAnalyzer;
 use wayland_renderer::WaylandRenderer;
-
-use notify::{RecursiveMode, Watcher};
 
 fn main() -> Result<()> {
     env_logger::init();
@@ -44,9 +42,9 @@ fn main() -> Result<()> {
     // Auto-colors inicial
     let auto_colors_enabled = config.general.auto_colors;
     if auto_colors_enabled {
-        match WallpaperAnalyzer::generate_gradient_colors(8) {
+        match WallpaperAnalyzer::capture_and_extract_colors(8) {
             Ok(generated) => {
-                info!("Auto-colors: replacing config colors with wallpaper palette");
+                info!("Auto-colors: replacing config colors with captured palette");
                 config.colors.clear();
                 for (i, &color) in generated.iter().enumerate() {
                     let hex = format!(
@@ -65,7 +63,7 @@ fn main() -> Result<()> {
                 }
             }
             Err(e) => {
-                error!("Failed to generate auto colors: {}", e);
+                error!("Failed to capture colors: {}", e);
             }
         }
     }
@@ -118,32 +116,35 @@ fn main() -> Result<()> {
     // Canal para actualizaciones de color
     let (color_tx, color_rx) = mpsc::channel();
 
-    // Iniciar watcher de wallpaper si auto_colors está activado
+    // Hilo que periódicamente captura la pantalla y envía nuevos colores si cambian
     if auto_colors_enabled {
         let tx = color_tx.clone();
         thread::spawn(move || {
-            thread::sleep(Duration::from_secs(1));
-            if let Ok(Some(wallpaper_path)) = WallpaperAnalyzer::find_wallpaper() {
-                let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-                    if let Ok(event) = res {
-                        if event.kind.is_modify() || event.kind.is_create() {
-                            info!("Wallpaper changed, capturing screen to extract colors...");
-                            // Ahora capturamos la pantalla en lugar de leer el archivo
-                            if let Ok(colors) = WallpaperAnalyzer::capture_and_extract_colors(8) {
-                                let _ = tx.send(colors);
+            let mut last_hash = 0u64;
+            loop {
+                thread::sleep(Duration::from_secs(3)); // cada 3 segundos
+                match WallpaperAnalyzer::capture_and_extract_colors(8) {
+                    Ok(colors) => {
+                        // Calcular un hash simple de los colores para evitar actualizaciones innecesarias
+                        use std::collections::hash_map::DefaultHasher;
+                        use std::hash::{Hash, Hasher};
+                        let mut hasher = DefaultHasher::new();
+                        for c in &colors {
+                            for v in c {
+                                v.to_bits().hash(&mut hasher);
+                            }
+                        }
+                        let new_hash = hasher.finish();
+                        if new_hash != last_hash {
+                            last_hash = new_hash;
+                            info!("Detected screen change, sending new palette");
+                            if tx.send(colors).is_err() {
+                                break; // El receptor se cerró
                             }
                         }
                     }
-                })
-                .expect("Failed to create watcher");
-
-                if watcher
-                    .watch(&wallpaper_path, RecursiveMode::NonRecursive)
-                    .is_ok()
-                {
-                    info!("Watching wallpaper for changes: {:?}", wallpaper_path);
-                    loop {
-                        thread::park();
+                    Err(e) => {
+                        warn!("Failed to capture screen: {}", e);
                     }
                 }
             }
