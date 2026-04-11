@@ -6,11 +6,8 @@ use walkdir::WalkDir;
 use std::sync::Mutex;
 use once_cell::sync::Lazy;
 
-// Almacenar los colores anteriores para suavizar la transición
 static PREVIOUS_COLORS: Lazy<Mutex<Vec<[f32; 4]>>> = Lazy::new(|| Mutex::new(Vec::new()));
-
-// Factor de suavizado para los colores (0.0 = muy suave, 1.0 = sin suavizado)
-const COLOR_SMOOTHING_FACTOR: f32 = 0.7;
+const COLOR_SMOOTHING_FACTOR: f32 = 0.5; // 0.5 = mezcla equitativa entre nuevo y anterior
 
 pub struct WallpaperAnalyzer;
 
@@ -57,14 +54,14 @@ impl WallpaperAnalyzer {
 
     pub fn default_colors(num_colors: usize) -> Vec<[f32; 4]> {
         let catppuccin = [
-            [0.580, 0.886, 0.835, 1.0], // #94e2d5
-            [0.537, 0.863, 0.922, 1.0], // #89dceb
-            [0.455, 0.780, 0.925, 1.0], // #74c7ec
-            [0.537, 0.706, 0.980, 1.0], // #89b4fa
-            [0.796, 0.651, 0.969, 1.0], // #cba6f7
-            [0.961, 0.761, 0.906, 1.0], // #f5c2e7
-            [0.922, 0.627, 0.675, 1.0], // #eba0ac
-            [0.953, 0.545, 0.659, 1.0], // #f38ba8
+            [0.580, 0.886, 0.835, 1.0],
+            [0.537, 0.863, 0.922, 1.0],
+            [0.455, 0.780, 0.925, 1.0],
+            [0.537, 0.706, 0.980, 1.0],
+            [0.796, 0.651, 0.969, 1.0],
+            [0.961, 0.761, 0.906, 1.0],
+            [0.922, 0.627, 0.675, 1.0],
+            [0.953, 0.545, 0.659, 1.0],
         ];
         if num_colors <= catppuccin.len() {
             catppuccin[0..num_colors].to_vec()
@@ -92,7 +89,7 @@ impl WallpaperAnalyzer {
         log::info!("Wallpaper dimensions: {}x{}", width, height);
         let mut new_colors = Self::extract_and_generate_gradient(&img, num_colors);
 
-        // Suavizar los colores con respecto a los anteriores (si existen)
+        // Suavizar colores con respecto a los anteriores
         let mut prev_guard = PREVIOUS_COLORS.lock().unwrap();
         if !prev_guard.is_empty() && prev_guard.len() == new_colors.len() {
             for i in 0..new_colors.len() {

@@ -135,7 +135,7 @@ impl Config {
         }
         Config {
             general: GeneralConfig {
-                framerate: 60,
+                framerate: 30,  // Reducido de 60 a 30 para movimiento más lento
                 background_color: Color::HexWithAlpha {
                     hex: "#000000".to_string(),
                     alpha: 0.0,
@@ -153,14 +153,13 @@ impl Config {
             },
             colors: ColorsConfig { colors },
             smoothing: SmoothingConfig {
-                monstercat: Some(1),      // Antes 0, ahora 1 para más suavidad
+                monstercat: Some(2),      // Máxima suavidad (2)
                 waves: Some(0),
-                noise_reduction: Some(0.95), // Antes 0.77, ahora 0.95
+                noise_reduction: Some(0.98), // Muy alta reducción de ruido
             },
         }
     }
 
-    /// Genera la configuración para cava en formato TOML (raw output)
     pub fn to_cava_raw_config(&self) -> String {
         let mut config = String::new();
         config.push_str("[general]\n");

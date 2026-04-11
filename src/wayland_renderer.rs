@@ -33,8 +33,9 @@ use crate::config::Config;
 const VERTEX_SHADER_SRC: &str = include_str!("shaders/vertex_shader.glsl");
 const FRAGMENT_SHADER_SRC: &str = include_str!("shaders/fragment_shader.glsl");
 
-// Factor de suavizado para las barras (0.0 = muy suave, 1.0 = sin suavizado)
-const SMOOTHING_FACTOR: f32 = 0.65;
+// Factor de suavizado para las barras (0.0 = muy lento/suave, 1.0 = instantáneo)
+// 0.35 produce un movimiento agradable y sin parpadeo
+const SMOOTHING_FACTOR: f32 = 0.35;
 
 pub struct WaylandRenderer {
     config: Config,
@@ -49,7 +50,6 @@ impl WaylandRenderer {
     pub fn run(self) -> Result<()> {
         info!("Starting Wayland renderer (wallpaper-cava core)");
 
-        // Convertir colores
         let gradient_colors: Vec<[f32; 4]> = self.config.colors.colors
             .iter()
             .filter(|(k, _)| k.starts_with("gradient_color_"))
@@ -322,7 +322,7 @@ impl AppState {
             unpacked[i] = val;
         }
 
-        // Filtro exponencial para suavizar las barras
+        // Filtro exponencial para suavizar el movimiento (más lento y agradable)
         if self.previous_audio.is_empty() {
             self.previous_audio = unpacked.clone();
         } else {
