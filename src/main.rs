@@ -118,7 +118,7 @@ fn main() -> Result<()> {
     })
     .expect("Error setting Ctrl-C handler");
 
-    // Canal para actualizaciones de color
+    // Canal para actualizaciones de color, compartido con Arc<Mutex>
     let (color_tx, color_rx) = mpsc::channel();
     let shared_color_rx = Arc::new(Mutex::new(color_rx));
 
@@ -191,23 +191,10 @@ fn main() -> Result<()> {
             }
         };
 
-        // Obtener una copia del receiver desde el Mutex (sin consumir el original)
-        let color_rx_clone = {
-            let guard = shared_color_rx.lock().unwrap();
-            // Intentar clonar el Receiver (si no se puede, rompemos)
-            match guard.try_clone() {
-                Ok(clone) => clone,
-                Err(e) => {
-                    error!("Failed to clone color channel: {}", e);
-                    break;
-                }
-            }
-        };
-
         let renderer = WaylandRenderer::new(
             config.clone(),
             cava_reader,
-            color_rx_clone,
+            shared_color_rx.clone(),
             running.clone(),
         );
         match renderer.run() {

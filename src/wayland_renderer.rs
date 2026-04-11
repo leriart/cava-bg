@@ -33,7 +33,7 @@ use std::io::{BufReader, Read};
 use std::process::ChildStdout;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{mem, ptr};
 
@@ -45,7 +45,7 @@ const FRAGMENT_SHADER_SRC: &str = include_str!("shaders/fragment_shader.glsl");
 pub struct WaylandRenderer {
     config: Config,
     cava_reader: BufReader<ChildStdout>,
-    color_rx: Receiver<Vec<[f32; 4]>>,
+    color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
     running: Arc<AtomicBool>,
 }
 
@@ -53,7 +53,7 @@ impl WaylandRenderer {
     pub fn new(
         config: Config,
         cava_reader: BufReader<ChildStdout>,
-        color_rx: Receiver<Vec<[f32; 4]>>,
+        color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
         running: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -92,7 +92,7 @@ impl WaylandRenderer {
         layer_surface.set_anchor(Anchor::TOP);
         surface.commit();
 
-        // Inicialización EGL (con manejo de errores exhaustivo)
+        // Inicialización EGL
         egl::API
             .bind_api(egl::OPENGL_API)
             .context("Failed to bind EGL API")?;
@@ -143,9 +143,9 @@ impl WaylandRenderer {
             .make_current(egl_display, Some(egl_surface), Some(egl_surface), Some(egl_context))
             .context("Failed to make EGL context current")?;
 
-        // Carga de funciones OpenGL corregida (pasar &str)
         gl::load_with(|name| {
-            match egl::API.get_proc_address(name) {
+            let name_c = CString::new(name).unwrap();
+            match egl::API.get_proc_address(name_c.to_str().unwrap()) {
                 Some(proc) => proc as *const c_void,
                 None => ptr::null(),
             }
@@ -300,7 +300,7 @@ struct AppState {
     background_color: [f32; 4],
     preferred_output_name: Option<String>,
     compositor: CompositorState,
-    color_rx: Receiver<Vec<[f32; 4]>>,
+    color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
     gradient_colors_ssbo: u32,
     gradient_colors: Vec<[f32; 4]>,
     running: Arc<AtomicBool>,
@@ -354,8 +354,11 @@ impl AppState {
             return;
         }
 
-        if let Ok(new_colors) = self.color_rx.try_recv() {
-            self.update_colors(&new_colors);
+        if let Ok(guard) = self.color_rx.lock() {
+            if let Ok(new_colors) = guard.try_recv() {
+                drop(guard);
+                self.update_colors(&new_colors);
+            }
         }
 
         let mut cava_buffer: Vec<u8> = vec![0; self.bar_count as usize * 2];
