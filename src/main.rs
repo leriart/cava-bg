@@ -1,62 +1,54 @@
 mod app_config;
 mod wallpaper;
 mod wayland_renderer;
+mod cava_backend;
+mod sdl2_renderer;
 
 use anyhow::{Context, Result};
 use log::{error, info};
-use std::collections::HashMap;
+use std::env;
 use std::fs;
-use std::io::{BufReader, Write};
 use std::path::PathBuf;
-use std::process::{ChildStdout, Command, Stdio};
+use std::process::{Command, exit};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
-use app_config::*;
-use wallpaper::WallpaperAnalyzer;
+use app_config::Config;
+use cava_backend::CavaBackend;
 use wayland_renderer::WaylandRenderer;
+use sdl2_renderer::Sdl2Renderer;
 
-const MAX_RETRIES: u32 = 5;
+const CONFIG_DIR: &str = "cava-bg";
+const CONFIG_FILE: &str = "config.toml";
 
 fn main() -> Result<()> {
     env_logger::init();
 
-    let args: Vec<String> = std::env::args().collect();
-    let config_filename = if args.len() == 3 && args[1] == "--config" {
-        PathBuf::from(&args[2])
-    } else {
-        let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        let mut path = PathBuf::from(home);
-        path.push(".config");
-        path.push("wallpaper-cava");
-        path.push("config.toml");
-        path
-    };
-
-    if !config_filename.exists() {
-        info!("Config file not found, creating default config at {:?}", config_filename);
-        if let Some(parent) = config_filename.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let default_config = Config::default();
-        let toml_str = toml::to_string_pretty(&default_config)?;
-        fs::write(&config_filename, toml_str)?;
+    let args: Vec<String> = env::args().collect();
+    
+    // Comando "kill": terminar cualquier instancia existente de cava-bg
+    if args.len() >= 2 && args[1] == "kill" {
+        return kill_existing_instance();
     }
 
-    let config_str = fs::read_to_string(&config_filename)
-        .context("Unable to read config file")?;
-    let mut config: Config = toml::from_str(&config_str)
-        .map_err(|e| anyhow::anyhow!("Error parsing config: {}", e))?;
+    // Determinar la ruta del archivo de configuración
+    let config_path = get_config_path(&args);
+    
+    // Crear directorio de configuración si no existe
+    if let Some(parent) = config_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
 
-    let auto_colors_enabled = config.general.auto_colors;
-
-    // Forzar detección inicial del wallpaper desde el JSON de ambxst
-    if auto_colors_enabled {
+    // Cargar o crear configuración por defecto
+    let config = load_or_create_config(&config_path)?;
+    
+    // Detección automática de colores del wallpaper
+    let mut config = config;
+    if config.general.auto_colors {
         info!("Initial wallpaper detection...");
-        match WallpaperAnalyzer::generate_gradient_colors(8) {
+        match wallpaper::WallpaperAnalyzer::generate_gradient_colors(8) {
             Ok(generated) => {
                 info!("Auto-colors: replacing config colors with wallpaper palette");
                 config.colors.clear();
@@ -69,7 +61,7 @@ fn main() -> Result<()> {
                     );
                     config.colors.insert(
                         format!("gradient_color_{}", i + 1),
-                        ConfigColor::Complex(HexColorConfig {
+                        app_config::ConfigColor::Complex(app_config::HexColorConfig {
                             hex,
                             alpha: Some(color[3]),
                         }),
@@ -82,146 +74,96 @@ fn main() -> Result<()> {
         }
     }
 
-    // Función para lanzar cava
-    let spawn_cava = || -> Result<BufReader<ChildStdout>> {
-        let cava_output_config: HashMap<String, String> = HashMap::from([
-            ("method".into(), "raw".into()),
-            ("raw_target".into(), "/dev/stdout".into()),
-            ("bit_format".into(), "16bit".into()),
-        ]);
-        let cava_config = CavaConfig {
-            general: CavaGeneralConfig {
-                framerate: config.general.framerate,
-                bars: config.bars.amount,
-                autosens: config.general.autosens,
-                sensitivity: config.general.sensitivity,
-            },
-            smoothing: CavaSmoothingConfig {
-                monstercat: config.smoothing.monstercat,
-                waves: config.smoothing.waves,
-                noise_reduction: config.smoothing.noise_reduction,
-            },
-            output: cava_output_config,
-        };
-        let string_cava_config = toml::to_string(&cava_config).unwrap();
+    // Iniciar el backend de Cava en un hilo separado
+    let bar_count = config.bars.amount as usize;
+    let (_cava_backend, audio_rx) = CavaBackend::new(bar_count)
+        .context("Failed to start cava backend")?;
 
-        let mut cmd = Command::new("cava");
-        cmd.arg("-p").arg("/dev/stdin");
-        let mut cava_process = cmd
-            .stdout(Stdio::piped())
-            .stdin(Stdio::piped())
-            .spawn()
-            .context("failed to spawn cava process")?;
-
-        if let Some(mut stdin) = cava_process.stdin.take() {
-            stdin.write_all(string_cava_config.as_bytes())?;
-            stdin.flush()?;
-        }
-        let cava_stdout = cava_process.stdout.take().context("failed to get cava stdout")?;
-        Ok(BufReader::new(cava_stdout))
-    };
-
-    // Control de ejecución
+    // Bandera para controlar la ejecución
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
-    })
-    .expect("Error setting Ctrl-C handler");
+    }).expect("Error setting Ctrl-C handler");
 
-    // Canal para actualizaciones de color, compartido con Arc<Mutex>
-    let (color_tx, color_rx) = mpsc::channel();
-    let shared_color_rx = Arc::new(Mutex::new(color_rx));
-
-    // Hilo de vigilancia de wallpaper
-    if auto_colors_enabled {
-        let tx = color_tx.clone();
-        thread::spawn(move || {
-            let mut last_path: Option<std::path::PathBuf> = None;
-            let mut last_modified: Option<SystemTime> = None;
-            let mut last_sent = SystemTime::now();
-            loop {
-                thread::sleep(Duration::from_millis(1500));
-                match WallpaperAnalyzer::find_wallpaper() {
-                    Some(current_path) => {
-                        let modified = std::fs::metadata(&current_path)
-                            .and_then(|m| m.modified())
-                            .ok();
-                        
-                        let path_changed = last_path.as_ref() != Some(&current_path);
-                        let time_changed = match (&last_modified, &modified) {
-                            (Some(l), Some(m)) => l != m,
-                            _ => true,
-                        };
-
-                        if path_changed || time_changed {
-                            info!("Wallpaper changed: {:?}", current_path);
-                            
-                            let now = SystemTime::now();
-                            if now.duration_since(last_sent).unwrap_or(Duration::ZERO) < Duration::from_millis(500) {
-                                last_path = Some(current_path);
-                                last_modified = modified;
-                                continue;
-                            }
-                            
-                            match WallpaperAnalyzer::generate_gradient_colors(8) {
-                                Ok(colors) => {
-                                    if tx.send(colors).is_err() {
-                                        error!("Failed to send new colors, stopping watcher.");
-                                        break;
-                                    }
-                                    last_sent = SystemTime::now();
-                                }
-                                Err(e) => error!("Failed to generate colors: {}", e),
-                            }
-                            last_path = Some(current_path);
-                            last_modified = modified;
-                        }
-                    }
-                    None => {
-                        thread::sleep(Duration::from_secs(3));
-                    }
-                }
-            }
-        });
-    }
-
-    // Reinicio automático del renderer
-    let mut retries = 0;
-    loop {
-        let cava_reader = match spawn_cava() {
-            Ok(r) => r,
-            Err(e) => {
-                error!("Failed to spawn cava: {}", e);
-                if retries >= MAX_RETRIES {
-                    break;
-                }
-                retries += 1;
-                thread::sleep(Duration::from_secs(2));
-                continue;
-            }
-        };
-
-        let renderer = WaylandRenderer::new(
-            config.clone(),
-            cava_reader,
-            shared_color_rx.clone(),
-            running.clone(),
-        );
-        match renderer.run() {
-            Ok(()) => break,
-            Err(e) => {
-                error!("Renderer failed: {}", e);
-                if retries >= MAX_RETRIES {
-                    error!("Max retries reached, giving up.");
-                    break;
-                }
-                retries += 1;
-                info!("Restarting renderer in 2 seconds (attempt {}/{})...", retries, MAX_RETRIES);
-                thread::sleep(Duration::from_secs(2));
-            }
-        }
+    // Intentar primero el renderizador nativo Wayland
+    info!("Starting Wayland renderer...");
+    let wayland_result = WaylandRenderer::new(config.clone(), audio_rx.clone(), running.clone()).run();
+    
+    if let Err(e) = wayland_result {
+        error!("Wayland renderer failed: {}. Falling back to SDL2 renderer.", e);
+        info!("Starting SDL2 fallback renderer...");
+        
+        // Obtener dimensiones de pantalla (por defecto 1920x1080)
+        let (width, height) = (1920, 1080); // Se podría mejorar detectando el monitor
+        let colors: Vec<[f32; 4]> = config.colors.values()
+            .map(|c| app_config::array_from_config_color(c.clone()))
+            .collect();
+        
+        let mut sdl2_renderer = Sdl2Renderer::new(
+            width, height,
+            bar_count,
+            config.bars.gap,
+            colors,
+            audio_rx,
+            running,
+        )?;
+        sdl2_renderer.run()?;
     }
 
     Ok(())
+}
+
+/// Obtiene la ruta del archivo de configuración según los argumentos de línea de comandos
+/// o la ruta por defecto en ~/.config/cava-bg/config.toml
+fn get_config_path(args: &[String]) -> PathBuf {
+    // Si se proporciona --config <archivo>, usar ese
+    if args.len() == 3 && args[1] == "--config" {
+        return PathBuf::from(&args[2]);
+    }
+    
+    // Sino, usar ~/.config/cava-bg/config.toml
+    let home = dirs::home_dir().expect("Could not determine home directory");
+    home.join(".config").join(CONFIG_DIR).join(CONFIG_FILE)
+}
+
+/// Carga la configuración desde un archivo TOML; si no existe, crea una por defecto.
+fn load_or_create_config(path: &PathBuf) -> Result<Config> {
+    if path.exists() {
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read config file: {}", path.display()))?;
+        let config: Config = toml::from_str(&content)
+            .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
+        Ok(config)
+    } else {
+        info!("Config file not found, creating default at {:?}", path);
+        let default_config = Config::default();
+        let toml_string = toml::to_string_pretty(&default_config)?;
+        fs::write(path, toml_string)?;
+        Ok(default_config)
+    }
+}
+
+/// Mata cualquier proceso existente de cava-bg usando `pkill`.
+fn kill_existing_instance() -> Result<()> {
+    let output = Command::new("pgrep")
+        .arg("-f")
+        .arg("cava-bg")
+        .output()
+        .context("Failed to execute pgrep")?;
+    
+    if output.status.success() {
+        let pids = String::from_utf8_lossy(&output.stdout);
+        for pid in pids.lines() {
+            info!("Killing process {}", pid);
+            Command::new("kill")
+                .arg(pid)
+                .status()
+                .context(format!("Failed to kill process {}", pid))?;
+        }
+        println!("cava-bg processes terminated.");
+    } else {
+        println!("No running cava-bg process found.");
+    }
+    exit(0);
 }
