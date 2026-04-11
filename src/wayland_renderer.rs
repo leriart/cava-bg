@@ -354,15 +354,17 @@ impl AppState {
             return;
         }
 
-        // Obtener nuevos colores si los hay, liberando el guardia antes de actualizar
-        if let Ok(guard) = self.color_rx.lock() {
-            if let Ok(new_colors) = guard.try_recv() {
-                drop(guard);
-                self.update_colors(&new_colors);
+        // Verificar nuevos colores sin mantener el guardia vivo
+        let new_colors = {
+            match self.color_rx.lock() {
+                Ok(guard) => guard.try_recv().ok(),
+                Err(_) => None,
             }
+        };
+        if let Some(colors) = new_colors {
+            self.update_colors(&colors);
         }
 
-    
         let mut cava_buffer: Vec<u8> = vec![0; self.bar_count as usize * 2];
         if let Err(e) = self.cava_reader.read_exact(&mut cava_buffer) {
             warn!("Failed to read from cava: {}", e);
