@@ -80,9 +80,8 @@ fn main() -> Result<()> {
     let cava_reader = cava_manager.take_reader()
         .context("Failed to get cava reader")?;
 
-    // Configurar manejador de Ctrl+C: terminar el proceso inmediatamente (como en wallpaper-cava original)
+    // Configurar manejador de Ctrl+C: termina inmediatamente (como wallpaper-cava)
     ctrlc::set_handler(|| {
-        // No imprimir mensaje para imitar el comportamiento original
         std::process::exit(0);
     }).expect("Failed to set Ctrl+C handler");
 

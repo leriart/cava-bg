@@ -3,6 +3,14 @@ use image::{GenericImageView, Pixel};
 use log;
 use std::path::PathBuf;
 use walkdir::WalkDir;
+use std::sync::Mutex;
+use once_cell::sync::Lazy;
+
+// Almacenar los colores anteriores para suavizar la transición
+static PREVIOUS_COLORS: Lazy<Mutex<Vec<[f32; 4]>>> = Lazy::new(|| Mutex::new(Vec::new()));
+
+// Factor de suavizado para los colores (0.0 = muy suave, 1.0 = sin suavizado)
+const COLOR_SMOOTHING_FACTOR: f32 = 0.7;
 
 pub struct WallpaperAnalyzer;
 
@@ -82,8 +90,19 @@ impl WallpaperAnalyzer {
             .context(format!("Failed to open wallpaper: {:?}", wallpaper_path))?;
         let (width, height) = img.dimensions();
         log::info!("Wallpaper dimensions: {}x{}", width, height);
-        let colors = Self::extract_and_generate_gradient(&img, num_colors);
-        Ok(colors)
+        let mut new_colors = Self::extract_and_generate_gradient(&img, num_colors);
+
+        // Suavizar los colores con respecto a los anteriores (si existen)
+        let mut prev_guard = PREVIOUS_COLORS.lock().unwrap();
+        if !prev_guard.is_empty() && prev_guard.len() == new_colors.len() {
+            for i in 0..new_colors.len() {
+                for c in 0..4 {
+                    new_colors[i][c] = COLOR_SMOOTHING_FACTOR * new_colors[i][c] + (1.0 - COLOR_SMOOTHING_FACTOR) * prev_guard[i][c];
+                }
+            }
+        }
+        *prev_guard = new_colors.clone();
+        Ok(new_colors)
     }
 
     fn extract_and_generate_gradient(img: &image::DynamicImage, num_colors: usize) -> Vec<[f32; 4]> {

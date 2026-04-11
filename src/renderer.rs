@@ -15,10 +15,10 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new(config: Config, mut cava_manager: CavaManager, running: Arc<AtomicBool>) -> Result<Self> {
-        let _ = cava_manager.take_reader(); // descartamos el reader en modo terminal
+    pub fn new(config: Config, mut cava_manager: CavaManager) -> Result<Self> {
+        let _ = cava_manager.take_reader();
         Ok(Self {
-            running,
+            running: Arc::new(AtomicBool::new(true)),
             config,
             cava_manager: Some(cava_manager),
         })

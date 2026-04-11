@@ -25,8 +25,6 @@ use wayland_egl::WlEglSurface;
 use std::ffi::CString;
 use std::io::{BufReader, Read};
 use std::process::ChildStdout;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 use std::{ptr, mem};
 
@@ -35,18 +33,17 @@ use crate::config::Config;
 const VERTEX_SHADER_SRC: &str = include_str!("shaders/vertex_shader.glsl");
 const FRAGMENT_SHADER_SRC: &str = include_str!("shaders/fragment_shader.glsl");
 
-// Factor de suavizado para el filtro exponencial (0.0 = muy suave, 1.0 = sin suavizado)
-const SMOOTHING_FACTOR: f32 = 0.65; // Ajusta entre 0.5 y 0.8 según prefieras
+// Factor de suavizado para las barras (0.0 = muy suave, 1.0 = sin suavizado)
+const SMOOTHING_FACTOR: f32 = 0.65;
 
 pub struct WaylandRenderer {
     config: Config,
     cava_reader: BufReader<ChildStdout>,
-    running: Arc<AtomicBool>,
 }
 
 impl WaylandRenderer {
-    pub fn new(config: Config, cava_reader: BufReader<ChildStdout>, running: Arc<AtomicBool>) -> Self {
-        Self { config, cava_reader, running }
+    pub fn new(config: Config, cava_reader: BufReader<ChildStdout>) -> Self {
+        Self { config, cava_reader }
     }
 
     pub fn run(self) -> Result<()> {
@@ -218,8 +215,7 @@ impl WaylandRenderer {
             background_color: legacy_config.general.background_color,
             preferred_output: legacy_config.general.preferred_output.clone(),
             compositor,
-            running: self.running.clone(),
-            previous_audio: Vec::new(), // Inicializar filtro
+            previous_audio: Vec::new(),
         };
 
         info!("Wayland renderer initialized, entering event loop");
@@ -307,15 +303,11 @@ struct AppState {
     background_color: [f32; 4],
     preferred_output: Option<String>,
     compositor: CompositorState,
-    running: Arc<AtomicBool>,
-    previous_audio: Vec<f32>, // Valores del frame anterior para suavizado
+    previous_audio: Vec<f32>,
 }
 
 impl AppState {
     fn draw(&mut self, _conn: &Connection, qh: &QueueHandle<Self>) {
-        if !self.running.load(Ordering::SeqCst) {
-            return;
-        }
         let bar_count = self.bar_count as usize;
         let mut cava_buffer = vec![0u8; bar_count * 2];
         if let Err(e) = self.cava_reader.read_exact(&mut cava_buffer) {
@@ -330,7 +322,7 @@ impl AppState {
             unpacked[i] = val;
         }
 
-        // Aplicar filtro exponencial (suavizado)
+        // Filtro exponencial para suavizar las barras
         if self.previous_audio.is_empty() {
             self.previous_audio = unpacked.clone();
         } else {

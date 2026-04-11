@@ -124,7 +124,7 @@ impl Config {
         Ok(config)
     }
 
-        pub fn default() -> Self {
+    pub fn default() -> Self {
         let mut colors = HashMap::new();
         let default_hex = vec![
             "#94e2d5", "#89dceb", "#74c7ec", "#89b4fa",
@@ -153,9 +153,9 @@ impl Config {
             },
             colors: ColorsConfig { colors },
             smoothing: SmoothingConfig {
-                monstercat: Some(1),      // Cambiado de 0 a 1
+                monstercat: Some(1),      // Antes 0, ahora 1 para más suavidad
                 waves: Some(0),
-                noise_reduction: Some(0.95), // Cambiado de 0.77 a 0.95
+                noise_reduction: Some(0.95), // Antes 0.77, ahora 0.95
             },
         }
     }
