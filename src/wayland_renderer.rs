@@ -123,6 +123,7 @@ struct PerOutputState {
     width: u32,
     height: u32,
     configured: bool,
+    frame_count: u64,  // contador de frames para este output
 }
 
 pub struct WaylandRenderer {
@@ -213,7 +214,7 @@ struct AppState {
     bar_gap: f32,
     preferred_output_name: Option<String>,
     audio_rx: Receiver<Vec<f32>>,
-    color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
+    color_rx: Arc<Mutex<Receiver<Vec<f32; 4]>>>>,
     running: Arc<AtomicBool>,
     initial_colors: Vec<[f32; 4]>,
     frame_duration: Duration,
@@ -406,6 +407,7 @@ impl AppState {
             width,
             height,
             configured: false,
+            frame_count: 0,
         };
         self.per_output.insert(name.clone(), state);
         info!("Superficie WGPU creada para {}: {}x{}", name, width, height);
@@ -509,9 +511,7 @@ impl AppState {
         state.wgpu_queue.submit(std::iter::once(encoder.finish()));
         frame.present();
         state.surface.frame(&self.qh, state.surface.clone());
-        // Incrementar contador de frames (lo añadimos a PerOutputState)
-        // Nota: necesitamos un contador por output, pero para simplificar usamos un contador global en AppState.
-        // Mejor añadimos un campo frame_count a PerOutputState.
+        state.frame_count += 1;
     }
 
     pub fn draw(&mut self) {
@@ -597,7 +597,6 @@ impl LayerShellHandler for AppState {
                 state.wgpu_config.height = height;
                 state.wgpu_surface.configure(&state.wgpu_device, &state.wgpu_config);
                 // Actualizar uniforme de tamaño
-                // Obtener colores actuales del buffer o de initial_colors (simplificamos)
                 let current_colors = self.initial_colors.clone();
                 let new_uniforms = Uniforms::new(&current_colors, width as f32, height as f32);
                 state.wgpu_queue.write_buffer(&state.uniform_buffer, 0, bytemuck::cast_slice(&[new_uniforms]));
