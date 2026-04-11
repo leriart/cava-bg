@@ -1,11 +1,9 @@
 use anyhow::{Context, Result};
-use log::{info, warn};
-use std::io::{BufReader, Read, Write};
+use log::info;
+use std::io::{BufReader, Write};
 use std::process::{Child, Command, Stdio, ChildStdout};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
 use crate::config::Config;
 

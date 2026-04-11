@@ -1,5 +1,5 @@
 use anyhow::Result;
-use log::{error, info, warn};
+use log::info;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
@@ -16,8 +16,7 @@ pub struct Renderer {
 
 impl Renderer {
     pub fn new(config: Config, mut cava_manager: CavaManager, running: Arc<AtomicBool>) -> Result<Self> {
-        // Tomar el reader si está disponible (pero no lo usaremos realmente en terminal)
-        let _ = cava_manager.take_reader();
+        let _ = cava_manager.take_reader(); // descartamos el reader en modo terminal
         Ok(Self {
             running,
             config,
@@ -31,7 +30,6 @@ impl Renderer {
         let start_time = std::time::Instant::now();
         let mut last_audio_update = 0;
 
-        // Simplemente mostramos información periódica
         while self.running.load(Ordering::SeqCst) {
             frame_count += 1;
             if frame_count - last_audio_update > 120 {

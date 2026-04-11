@@ -91,8 +91,8 @@ fn main() -> Result<()> {
     })?;
 
     // Intentar iniciar el renderer Wayland (funcional)
-    let mut wayland_renderer = wayland_renderer::WaylandRenderer::new(config.clone(), cava_reader, running.clone());
-    if let Err(e) = wayland_renderer.run() {
+    let wayland_renderer = wayland_renderer::WaylandRenderer::new(config.clone(), cava_reader, running.clone());
+        if let Err(e) = wayland_renderer.run() {
         error!("Wayland renderer failed: {}", e);
         info!("Falling back to terminal mode...");
         let mut terminal_renderer = renderer::Renderer::new(config, cava_manager, running.clone())?;
