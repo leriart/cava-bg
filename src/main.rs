@@ -1,11 +1,10 @@
 mod app_config;
 mod wallpaper;
 mod cava_backend;
-mod wgpu_renderer;
-mod sdl2_renderer;
+mod wayland_renderer;
 
 use anyhow::{Context, Result};
-use log::{error, info, warn};
+use log::{error, info};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -18,8 +17,7 @@ use std::time::{Duration, SystemTime};
 
 use app_config::Config;
 use cava_backend::CavaBackend;
-use wgpu_renderer::WgpuRenderer;
-use sdl2_renderer::Sdl2Renderer;
+use wayland_renderer::WaylandRenderer;
 
 const CONFIG_DIR: &str = "cava-bg";
 const CONFIG_FILE: &str = "config.toml";
@@ -70,8 +68,7 @@ fn main() -> Result<()> {
     let r = running.clone();
     ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
-    })
-    .expect("Error setting Ctrl-C handler");
+    }).expect("Error setting Ctrl-C handler");
 
     let (color_tx, color_rx) = mpsc::channel();
     let shared_color_rx = Arc::new(Mutex::new(color_rx));
@@ -128,40 +125,10 @@ fn main() -> Result<()> {
     let (_cava_backend, audio_rx) = CavaBackend::new(bar_count, &config)
         .context("Failed to start cava backend")?;
 
-    // Intentar wgpu
-    info!("Starting Wgpu universal renderer");
-    let wgpu_renderer = WgpuRenderer::new(
-        config.clone(),
-        audio_rx,
-        shared_color_rx.clone(),
-        running.clone(),
-    );
+    info!("Starting Wayland WGPU renderer");
+    let renderer = WaylandRenderer::new(config, audio_rx, shared_color_rx, running);
+    renderer.run()?;
 
-    // Si la inicialización de wgpu falla (por ejemplo, error al crear el dispositivo),
-    // se captura el error y se usa el fallback SDL2.
-    if let Err(e) = wgpu_renderer.run() {
-        warn!("Wgpu renderer failed: {}. Falling back to SDL2 renderer.", e);
-        info!("Starting SDL2 fallback renderer...");
-        let (_cava_backend2, audio_rx2) = CavaBackend::new(bar_count, &config)
-            .context("Failed to start cava backend for fallback")?;
-        let colors: Vec<[f32; 4]> = config
-            .colors
-            .values()
-            .map(|c| app_config::array_from_config_color(c.clone()))
-            .collect();
-        let mut sdl2_renderer = Sdl2Renderer::new(
-            bar_count,
-            config.bars.gap,
-            colors,
-            audio_rx2,
-            shared_color_rx,
-            running,
-        )?;
-        sdl2_renderer.run()?;
-    }
-
-    // Si wgpu funciona correctamente, el programa nunca llegará aquí porque run() no retorna.
-    // Esta línea es solo para satisfacer el tipo de retorno.
     Ok(())
 }
 
