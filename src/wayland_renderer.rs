@@ -1,5 +1,5 @@
 // src/wayland_renderer.rs
-// Basado fielmente en el main.rs original de wallpaper-cava, con EGL_PLATFORM forzado
+// Soporte multi-monitor: una superficie por salida, contexto EGL compartido.
 
 use anyhow::{anyhow, Context, Result};
 use gl::types::{GLsizei, GLsizeiptr};
@@ -28,6 +28,7 @@ use wayland_client::{
 };
 use wayland_egl::WlEglSurface;
 
+use std::collections::HashMap;
 use std::ffi::{c_void, CString};
 use std::io::{BufReader, Read};
 use std::process::ChildStdout;
@@ -41,6 +42,16 @@ use crate::app_config::{array_from_config_color, Config};
 
 const VERTEX_SHADER_SRC: &str = include_str!("shaders/vertex_shader.glsl");
 const FRAGMENT_SHADER_SRC: &str = include_str!("shaders/fragment_shader.glsl");
+
+struct PerOutputState {
+    surface: WlSurface,
+    layer_surface: LayerSurface,
+    wl_egl_surface: WlEglSurface,
+    egl_surface: egl::Surface,
+    width: u32,
+    height: u32,
+    configured: bool,
+}
 
 pub struct WaylandRenderer {
     config: Config,
@@ -65,7 +76,7 @@ impl WaylandRenderer {
     }
 
     pub fn run(self) -> Result<()> {
-        info!("Starting Wayland renderer (wallpaper-cava original core)");
+        info!("Starting Wayland renderer (multi-monitor, shared EGL context)");
         std::env::set_var("EGL_PLATFORM", "wayland");
 
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
@@ -80,20 +91,9 @@ impl WaylandRenderer {
 
         let frame_duration = Duration::from_secs(1) / self.config.general.framerate;
         let compositor = CompositorState::bind(&globals, &qh).context("wl_compositor not available")?;
-        let surface = compositor.create_surface(&qh);
         let layer_shell = LayerShell::bind(&globals, &qh).context("layer shell not available")?;
-        let layer_surface = layer_shell.create_layer_surface(
-            &qh,
-            surface.clone(),
-            Layer::Bottom,
-            Some("cava-bg"),
-            None,
-        );
-        layer_surface.set_size(256, 256);
-        layer_surface.set_anchor(Anchor::TOP);
-        surface.commit();
 
-        // Inicialización EGL
+        // Inicialización EGL compartida
         egl::API
             .bind_api(egl::OPENGL_API)
             .context("Failed to bind EGL API")?;
@@ -128,21 +128,7 @@ impl WaylandRenderer {
             .create_context(egl_display, egl_config, None, &CONTEXT_ATTRIBUTES)
             .context("Failed to create EGL context")?;
 
-        let wl_egl_surface = WlEglSurface::new(surface.id(), 256, 256)
-            .context("Failed to create WlEglSurface")?;
-        let egl_surface = unsafe {
-            egl::API
-                .create_window_surface(
-                    egl_display,
-                    egl_config,
-                    wl_egl_surface.ptr() as egl::NativeWindowType,
-                    None,
-                )
-                .context("Failed to create EGL window surface")?
-        };
-        egl::API
-            .make_current(egl_display, Some(egl_surface), Some(egl_surface), Some(egl_context))
-            .context("Failed to make EGL context current")?;
+        // No creamos superficie principal todavía; las crearemos por cada salida.
 
         gl::load_with(|name| {
             let name_c = CString::new(name).unwrap();
@@ -217,17 +203,12 @@ impl WaylandRenderer {
         let mut app_state = AppState {
             registry_state: RegistryState::new(&globals),
             output_state: OutputState::new(&globals, &qh),
-            width: 256,
-            height: 256,
             layer_shell,
-            layer_surface,
-            surface,
-            cava_reader: self.cava_reader,
-            wl_egl_surface,
-            egl_surface,
+            compositor,
+            per_output: HashMap::new(),
+            egl_display,
             egl_config,
             egl_context,
-            egl_display,
             shader_program,
             vao,
             vbo,
@@ -236,13 +217,12 @@ impl WaylandRenderer {
             bar_gap: self.config.bars.gap,
             background_color: array_from_config_color(self.config.general.background_color),
             preferred_output_name: self.config.general.preferred_output,
-            compositor,
+            cava_reader: self.cava_reader,
             color_rx: self.color_rx,
             gradient_colors_ssbo,
             gradient_colors: gradient_colors_rgba,
             running: self.running,
             updating_colors,
-            configured_output: None,
         };
 
         event_loop
@@ -282,17 +262,12 @@ fn create_ssbo(colors: &[[f32; 4]]) -> (u32, Vec<[f32; 4]>) {
 struct AppState {
     registry_state: RegistryState,
     output_state: OutputState,
-    width: u32,
-    height: u32,
     layer_shell: LayerShell,
-    layer_surface: LayerSurface,
-    surface: WlSurface,
-    cava_reader: BufReader<ChildStdout>,
-    wl_egl_surface: WlEglSurface,
-    egl_surface: egl::Surface,
+    compositor: CompositorState,
+    per_output: HashMap<String, PerOutputState>,
+    egl_display: egl::Display,
     egl_config: egl::Config,
     egl_context: egl::Context,
-    egl_display: egl::Display,
     shader_program: u32,
     vao: u32,
     vbo: u32,
@@ -301,13 +276,12 @@ struct AppState {
     bar_gap: f32,
     background_color: [f32; 4],
     preferred_output_name: Option<String>,
-    compositor: CompositorState,
+    cava_reader: BufReader<ChildStdout>,
     color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
     gradient_colors_ssbo: u32,
     gradient_colors: Vec<[f32; 4]>,
     running: Arc<AtomicBool>,
     updating_colors: Arc<AtomicBool>,
-    configured_output: Option<String>,
 }
 
 impl AppState {
@@ -340,37 +314,98 @@ impl AppState {
         info!("Updated gradient colors from wallpaper change");
     }
 
-    pub fn draw(&mut self, _conn: &Connection, qh: &QueueHandle<Self>) {
-        if !self.running.load(Ordering::SeqCst) {
-            info!("Shutting down gracefully...");
-            unsafe {
-                egl::API.make_current(self.egl_display, None, None, None).ok();
-                egl::API.destroy_surface(self.egl_display, self.egl_surface).ok();
-                egl::API.destroy_context(self.egl_display, self.egl_context).ok();
-                egl::API.terminate(self.egl_display).ok();
-            }
-            std::process::exit(0);
+    fn ensure_output(&mut self, qh: &QueueHandle<Self>, output: &wl_output::WlOutput) -> Result<()> {
+        let info = self.output_state.info(output).context("Failed to get output info")?;
+        let name = info.name.clone().unwrap_or_else(|| "unknown".to_string());
+
+        if self.per_output.contains_key(&name) {
+            return Ok(());
         }
 
-        if self.updating_colors.load(Ordering::SeqCst) {
-            self.surface.frame(qh, self.surface.clone());
+        // Solo crear si coincide con la preferencia o no hay preferencia
+        if let Some(ref pref) = self.preferred_output_name {
+            if &name != pref {
+                debug!("Skipping output {} (preferred is {})", name, pref);
+                return Ok(());
+            }
+        }
+
+        info!("Creating surface for output {}", name);
+
+        let surface = self.compositor.create_surface(qh);
+        let layer_surface = self.layer_shell.create_layer_surface(
+            qh,
+            surface.clone(),
+            Layer::Bottom,
+            Some("cava-bg"),
+            Some(output),
+        );
+
+        let logical_size = info.logical_size.unwrap_or((1920, 1080));
+        let width = logical_size.0 as u32;
+        let height = logical_size.1 as u32;
+        layer_surface.set_size(width, height);
+        layer_surface.set_anchor(Anchor::TOP);
+        surface.commit();
+
+        let wl_egl_surface = WlEglSurface::new(surface.id(), width as i32, height as i32)
+            .context("Failed to create WlEglSurface")?;
+        let egl_surface = unsafe {
+            egl::API
+                .create_window_surface(
+                    self.egl_display,
+                    self.egl_config,
+                    wl_egl_surface.ptr() as egl::NativeWindowType,
+                    None,
+                )
+                .context("Failed to create EGL window surface")?
+        };
+
+        self.per_output.insert(
+            name.clone(),
+            PerOutputState {
+                surface,
+                layer_surface,
+                wl_egl_surface,
+                egl_surface,
+                width,
+                height,
+                configured: false,
+            },
+        );
+
+        info!("Surface created for output {}: {}x{}", name, width, height);
+        Ok(())
+    }
+
+    fn draw_output(&mut self, name: &str, qh: &QueueHandle<Self>) {
+        let state = match self.per_output.get_mut(name) {
+            Some(s) => s,
+            None => return,
+        };
+
+        if !state.configured {
             return;
         }
 
-        let new_colors = {
-            match self.color_rx.lock() {
-                Ok(guard) => guard.try_recv().ok(),
-                Err(_) => None,
-            }
-        };
-        if let Some(colors) = new_colors {
-            self.update_colors(&colors);
+        // Hacer current el contexto EGL con la superficie de esta salida
+        unsafe {
+            egl::API
+                .make_current(
+                    self.egl_display,
+                    Some(state.egl_surface),
+                    Some(state.egl_surface),
+                    Some(self.egl_context),
+                )
+                .ok();
+            gl::Viewport(0, 0, state.width as GLsizei, state.height as GLsizei);
         }
 
+        // Leer datos de cava (usamos el mismo reader para todas las salidas)
         let mut cava_buffer: Vec<u8> = vec![0; self.bar_count as usize * 2];
         if let Err(e) = self.cava_reader.read_exact(&mut cava_buffer) {
             warn!("Failed to read from cava: {}", e);
-            self.surface.frame(qh, self.surface.clone());
+            state.surface.frame(qh, state.surface.clone());
             return;
         }
 
@@ -384,8 +419,8 @@ impl AppState {
             2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
         let bar_gap_width: f32 = bar_width * self.bar_gap;
         let mut vertices: Vec<f32> = vec![0.0; self.bar_count as usize * 8];
-        let fwidth: f32 = self.width as f32;
-        let fheight: f32 = self.height as f32;
+        let fwidth: f32 = state.width as f32;
+        let fheight: f32 = state.height as f32;
 
         for i in 0..self.bar_count as usize {
             let bar_height: f32 = 2.0 * unpacked_data[i] - 1.0;
@@ -428,12 +463,52 @@ impl AppState {
             gl::BindVertexArray(0);
         }
 
-        if let Err(e) = egl::API.swap_buffers(self.egl_display, self.egl_surface) {
-            error!("Failed to swap buffers: {}", e);
+        if let Err(e) = egl::API.swap_buffers(self.egl_display, state.egl_surface) {
+            error!("Failed to swap buffers for {}: {}", name, e);
         } else {
-            debug!("Frame rendered successfully");
+            debug!("Frame rendered successfully on {}", name);
         }
-        self.surface.frame(qh, self.surface.clone());
+        state.surface.frame(qh, state.surface.clone());
+    }
+
+    pub fn draw(&mut self, _conn: &Connection, qh: &QueueHandle<Self>) {
+        if !self.running.load(Ordering::SeqCst) {
+            info!("Shutting down gracefully...");
+            // Limpiar recursos EGL
+            unsafe {
+                for (_, state) in self.per_output.iter() {
+                    egl::API.destroy_surface(self.egl_display, state.egl_surface).ok();
+                }
+                egl::API.make_current(self.egl_display, None, None, None).ok();
+                egl::API.destroy_context(self.egl_display, self.egl_context).ok();
+                egl::API.terminate(self.egl_display).ok();
+            }
+            std::process::exit(0);
+        }
+
+        if self.updating_colors.load(Ordering::SeqCst) {
+            // Reenviar frame a todas las superficies
+            for (name, state) in self.per_output.iter() {
+                state.surface.frame(qh, state.surface.clone());
+            }
+            return;
+        }
+
+        let new_colors = {
+            match self.color_rx.lock() {
+                Ok(guard) => guard.try_recv().ok(),
+                Err(_) => None,
+            }
+        };
+        if let Some(colors) = new_colors {
+            self.update_colors(&colors);
+        }
+
+        // Dibujar en todas las salidas configuradas
+        let names: Vec<String> = self.per_output.keys().cloned().collect();
+        for name in names {
+            self.draw_output(&name, qh);
+        }
     }
 }
 
@@ -443,91 +518,8 @@ impl OutputHandler for AppState {
     }
 
     fn new_output(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
-        let info = match self.output_state.info(&output) {
-            Some(i) => i,
-            None => return,
-        };
-        let name = info.name.clone().unwrap_or_else(|| "unknown".to_string());
-        info!("Output detected: {} ({:?})", name, info.logical_size);
-
-        // Evitar reconfiguraciones innecesarias
-        if let Some(ref configured) = self.configured_output {
-            if configured == &name {
-                debug!("Output {} already configured, skipping", name);
-                return;
-            }
-        }
-
-        let mut need_configuration = false;
-        if let Some(ref pref) = self.preferred_output_name {
-            if &name == pref {
-                need_configuration = true;
-                info!("Preferred output matched: {}", name);
-            }
-        } else if self.preferred_output_name.is_none() && self.width == 256 && self.height == 256 {
-            need_configuration = true;
-            info!("No preferred output set, using first available: {}", name);
-        }
-
-        if need_configuration {
-            let old_surface = self.surface.clone();
-            self.surface = self.compositor.create_surface(qh);
-            self.layer_surface = self.layer_shell.create_layer_surface(
-                qh,
-                self.surface.clone(),
-                Layer::Bottom,
-                Some("cava-bg"),
-                Some(&output),
-            );
-            let logical_size = info.logical_size.unwrap_or((1920, 1080));
-            self.width = logical_size.0 as u32;
-            self.height = logical_size.1 as u32;
-            self.layer_surface.set_size(self.width, self.height);
-            self.layer_surface.set_anchor(Anchor::TOP);
-            self.surface.commit();
-            old_surface.destroy();
-
-            // Recrear superficie EGL
-            unsafe {
-                egl::API.make_current(self.egl_display, None, None, None).ok();
-                egl::API.destroy_surface(self.egl_display, self.egl_surface).ok();
-            }
-            self.wl_egl_surface =
-                match WlEglSurface::new(self.surface.id(), self.width as i32, self.height as i32) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        error!("Failed to create WlEglSurface in new_output: {}", e);
-                        return;
-                    }
-                };
-            self.egl_surface = unsafe {
-                match egl::API.create_window_surface(
-                    self.egl_display,
-                    self.egl_config,
-                    self.wl_egl_surface.ptr() as egl::NativeWindowType,
-                    None,
-                ) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        error!("Failed to create EGL surface in new_output: {}", e);
-                        return;
-                    }
-                }
-            };
-            unsafe {
-                if let Err(e) = egl::API.make_current(
-                    self.egl_display,
-                    Some(self.egl_surface),
-                    Some(self.egl_surface),
-                    Some(self.egl_context),
-                ) {
-                    error!("Failed to make EGL context current in new_output: {}", e);
-                    return;
-                }
-                gl::Viewport(0, 0, self.width as GLsizei, self.height as GLsizei);
-            }
-            self.configured_output = Some(name.clone());
-            info!("Configured for output {}: {}x{}", name, self.width, self.height);
+        if let Err(e) = self.ensure_output(qh, &output) {
+            error!("Failed to create output: {}", e);
         }
     }
 
@@ -535,7 +527,19 @@ impl OutputHandler for AppState {
         self.new_output(_conn, qh, output);
     }
 
-    fn output_destroyed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _output: wl_output::WlOutput) {}
+    fn output_destroyed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
+        let info = match self.output_state.info(&output) {
+            Some(i) => i,
+            None => return,
+        };
+        let name = info.name.unwrap_or_else(|| "unknown".to_string());
+        if let Some(state) = self.per_output.remove(&name) {
+            unsafe {
+                egl::API.destroy_surface(self.egl_display, state.egl_surface).ok();
+            }
+            info!("Output {} removed", name);
+        }
+    }
 }
 
 delegate_compositor!(AppState);
@@ -567,58 +571,61 @@ impl LayerShellHandler for AppState {
         &mut self,
         _conn: &Connection,
         qh: &QueueHandle<Self>,
-        _layer: &LayerSurface,
+        layer: &LayerSurface,
         configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
-        let width = configure.new_size.0;
-        let height = configure.new_size.1;
-        if width == self.width && height == self.height {
-            return;
-        }
-        self.width = width;
-        self.height = height;
+        // Buscar a qué salida pertenece esta capa
+        let mut target_name = None;
+        for (name, state) in self.per_output.iter_mut() {
+            if &state.layer_surface == layer {
+                let width = configure.new_size.0;
+                let height = configure.new_size.1;
+                if width == state.width && height == state.height && state.configured {
+                    return;
+                }
+                state.width = width;
+                state.height = height;
 
-        unsafe {
-            egl::API.make_current(self.egl_display, None, None, None).ok();
-            egl::API.destroy_surface(self.egl_display, self.egl_surface).ok();
-        }
-        self.wl_egl_surface =
-            match WlEglSurface::new(self.surface.id(), self.width as i32, self.height as i32) {
-                Ok(s) => s,
-                Err(e) => {
-                    error!("Failed to create WlEglSurface after configure: {}", e);
-                    return;
+                // Recrear superficie EGL
+                unsafe {
+                    egl::API.make_current(self.egl_display, None, None, None).ok();
+                    egl::API.destroy_surface(self.egl_display, state.egl_surface).ok();
                 }
-            };
-        self.surface.commit();
-        self.egl_surface = unsafe {
-            match egl::API.create_window_surface(
-                self.egl_display,
-                self.egl_config,
-                self.wl_egl_surface.ptr() as egl::NativeWindowType,
-                None,
-            ) {
-                Ok(s) => s,
-                Err(e) => {
-                    error!("Failed to create EGL surface after configure: {}", e);
-                    return;
-                }
+                state.wl_egl_surface =
+                    match WlEglSurface::new(state.surface.id(), state.width as i32, state.height as i32) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            error!("Failed to create WlEglSurface after configure: {}", e);
+                            return;
+                        }
+                    };
+                state.surface.commit();
+                state.egl_surface = unsafe {
+                    match egl::API.create_window_surface(
+                        self.egl_display,
+                        self.egl_config,
+                        state.wl_egl_surface.ptr() as egl::NativeWindowType,
+                        None,
+                    ) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            error!("Failed to create EGL surface after configure: {}", e);
+                            return;
+                        }
+                    }
+                };
+                state.configured = true;
+                target_name = Some(name.clone());
+                info!("Configured output {}: {}x{}", name, state.width, state.height);
+                break;
             }
-        };
-        unsafe {
-            if let Err(e) = egl::API.make_current(
-                self.egl_display,
-                Some(self.egl_surface),
-                Some(self.egl_surface),
-                Some(self.egl_context),
-            ) {
-                error!("Failed to make EGL context current: {}", e);
-                return;
-            }
-            gl::Viewport(0, 0, self.width as GLsizei, self.height as GLsizei);
         }
-        self.draw(_conn, qh);
+
+        if let Some(name) = target_name {
+            // Forzar un redibujado en esa salida
+            self.draw_output(&name, qh);
+        }
     }
 }
 

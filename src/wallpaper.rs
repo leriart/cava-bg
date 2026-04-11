@@ -48,11 +48,11 @@ impl WallpaperAnalyzer {
         let cache_path = home.join(".cache/ambxst/wallpapers.json");
         log::debug!("Looking for ambxst config at: {:?}", cache_path);
         if !cache_path.exists() {
-            log::debug!("ambxst config file not found");
+            log::warn!("ambxst config file not found at {:?}", cache_path);
             return None;
         }
         let content = fs::read_to_string(cache_path).ok()?;
-        log::debug!("ambxst config content length: {}", content.len());
+        log::debug!("ambxst config content: {}", content);
 
         // Buscar "currentWall":"/ruta/a/imagen"
         let tag = "\"currentWall\":\"";
@@ -65,9 +65,13 @@ impl WallpaperAnalyzer {
                 if path.exists() {
                     return Some(path);
                 } else {
-                    log::debug!("Path from ambxst does not exist: {:?}", path);
+                    log::warn!("Path from ambxst does not exist: {:?}", path);
                 }
+            } else {
+                log::warn!("Could not find closing quote for currentWall");
             }
+        } else {
+            log::warn!("Could not find 'currentWall' tag in ambxst config");
         }
         None
     }
