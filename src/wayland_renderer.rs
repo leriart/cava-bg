@@ -411,7 +411,8 @@ impl AppState {
             height,
             configured: false,
         };
-        self.per_output.insert(name, state);
+        // CORRECCIÓN: clonar name antes de insertar para poder usarlo en el log
+        self.per_output.insert(name.clone(), state);
         info!("Superficie WGPU creada para {}: {}x{}", name, width, height);
         Ok(())
     }
