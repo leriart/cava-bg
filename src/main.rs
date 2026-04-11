@@ -10,7 +10,7 @@ use std::io::{BufReader, Write};
 use std::process::{ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime};
 
@@ -71,7 +71,7 @@ fn main() -> Result<()> {
         }
     }
 
-    // Función para lanzar cava (se usará en cada reintento)
+    // Función para lanzar cava
     let spawn_cava = || -> Result<BufReader<ChildStdout>> {
         let cava_output_config: HashMap<String, String> = HashMap::from([
             ("method".into(), "raw".into()),
@@ -120,9 +120,8 @@ fn main() -> Result<()> {
 
     // Canal para actualizaciones de color
     let (color_tx, color_rx) = mpsc::channel();
-    let shared_color_rx = Arc::new(Mutex::new(color_rx));
 
-    // Hilo de vigilancia de wallpaper (único, no se reinicia)
+    // Hilo de vigilancia de wallpaper
     if auto_colors_enabled {
         let tx = color_tx.clone();
         thread::spawn(move || {
@@ -178,7 +177,6 @@ fn main() -> Result<()> {
     // Reinicio automático del renderer
     let mut retries = 0;
     loop {
-        // Iniciar cava (nuevo proceso)
         let cava_reader = match spawn_cava() {
             Ok(r) => r,
             Err(e) => {
@@ -192,14 +190,23 @@ fn main() -> Result<()> {
             }
         };
 
+        // Clonar el receptor para esta iteración
+        let color_rx_clone = match color_rx.try_clone() {
+            Ok(clone) => clone,
+            Err(e) => {
+                error!("Failed to clone color channel: {}", e);
+                break;
+            }
+        };
+
         let renderer = WaylandRenderer::new(
             config.clone(),
             cava_reader,
-            shared_color_rx.clone(),
+            color_rx_clone,
             running.clone(),
         );
         match renderer.run() {
-            Ok(()) => break, // Salida limpia
+            Ok(()) => break,
             Err(e) => {
                 error!("Renderer failed: {}", e);
                 if retries >= MAX_RETRIES {

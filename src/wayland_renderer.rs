@@ -28,7 +28,7 @@ use wayland_client::{
 };
 use wayland_egl::WlEglSurface;
 
-use std::ffi::CString;
+use std::ffi::{c_void, CString};
 use std::io::{BufReader, Read};
 use std::process::ChildStdout;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -98,7 +98,7 @@ impl WaylandRenderer {
             .context("Failed to bind EGL API")?;
         let egl_display = unsafe {
             egl::API
-                .get_display(conn.display().id().as_ptr() as *mut std::ffi::c_void)
+                .get_display(conn.display().id().as_ptr() as *mut c_void)
                 .context("Failed to get EGL display")?
         };
         egl::API
@@ -127,7 +127,6 @@ impl WaylandRenderer {
             .create_context(egl_display, egl_config, None, &CONTEXT_ATTRIBUTES)
             .context("Failed to create EGL context")?;
 
-        // Crear superficie EGL con verificación de que la superficie Wayland está lista
         let wl_egl_surface = WlEglSurface::new(surface.id(), 256, 256)
             .context("Failed to create WlEglSurface")?;
         let egl_surface = unsafe {
@@ -144,10 +143,13 @@ impl WaylandRenderer {
             .make_current(egl_display, Some(egl_surface), Some(egl_surface), Some(egl_context))
             .context("Failed to make EGL context current")?;
 
+        // Carga de funciones OpenGL corregida
         gl::load_with(|name| {
-            egl::API
-                .get_proc_address(name)
-                .unwrap_or(ptr::null_mut()) as *const std::ffi::c_void
+            let name_c = CString::new(name).unwrap();
+            match egl::API.get_proc_address(&name_c) {
+                Some(proc) => proc as *const c_void,
+                None => ptr::null(),
+            }
         });
 
         let vert_shader = compile_shader(gl::VERTEX_SHADER, VERTEX_SHADER_SRC)?;
@@ -462,7 +464,6 @@ impl OutputHandler for AppState {
             self.layer_surface.set_anchor(Anchor::TOP);
             self.surface.commit();
             old_surface.destroy();
-            // La recreación de EGL se hará en configure
         }
     }
     fn update_output(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
