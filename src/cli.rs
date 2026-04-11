@@ -1,7 +1,7 @@
 use clap::{Parser, ValueEnum};
 use std::path::PathBuf;
 
-/// Cavabg - Native CAVA visualizer for Hyprland
+/// cava-bg - Native CAVA visualizer for Wayland (Hyprland, Sway, etc.)
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None, disable_version_flag = true)]
 pub struct Cli {
@@ -17,7 +17,7 @@ pub struct Cli {
     #[arg(short = 'V', long)]
     pub version: bool,
 
-    /// List available monitors
+    /// List available monitors (Wayland outputs)
     #[arg(short = 'm', long)]
     pub list_monitors: bool,
 
@@ -59,9 +59,12 @@ impl Cli {
     }
 
     pub fn show_version() {
-        println!("Cavabg {}", env!("CARGO_PKG_VERSION"));
+        println!("cava-bg {}", env!("CARGO_PKG_VERSION"));
         println!("Authors: {}", env!("CARGO_PKG_AUTHORS"));
         println!("Repository: {}", env!("CARGO_PKG_REPOSITORY"));
         println!("License: {}", env!("CARGO_PKG_LICENSE"));
+        println!();
+        println!("A native Wayland implementation of wallpaper-cava");
+        println!("Displays CAVA audio visualizations as a transparent overlay");
     }
 }

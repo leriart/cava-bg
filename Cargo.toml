@@ -1,37 +1,31 @@
 [package]
 name = "cava-bg"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
-description = "Native CAVA audio visualizer for Hyprland wallpapers with adaptive color detection"
-license = "MIT"
-authors = ["leriart <>"]
+authors = ["rs-pro0", "leriart"]
+description = "CAVA audio visualizer as wallpaper overlay for Wayland"
 repository = "https://github.com/leriart/cava-bg"
-keywords = ["audio", "visualizer", "hyprland", "wayland", "cava"]
-categories = ["multimedia::audio", "gui"]
-readme = "README.md"
-homepage = "https://github.com/leriart/cava-bg"
-documentation = "https://github.com/leriart/cava-bg#readme"
+license = "MIT"
 
 [dependencies]
+# Renderer funcional (wallpaper-cava)
+gl = "0.14.0"
+khronos-egl = { version = "6.0.0", features = ["static", "1_0", "1_1", "1_2", "1_3", "1_4", "1_5"] }
+smithay-client-toolkit = { git = "https://github.com/Smithay/client-toolkit.git" }
+wayland-client = "0.31.2"
+wayland-egl = "0.32.0"
+wayland-protocols = "0.31.2"
+wayland-protocols-wlr = "0.3.1"
+
+# Nuevas dependencias (cava-bg)
 anyhow = "1.0"
 log = "0.4"
-env_logger = "0.10"
+env_logger = "0.11"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+image = "0.24"
+walkdir = "2"
+dirs = "5"
 ctrlc = "3.4"
 crossbeam-channel = "0.5"
-gl = "0.14.0"
-glutin = "0.32.2"
-winit = "0.30.0"
-raw-window-handle = "0.6"
-toml = "0.8"
-clap = { version = "4.0", features = ["derive"] }
-dirs = "5.0"
-serde = { version = "1.0", features = ["derive"] }
-image = "0.24"
-walkdir = "2.5"
-
-[build-dependencies]
-gl_generator = "0.14"
-
-[[bin]]
-name = "cava-bg"
-path = "src/main.rs"

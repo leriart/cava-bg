@@ -89,30 +89,8 @@ fn parse_hex_color(hex: &str) -> (f32, f32, f32) {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CavaConfig {
-    pub general: CavaGeneralConfig,
-    pub smoothing: CavaSmoothingConfig,
-    pub output: HashMap<String, String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CavaGeneralConfig {
-    pub framerate: u32,
-    pub bars: u32,
-    pub autosens: Option<bool>,
-    pub sensitivity: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CavaSmoothingConfig {
-    pub monstercat: Option<u32>,
-    pub waves: Option<u32>,
-    pub noise_reduction: Option<f32>,
-}
-
 impl Config {
-    pub fn load(config_path: &Option<std::path::PathBuf>) -> Result<Self> {
+    pub fn load(config_path: &Option<PathBuf>) -> Result<Self> {
         if let Some(path) = config_path {
             if path.exists() {
                 return Self::load_from_path(path);
@@ -147,25 +125,13 @@ impl Config {
     }
 
     pub fn default() -> Self {
-        let gradient_colors = vec![
-            [0.580, 0.886, 0.835, 1.0], // #94e2d5
-            [0.537, 0.863, 0.922, 1.0], // #89dceb
-            [0.455, 0.780, 0.925, 1.0], // #74c7ec
-            [0.537, 0.706, 0.980, 1.0], // #89b4fa
-            [0.796, 0.651, 0.969, 1.0], // #cba6f7
-            [0.961, 0.761, 0.906, 1.0], // #f5c2e7
-            [0.922, 0.627, 0.675, 1.0], // #eba0ac
-            [0.953, 0.545, 0.659, 1.0], // #f38ba8
-        ];
         let mut colors = HashMap::new();
-        for (i, color) in gradient_colors.iter().enumerate() {
-            let hex = format!(
-                "#{:02x}{:02x}{:02x}",
-                (color[0] * 255.0) as u8,
-                (color[1] * 255.0) as u8,
-                (color[2] * 255.0) as u8
-            );
-            colors.insert(format!("gradient_color_{}", i + 1), Color::Hex(hex));
+        let default_hex = vec![
+            "#94e2d5", "#89dceb", "#74c7ec", "#89b4fa",
+            "#cba6f7", "#f5c2e7", "#eba0ac", "#f38ba8"
+        ];
+        for (i, hex) in default_hex.iter().enumerate() {
+            colors.insert(format!("gradient_color_{}", i+1), Color::Hex(hex.to_string()));
         }
         Config {
             general: GeneralConfig {
@@ -194,12 +160,13 @@ impl Config {
         }
     }
 
-    pub fn to_cava_config(&self) -> String {
+    /// Genera la configuración para cava en formato TOML (raw output)
+    pub fn to_cava_raw_config(&self) -> String {
         let mut config = String::new();
         config.push_str("[general]\n");
         config.push_str(&format!("framerate = {}\n", self.general.framerate));
         if let Some(autosens) = self.general.autosens {
-            config.push_str(&format!("autosens = {}\n", if autosens { "1" } else { "0" }));
+            config.push_str(&format!("autosens = {}\n", if autosens { 1 } else { 0 }));
         }
         if let Some(sensitivity) = self.general.sensitivity {
             config.push_str(&format!("sensitivity = {}\n", sensitivity));
@@ -209,7 +176,6 @@ impl Config {
         config.push_str("method = raw\n");
         config.push_str("raw_target = /dev/stdout\n");
         config.push_str("bit_format = 16bit\n");
-        config.push_str("ascii_max_range = 1000\n");
         config.push_str("\n[smoothing]\n");
         if let Some(monstercat) = self.smoothing.monstercat {
             config.push_str(&format!("monstercat = {}\n", monstercat));
@@ -219,18 +185,6 @@ impl Config {
         }
         if let Some(noise_reduction) = self.smoothing.noise_reduction {
             config.push_str(&format!("noise_reduction = {:.2}\n", noise_reduction));
-        }
-        config
-    }
-
-    pub fn to_cava_raw_config(&self) -> String {
-        let mut config = self.to_cava_config();
-        if !config.contains("method = raw") {
-            let output_section = "\n[output]\n";
-            if let Some(pos) = config.find(output_section) {
-                let insert_pos = pos + output_section.len();
-                config.insert_str(insert_pos, "method = raw\nraw_target = /dev/stdout\nbit_format = 16bit\n");
-            }
         }
         config
     }

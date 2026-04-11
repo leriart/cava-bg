@@ -1,0 +1,550 @@
+//! Renderer Wayland funcional basado en wallpaper-cava (smithay-client-toolkit + EGL)
+
+use anyhow::{Context, Result};
+use gl::types::*;
+use khronos_egl as egl;
+use egl::API as egl_api;
+use log::{error, info, warn};
+use smithay_client_toolkit::reexports::calloop::EventLoop;
+use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
+use smithay_client_toolkit::registry::ProvidesRegistryState;
+use smithay_client_toolkit::shell::wlr_layer::{
+    Anchor, Layer, LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
+};
+use smithay_client_toolkit::{
+    compositor::{CompositorHandler, CompositorState},
+    output::{OutputHandler, OutputState},
+    registry::RegistryState,
+};
+use smithay_client_toolkit::{
+    delegate_compositor, delegate_layer, delegate_output, delegate_registry, registry_handlers,
+};
+use wayland_client::protocol::wl_surface::WlSurface;
+use wayland_client::{
+    globals::registry_queue_init,
+    protocol::{wl_output, wl_surface},
+    Connection, QueueHandle,
+};
+use wayland_egl::WlEglSurface;
+
+use std::ffi::CString;
+use std::io::{BufReader, Read};
+use std::process::ChildStdout;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+use std::{ptr, mem};
+
+use crate::config::{Config, Color};
+
+const VERTEX_SHADER_SRC: &str = include_str!("shaders/vertex_shader.glsl");
+const FRAGMENT_SHADER_SRC: &str = include_str!("shaders/fragment_shader.glsl");
+
+pub struct WaylandRenderer {
+    config: Config,
+    cava_reader: BufReader<ChildStdout>,
+    running: Arc<AtomicBool>,
+}
+
+impl WaylandRenderer {
+    pub fn new(config: Config, cava_reader: BufReader<ChildStdout>, running: Arc<AtomicBool>) -> Self {
+        Self { config, cava_reader, running }
+    }
+
+    pub fn run(&mut self) -> Result<()> {
+        info!("Starting Wayland renderer (wallpaper-cava core)");
+
+        // Convertir los colores de la configuración a un array de [f32;4]
+        let mut gradient_colors: Vec<[f32; 4]> = Vec::new();
+        for (key, color) in &self.config.colors.colors {
+            if key.starts_with("gradient_color_") {
+                gradient_colors.push(color.to_array());
+            }
+        }
+        if gradient_colors.is_empty() {
+            gradient_colors = crate::wallpaper::WallpaperAnalyzer::default_colors(8);
+        }
+
+        // Construir la estructura legacy que usa el renderer
+        let legacy_config = self.build_legacy_config(&gradient_colors);
+
+        // Conectar a Wayland
+        let conn = Connection::connect_to_env()
+            .context("Failed to connect to Wayland display")?;
+        let (globals, event_queue) = registry_queue_init(&conn)
+            .context("Failed to initialize registry queue")?;
+        let qh = event_queue.handle();
+        let mut event_loop = EventLoop::try_new()
+            .context("Failed to create event loop")?;
+        let loop_handle = event_loop.handle();
+        WaylandSource::new(conn.clone(), event_queue)
+            .insert(loop_handle)
+            .context("Failed to insert Wayland source")?;
+
+        let frame_duration = Duration::from_secs(1) / legacy_config.general.framerate;
+        let compositor = CompositorState::bind(&globals, &qh)
+            .context("wl_compositor not available")?;
+        let surface = compositor.create_surface(&qh);
+        let layer_shell = LayerShell::bind(&globals, &qh)
+            .context("wlr_layer_shell not available")?;
+        let layer_surface = layer_shell.create_layer_surface(
+            &qh,
+            surface.clone(),
+            Layer::Bottom,
+            Some("cava-bg"),
+            None,
+        );
+        // Ocupar toda la pantalla
+        layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        surface.commit();
+
+        // Inicializar EGL
+        egl_api::bind_api(egl_api::OPENGL_API)
+            .context("Failed to bind EGL OpenGL API")?;
+        let egl_display = unsafe {
+            egl_api::get_display(conn.display().id().as_ptr() as *mut std::ffi::c_void)
+                .context("Failed to get EGL display")?
+        };
+        egl_api::initialize(egl_display)
+            .context("Failed to initialize EGL")?;
+
+        const ATTRIBUTES: [i32; 9] = [
+            egl_api::RED_SIZE, 8,
+            egl_api::GREEN_SIZE, 8,
+            egl_api::BLUE_SIZE, 8,
+            egl_api::ALPHA_SIZE, 8,
+            egl_api::NONE,
+        ];
+        let egl_config = egl_api::choose_first_config(egl_display, &ATTRIBUTES)
+            .context("Failed to choose EGL config")?
+            .context("No EGL config found")?;
+
+        const CONTEXT_ATTRIBUTES: [i32; 7] = [
+            egl_api::CONTEXT_MAJOR_VERSION, 4,
+            egl_api::CONTEXT_MINOR_VERSION, 6,
+            egl_api::CONTEXT_OPENGL_PROFILE_MASK,
+            egl_api::CONTEXT_OPENGL_CORE_PROFILE_BIT,
+            egl_api::NONE,
+        ];
+        let egl_context = egl_api::create_context(egl_display, egl_config, None, &CONTEXT_ATTRIBUTES)
+            .context("Failed to create EGL context")?;
+
+        let wl_egl_surface = WlEglSurface::new(surface.id(), 256, 256)
+            .context("Failed to create WlEglSurface")?;
+        let egl_surface = unsafe {
+            egl_api::create_window_surface(
+                egl_display,
+                egl_config,
+                wl_egl_surface.ptr() as egl_api::NativeWindowType,
+                None,
+            )
+            .context("Failed to create EGL window surface")?
+        };
+        egl_api::make_current(egl_display, Some(egl_surface), Some(egl_surface), Some(egl_context))
+            .context("Failed to make EGL context current")?;
+
+        gl::load_with(|name| {
+            let cstr = CString::new(name).unwrap();
+            egl_api::get_proc_address(&cstr).unwrap() as *const std::ffi::c_void
+        });
+
+        // Compilar shaders
+        let vert_shader = compile_shader(gl::VERTEX_SHADER, VERTEX_SHADER_SRC)?;
+        let frag_shader = compile_shader(gl::FRAGMENT_SHADER, FRAGMENT_SHADER_SRC)?;
+        let shader_program = link_program(vert_shader, frag_shader)?;
+        unsafe {
+            gl::DeleteShader(vert_shader);
+            gl::DeleteShader(frag_shader);
+        }
+
+        // Preparar SSBO con colores del gradiente
+        let mut gradient_ssbo = 0;
+        let gradient_colors_size = gradient_colors.len() as i32;
+        let mut buffer_data: Vec<u8> = gradient_colors_size.to_le_bytes().to_vec();
+        buffer_data.extend([0,0,0,0].repeat(3)); // alineación para vec4
+        for color in &gradient_colors {
+            for &component in color {
+                buffer_data.extend_from_slice(&component.to_le_bytes());
+            }
+        }
+
+        // Generar índices para las barras (cada barra = 2 triángulos -> 6 índices)
+        let bar_count = legacy_config.bars.amount as usize;
+        let mut indices: Vec<u16> = vec![0; bar_count * 6];
+        for i in 0..bar_count {
+            let base = (i * 4) as u16;
+            indices[i*6] = base;
+            indices[i*6+1] = base+1;
+            indices[i*6+2] = base+2;
+            indices[i*6+3] = base+1;
+            indices[i*6+4] = base+2;
+            indices[i*6+5] = base+3;
+        }
+
+        let mut vao = 0;
+        let mut vbo = 0;
+        let mut ebo = 0;
+        unsafe {
+            gl::GenVertexArrays(1, &mut vao);
+            gl::GenBuffers(1, &mut vbo);
+            gl::GenBuffers(1, &mut ebo);
+            gl::GenBuffers(1, &mut gradient_ssbo);
+            gl::BindVertexArray(vao);
+            gl::BindBuffer(gl::ARRAY_BUFFER, vbo);
+            gl::BindBuffer(gl::ELEMENT_ARRAY_BUFFER, ebo);
+            gl::BufferData(
+                gl::ELEMENT_ARRAY_BUFFER,
+                (indices.len() * mem::size_of::<u16>()) as GLsizeiptr,
+                indices.as_ptr() as *const _,
+                gl::STATIC_DRAW,
+            );
+            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, gradient_ssbo);
+            gl::BufferData(
+                gl::SHADER_STORAGE_BUFFER,
+                buffer_data.len() as GLsizeiptr,
+                buffer_data.as_ptr() as *const _,
+                gl::STATIC_DRAW,
+            );
+            gl::BindBufferBase(gl::SHADER_STORAGE_BUFFER, 0, gradient_ssbo);
+            gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
+            gl::VertexAttribPointer(
+                0,
+                2,
+                gl::FLOAT,
+                gl::FALSE,
+                (2 * mem::size_of::<f32>()) as GLsizei,
+                ptr::null(),
+            );
+            gl::EnableVertexAttribArray(0);
+            gl::BindVertexArray(0);
+        }
+
+        let window_size_loc = unsafe {
+            let name = CString::new("WindowSize").unwrap();
+            gl::GetUniformLocation(shader_program, name.as_ptr())
+        };
+
+        // Crear el estado de la aplicación
+        let mut app_state = AppState {
+            registry_state: RegistryState::new(&globals),
+            output_state: OutputState::new(&globals, &qh),
+            width: 256,
+            height: 256,
+            layer_shell,
+            layer_surface,
+            surface,
+            cava_reader: self.cava_reader,
+            wl_egl_surface,
+            egl_surface,
+            egl_config,
+            egl_context,
+            egl_display,
+            shader_program,
+            vao,
+            vbo,
+            window_size_loc,
+            bar_count: legacy_config.bars.amount,
+            bar_gap: legacy_config.bars.gap,
+            background_color: legacy_config.general.background_color,
+            preferred_output_name: legacy_config.general.preferred_output.clone(),
+            compositor,
+            running: self.running.clone(),
+        };
+
+        info!("Wayland renderer initialized, entering event loop");
+        event_loop.run(frame_duration, &mut app_state, |_| {})
+            .context("Event loop failed")?;
+        Ok(())
+    }
+
+    fn build_legacy_config(&self, gradient_colors: &[[f32; 4]]) -> LegacyConfig {
+        // Construir el hashmap de colores en formato legacy
+        let mut colors_map = std::collections::HashMap::new();
+        for (i, &col) in gradient_colors.iter().enumerate() {
+            let hex = format!("#{:02x}{:02x}{:02x}",
+                (col[0]*255.0) as u8,
+                (col[1]*255.0) as u8,
+                (col[2]*255.0) as u8);
+            colors_map.insert(format!("color_{}", i), LegacyColor::Simple(hex));
+        }
+        LegacyConfig {
+            general: LegacyGeneralConfig {
+                framerate: self.config.general.framerate,
+                background_color: self.config.general.background_color.to_array(),
+                autosens: self.config.general.autosens,
+                sensitivity: self.config.general.sensitivity.map(|v| v as f32),
+                preferred_output: self.config.general.preferred_output.clone(),
+            },
+            bars: LegacyBarsConfig {
+                amount: self.config.bars.amount,
+                gap: self.config.bars.gap,
+            },
+            colors: colors_map,
+        }
+    }
+}
+
+// Estructuras legacy para el renderer (simplificadas)
+struct LegacyConfig {
+    general: LegacyGeneralConfig,
+    bars: LegacyBarsConfig,
+    colors: std::collections::HashMap<String, LegacyColor>,
+}
+struct LegacyGeneralConfig {
+    framerate: u32,
+    background_color: [f32; 4],
+    autosens: Option<bool>,
+    sensitivity: Option<f32>,
+    preferred_output: Option<String>,
+}
+struct LegacyBarsConfig {
+    amount: u32,
+    gap: f32,
+}
+enum LegacyColor {
+    Simple(String),
+    Complex { hex: String, alpha: f32 },
+}
+impl LegacyColor {
+    fn to_array(&self) -> [f32; 4] {
+        match self {
+            LegacyColor::Simple(hex) => color_from_hex(hex, 1.0),
+            LegacyColor::Complex { hex, alpha } => color_from_hex(hex, *alpha),
+        }
+    }
+}
+fn color_from_hex(hex: &str, alpha: f32) -> [f32; 4] {
+    let hex = hex.trim_start_matches('#');
+    let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0) as f32 / 255.0;
+    let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0) as f32 / 255.0;
+    let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0) as f32 / 255.0;
+    [r, g, b, alpha]
+}
+
+// Funciones auxiliares de shader
+fn compile_shader(shader_type: GLenum, src: &str) -> Result<GLuint> {
+    unsafe {
+        let shader = gl::CreateShader(shader_type);
+        let c_str = CString::new(src).unwrap();
+        gl::ShaderSource(shader, 1, &c_str.as_ptr(), ptr::null());
+        gl::CompileShader(shader);
+        let mut status = 0;
+        gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut status);
+        if status == 0 {
+            let mut log = vec![0u8; 512];
+            gl::GetShaderInfoLog(shader, 512, ptr::null_mut(), log.as_mut_ptr() as *mut _);
+            let msg = String::from_utf8_lossy(&log);
+            return Err(anyhow::anyhow!("Shader compilation failed: {}", msg));
+        }
+        Ok(shader)
+    }
+}
+fn link_program(vs: GLuint, fs: GLuint) -> Result<GLuint> {
+    unsafe {
+        let prog = gl::CreateProgram();
+        gl::AttachShader(prog, vs);
+        gl::AttachShader(prog, fs);
+        gl::LinkProgram(prog);
+        let mut status = 0;
+        gl::GetProgramiv(prog, gl::LINK_STATUS, &mut status);
+        if status == 0 {
+            let mut log = vec![0u8; 512];
+            gl::GetProgramInfoLog(prog, 512, ptr::null_mut(), log.as_mut_ptr() as *mut _);
+            let msg = String::from_utf8_lossy(&log);
+            return Err(anyhow::anyhow!("Program linking failed: {}", msg));
+        }
+        Ok(prog)
+    }
+}
+
+// ========== AppState y sus implementaciones ==========
+struct AppState {
+    registry_state: RegistryState,
+    output_state: OutputState,
+    width: u32,
+    height: u32,
+    layer_shell: LayerShell,
+    layer_surface: LayerSurface,
+    surface: WlSurface,
+    cava_reader: BufReader<ChildStdout>,
+    wl_egl_surface: WlEglSurface,
+    egl_surface: egl_api::Surface,
+    egl_config: egl_api::Config,
+    egl_context: egl_api::Context,
+    egl_display: egl_api::Display,
+    shader_program: u32,
+    vao: u32,
+    vbo: u32,
+    window_size_loc: i32,
+    bar_count: u32,
+    bar_gap: f32,
+    background_color: [f32; 4],
+    preferred_output_name: Option<String>,
+    compositor: CompositorState,
+    running: Arc<AtomicBool>,
+}
+
+impl AppState {
+    fn draw(&mut self, _conn: &Connection, qh: &QueueHandle<Self>) {
+        if !self.running.load(Ordering::SeqCst) {
+            return;
+        }
+        // Leer datos de audio
+        let bar_count_usize = self.bar_count as usize;
+        let mut cava_buffer = vec![0u8; bar_count_usize * 2];
+        if let Err(e) = self.cava_reader.read_exact(&mut cava_buffer) {
+            if e.kind() != std::io::ErrorKind::WouldBlock {
+                warn!("Failed to read audio data: {}", e);
+            }
+            return;
+        }
+        let mut unpacked = vec![0.0f32; bar_count_usize];
+        for (i, chunk) in cava_buffer.chunks_exact(2).enumerate() {
+            let val = u16::from_le_bytes([chunk[0], chunk[1]]) as f32 / 65530.0;
+            unpacked[i] = val;
+        }
+
+        // Calcular geometría de barras
+        let bar_width = 2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
+        let gap_width = bar_width * self.bar_gap;
+        let mut vertices = vec![0.0f32; bar_count_usize * 8];
+        for i in 0..bar_count_usize {
+            let height = 2.0 * unpacked[i] - 1.0;
+            let x1 = gap_width * i as f32 + bar_width * i as f32 - 1.0;
+            let x2 = x1 + bar_width;
+            vertices[i*8] = x1;
+            vertices[i*8+1] = height;
+            vertices[i*8+2] = x2;
+            vertices[i*8+3] = height;
+            vertices[i*8+4] = x1;
+            vertices[i*8+5] = -1.0;
+            vertices[i*8+6] = x2;
+            vertices[i*8+7] = -1.0;
+        }
+
+        unsafe {
+            gl::BindVertexArray(self.vao);
+            gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo);
+            gl::BufferData(
+                gl::ARRAY_BUFFER,
+                (vertices.len() * mem::size_of::<f32>()) as GLsizeiptr,
+                vertices.as_ptr() as *const _,
+                gl::DYNAMIC_DRAW,
+            );
+            gl::Enable(gl::BLEND);
+            gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+            gl::ClearColor(
+                self.background_color[0],
+                self.background_color[1],
+                self.background_color[2],
+                self.background_color[3],
+            );
+            gl::Clear(gl::COLOR_BUFFER_BIT);
+            gl::UseProgram(self.shader_program);
+            gl::Uniform2f(self.window_size_loc, self.width as f32, self.height as f32);
+            gl::DrawElements(
+                gl::TRIANGLES,
+                (self.bar_count as usize * 6) as GLsizei,
+                gl::UNSIGNED_SHORT,
+                ptr::null(),
+            );
+            gl::BindVertexArray(0);
+        }
+        egl_api::swap_buffers(self.egl_display, self.egl_surface).unwrap();
+        self.surface.frame(qh, self.surface.clone());
+    }
+}
+
+impl OutputHandler for AppState {
+    fn output_state(&mut self) -> &mut OutputState { &mut self.output_state }
+    fn new_output(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
+        let info = self.output_state.info(&output).unwrap();
+        let mut need = false;
+        if let Some(pref) = &self.preferred_output_name {
+            if let Some(name) = &info.name {
+                if name == pref { need = true; }
+            }
+        }
+        if self.preferred_output_name.is_none() { need = true; }
+        if need {
+            let old_surface = self.surface.clone();
+            self.surface = self.compositor.create_surface(qh);
+            self.layer_surface = self.layer_shell.create_layer_surface(
+                qh,
+                self.surface.clone(),
+                Layer::Bottom,
+                Some("cava-bg"),
+                Some(&output),
+            );
+            let logical = info.logical_size.unwrap();
+            self.width = logical.0 as u32;
+            self.height = logical.1 as u32;
+            self.layer_surface.set_size(self.width, self.height);
+            self.layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+            self.surface.commit();
+            old_surface.destroy();
+        }
+    }
+    fn update_output(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
+        self.new_output(_conn, qh, output);
+    }
+    fn output_destroyed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _output: wl_output::WlOutput) {}
+}
+
+delegate_compositor!(AppState);
+delegate_output!(AppState);
+delegate_registry!(AppState);
+delegate_layer!(AppState);
+
+impl ProvidesRegistryState for AppState {
+    fn registry(&mut self) -> &mut RegistryState { &mut self.registry_state }
+    registry_handlers![];
+}
+
+impl CompositorHandler for AppState {
+    fn scale_factor_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_factor: i32) {}
+    fn transform_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_transform: wl_output::Transform) {}
+    fn frame(&mut self, conn: &Connection, qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {
+        self.draw(conn, qh);
+    }
+    fn surface_enter(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
+    fn surface_leave(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
+}
+
+impl LayerShellHandler for AppState {
+    fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {}
+    fn configure(
+        &mut self,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+        _layer: &LayerSurface,
+        configure: LayerSurfaceConfigure,
+        _serial: u32,
+    ) {
+        let width = configure.new_size.0;
+        let height = configure.new_size.1;
+        if width == self.width && height == self.height {
+            return;
+        }
+        self.width = width;
+        self.height = height;
+        // Recrear superficie EGL
+        egl_api::make_current(self.egl_display, None, None, None).unwrap();
+        egl_api::destroy_surface(self.egl_display, self.egl_surface).unwrap();
+        self.wl_egl_surface = WlEglSurface::new(self.surface.id(), self.width as i32, self.height as i32).unwrap();
+        self.surface.commit();
+        self.egl_surface = unsafe {
+            egl_api::create_window_surface(
+                self.egl_display,
+                self.egl_config,
+                self.wl_egl_surface.ptr() as egl_api::NativeWindowType,
+                None,
+            ).unwrap()
+        };
+        egl_api::make_current(self.egl_display, Some(self.egl_surface), Some(self.egl_surface), Some(self.egl_context)).unwrap();
+        unsafe {
+            gl::Viewport(0, 0, self.width as GLsizei, self.height as GLsizei);
+        }
+        self.draw(_conn, qh);
+    }
+}
