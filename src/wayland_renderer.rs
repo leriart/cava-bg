@@ -1,4 +1,4 @@
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use log::{debug, error, info};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
@@ -22,18 +22,20 @@ use wayland_client::{
     Connection, QueueHandle,
 };
 use wgpu::util::DeviceExt;
-use raw_window_handle::{RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle};
+use raw_window_handle::{
+    RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
+};
 
 use std::collections::HashMap;
+use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use std::{mem, ptr};
+use std::mem;
 
 use crate::app_config::{array_from_config_color, Config};
 
-// Shader WGSL (incrustado como string para simplificar)
 const SHADER_WGSL: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -110,7 +112,7 @@ impl Uniforms {
 struct PerOutputState {
     surface: WlSurface,
     layer_surface: LayerSurface,
-    wgpu_surface: wgpu::Surface,
+    wgpu_surface: wgpu::Surface<'static>,
     wgpu_device: wgpu::Device,
     wgpu_queue: wgpu::Queue,
     wgpu_config: wgpu::SurfaceConfiguration,
@@ -176,7 +178,7 @@ impl WaylandRenderer {
             .map(|c| array_from_config_color(c.clone()))
             .collect();
 
-        let app_state = AppState {
+        let mut app_state = AppState {
             registry_state: RegistryState::new(&globals),
             output_state: OutputState::new(&globals, &qh),
             layer_shell,
@@ -195,7 +197,7 @@ impl WaylandRenderer {
         };
 
         event_loop
-            .run(frame_duration, app_state, |_| {})
+            .run(frame_duration, &mut app_state, |_| {})
             .context("Event loop failed")?;
 
         Ok(())
@@ -250,24 +252,29 @@ impl AppState {
         layer_surface.set_exclusive_zone(-1);
         surface.commit();
 
-        // Crear superficie WGPU a partir de la WlSurface
+        // Obtener punteros para crear la superficie WGPU
         let wl_display = self.conn.display().id().as_ptr();
-        let wl_surface = surface.id().as_ptr();
-        let display_handle = WaylandDisplayHandle::new(wl_display as *mut _);
-        let window_handle = WaylandWindowHandle::new(wl_surface as *mut _);
+        let wl_surface_ptr = surface.id().as_ptr();
+        let display_handle = WaylandDisplayHandle::new(NonNull::new(wl_display).unwrap());
+        let window_handle = WaylandWindowHandle::new(NonNull::new(wl_surface_ptr).unwrap());
         let raw_display = RawDisplayHandle::Wayland(display_handle);
         let raw_window = RawWindowHandle::Wayland(window_handle);
+
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
-        let wgpu_surface = unsafe { instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::Raw {
-            raw_display,
-            raw_window,
-        }) }.context("Failed to create WGPU surface")?;
+        let wgpu_surface = unsafe {
+            instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::Raw {
+                raw_display,
+                raw_window,
+            })
+        }
+        .context("Failed to create WGPU surface")?;
 
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: Some(&wgpu_surface),
             force_fallback_adapter: false,
-        })).context("Failed to find suitable GPU adapter")?;
+        }))
+        .context("Failed to find suitable GPU adapter")?;
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: None,
@@ -275,12 +282,20 @@ impl AppState {
                 required_limits: wgpu::Limits::default(),
             },
             None,
-        )).context("Failed to create device")?;
+        ))
+        .context("Failed to create device")?;
 
-        let mut surface_config = wgpu_surface.get_default_config(&adapter, width, height).unwrap();
+        let mut surface_config = wgpu_surface
+            .get_default_config(&adapter, width, height)
+            .unwrap();
         surface_config.present_mode = wgpu::PresentMode::Fifo;
         let caps = wgpu_surface.get_capabilities(&adapter);
-        surface_config.alpha_mode = caps.alpha_modes.iter().find(|m| **m != wgpu::CompositeAlphaMode::Opaque).copied().unwrap_or(wgpu::CompositeAlphaMode::Auto);
+        surface_config.alpha_mode = caps
+            .alpha_modes
+            .iter()
+            .find(|m| **m != wgpu::CompositeAlphaMode::Opaque)
+            .copied()
+            .unwrap_or(wgpu::CompositeAlphaMode::Auto);
         wgpu_surface.configure(&device, &surface_config);
 
         // Shader
@@ -373,10 +388,13 @@ impl AppState {
             multiview: None,
         });
 
+        // Convertir la superficie a 'static (vivirá tanto como el programa)
+        let static_surface = unsafe { std::mem::transmute(wgpu_surface) };
+
         let state = PerOutputState {
             surface,
             layer_surface,
-            wgpu_surface,
+            wgpu_surface: static_surface,
             wgpu_device: device,
             wgpu_queue: queue,
             wgpu_config: surface_config,
@@ -400,7 +418,7 @@ impl AppState {
             _ => return,
         };
 
-        // Actualizar uniformes si hay nuevos colores
+        // Actualizar colores si hay nuevos
         if let Ok(guard) = self.color_rx.lock() {
             if let Ok(new_colors) = guard.try_recv() {
                 let uniforms = Uniforms::new(&new_colors, state.width as f32, state.height as f32);
@@ -469,9 +487,6 @@ impl AppState {
     pub fn draw(&mut self) {
         if !self.running.load(Ordering::SeqCst) {
             info!("Apagando graceful...");
-            for (_, state) in self.per_output.iter() {
-                // No es necesario destruir explícitamente, se hará al salir
-            }
             std::process::exit(0);
         }
 
@@ -483,7 +498,9 @@ impl AppState {
 }
 
 impl OutputHandler for AppState {
-    fn output_state(&mut self) -> &mut OutputState { &mut self.output_state }
+    fn output_state(&mut self) -> &mut OutputState {
+        &mut self.output_state
+    }
     fn new_output(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
         if let Err(e) = self.ensure_output(&output) {
             error!("Fallo al crear output: {}", e);
@@ -498,7 +515,7 @@ impl OutputHandler for AppState {
             None => return,
         };
         let name = info.name.unwrap_or_else(|| "unknown".to_string());
-        if let Some(state) = self.per_output.remove(&name) {
+        if let Some(_state) = self.per_output.remove(&name) {
             info!("Output {} eliminado", name);
         }
     }
@@ -510,7 +527,9 @@ delegate_registry!(AppState);
 delegate_layer!(AppState);
 
 impl ProvidesRegistryState for AppState {
-    fn registry(&mut self) -> &mut RegistryState { &mut self.registry_state }
+    fn registry(&mut self) -> &mut RegistryState {
+        &mut self.registry_state
+    }
     registry_handlers![];
 }
 
@@ -548,10 +567,8 @@ impl LayerShellHandler for AppState {
                 state.wgpu_config.height = height;
                 state.wgpu_surface.configure(&state.wgpu_device, &state.wgpu_config);
                 // Actualizar uniforme de tamaño
-                let mut uniforms: Uniforms = bytemuck::cast_slice(&[0u8; std::mem::size_of::<Uniforms>()])[0].clone(); // hack, mejor leer del buffer
-                // En lugar de eso, recreamos el buffer de uniformes con nuevo tamaño (opcional)
-                let colors = self.initial_colors.clone(); // simplificación
-                let new_uniforms = Uniforms::new(&colors, width as f32, height as f32);
+                let current_colors = self.initial_colors.clone(); // simplificación, podría leer del buffer
+                let new_uniforms = Uniforms::new(&current_colors, width as f32, height as f32);
                 state.wgpu_queue.write_buffer(&state.uniform_buffer, 0, bytemuck::cast_slice(&[new_uniforms]));
                 state.configured = true;
                 target_name = Some(name.clone());
