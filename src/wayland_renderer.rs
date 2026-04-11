@@ -1,3 +1,6 @@
+// src/wayland_renderer.rs
+// Final fix: always use test waveform if cava fails, transparent bg, debug prints.
+
 use anyhow::{anyhow, Context, Result};
 use gl::types::{GLsizei, GLsizeiptr};
 use khronos_egl as egl;
@@ -116,7 +119,7 @@ impl WaylandRenderer {
     }
 
     pub fn run(self) -> Result<()> {
-        info!("Starting Wayland renderer (final, test waveform if no cava)");
+        info!("Starting Wayland renderer (test waveform, transparent bg)");
         std::env::set_var("EGL_PLATFORM", "wayland");
 
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
@@ -256,7 +259,7 @@ impl WaylandRenderer {
             windows_size_location,
             bar_count: self.config.bars.amount,
             bar_gap: self.config.bars.gap,
-            background_color: [0.0, 0.0, 0.0, 0.0], // 硬编码透明
+            background_color: [0.0, 0.0, 0.0, 0.0], // hardcoded transparent
             preferred_output_name: self.config.general.preferred_output,
             cava_reader: self.cava_reader,
             color_rx: self.color_rx,
@@ -390,28 +393,29 @@ impl AppState {
 
         let mut unpacked_data: Vec<f32> = vec![0.0; self.bar_count as usize];
         let mut cava_buffer: Vec<u8> = vec![0; self.bar_count as usize * 2];
-        match self.cava_reader.read_exact(&mut cava_buffer) {
+        let used_test = match self.cava_reader.read_exact(&mut cava_buffer) {
             Ok(_) => {
                 for (i, chunk) in cava_buffer.chunks_exact(2).enumerate() {
                     let num = u16::from_le_bytes([chunk[0], chunk[1]]);
                     unpacked_data[i] = (num as f32) / 65530.0;
                 }
-                self.test_phase = 0.0; // reset test phase when real data arrives
+                false
             }
             Err(e) => {
-                // 测试波形：让彩条动起来
+                // Use test waveform
                 self.test_phase += 0.1;
                 for i in 0..unpacked_data.len() {
                     unpacked_data[i] = ((self.test_phase + i as f32 * 0.5).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
                 }
                 if self.frame_count % 60 == 0 {
-                    warn!("Using test waveform (cava read error: {}). First bar height: {:.3}", e, unpacked_data[0]);
+                    warn!("Using test audio data (cava read error: {}), heights: {:?}", e, &unpacked_data[0..3]);
                 }
+                true
             }
-        }
+        };
 
         if self.frame_count % 60 == 0 {
-            info!("Bar 0 height: {:.3}", unpacked_data[0]);
+            info!("Bar 0 height: {:.3} (test={})", unpacked_data[0], used_test);
         }
 
         let bar_width: f32 =
