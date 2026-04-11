@@ -3,10 +3,11 @@ mod wallpaper;
 mod wayland_renderer;
 
 use anyhow::{Context, Result};
-use log::{error, info};
+use log::{error, info, warn};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufReader, Write};
+use std::path::PathBuf;
 use std::process::{ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
@@ -20,24 +21,46 @@ use wayland_renderer::WaylandRenderer;
 
 const MAX_RETRIES: u32 = 5;
 
+/// Crea un archivo de configuración por defecto en la ruta especificada.
+fn create_default_config(path: &PathBuf) -> Result<()> {
+    let default_config = Config::default();
+    let toml_string = toml::to_string_pretty(&default_config)
+        .context("Failed to serialize default config")?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("Failed to create config directory: {:?}", parent))?;
+    }
+    fs::write(path, toml_string)
+        .with_context(|| format!("Failed to write default config to {:?}", path))?;
+    info!("Created default config at {:?}", path);
+    Ok(())
+}
+
 fn main() -> Result<()> {
     env_logger::init();
 
     let args: Vec<String> = std::env::args().collect();
-    let config_filename = if args.len() == 3 && args[1] == "--config" {
-        args[2].clone()
+    let config_path = if args.len() == 3 && args[1] == "--config" {
+        PathBuf::from(&args[2])
     } else {
         let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-        let path = format!("{}/.config/wallpaper-cava/config.toml", home);
-        if fs::metadata(&path).is_ok() {
-            path
+        let default_path = PathBuf::from(format!("{}/.config/wallpaper-cava/config.toml", home));
+        if fs::metadata(&default_path).is_ok() {
+            default_path
         } else {
-            "config.toml".to_string()
+            let local_path = PathBuf::from("config.toml");
+            if fs::metadata(&local_path).is_ok() {
+                local_path
+            } else {
+                // No existe ni en ~/.config ni local, creamos el local
+                create_default_config(&local_path)?;
+                local_path
+            }
         }
     };
 
-    let config_str = fs::read_to_string(&config_filename)
-        .context("Unable to read config file")?;
+    let config_str = fs::read_to_string(&config_path)
+        .with_context(|| format!("Unable to read config file: {:?}", config_path))?;
     let mut config: Config = toml::from_str(&config_str)
         .map_err(|e| anyhow::anyhow!("Error parsing config: {}", e))?;
 
@@ -122,7 +145,7 @@ fn main() -> Result<()> {
     let (color_tx, color_rx) = mpsc::channel();
     let shared_color_rx = Arc::new(Mutex::new(color_rx));
 
-    // Hilo de vigilancia de wallpaper
+    // Hilo de vigilancia de wallpaper (con debounce interno)
     if auto_colors_enabled {
         let tx = color_tx.clone();
         thread::spawn(move || {
@@ -146,6 +169,7 @@ fn main() -> Result<()> {
                         if path_changed || time_changed {
                             info!("Wallpaper changed: {:?}", current_path);
                             
+                            // Debounce: esperar al menos 500ms desde el último envío
                             let now = SystemTime::now();
                             if now.duration_since(last_sent).unwrap_or(Duration::ZERO) < Duration::from_millis(500) {
                                 last_path = Some(current_path);

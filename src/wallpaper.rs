@@ -1,9 +1,9 @@
-// src/wallpaper.rs
 use anyhow::{Context, Result};
 use color_thief::{get_palette, ColorFormat};
 use image::{self, GenericImageView};
 use log;
 use once_cell::sync::Lazy;
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
@@ -14,10 +14,9 @@ const COLOR_SMOOTHING_FACTOR: f32 = 0.7;
 pub struct WallpaperAnalyzer;
 
 impl WallpaperAnalyzer {
-    /// Detecta el wallpaper actual consultando diferentes fuentes.
-    /// Prioridad: ambxst (JSON) -> Waypaper -> swaybg -> mpvpaper -> swww
+    /// Detecta el wallpaper actual. Prioridad: ambxst > Waypaper > swaybg > mpvpaper.
     pub fn find_wallpaper() -> Option<PathBuf> {
-        // 1. ambxst (el más fiable si está activo)
+        // 1. ambxst (lectura de ~/.cache/ambxst/wallpapers.json)
         if let Some(path) = Self::from_ambxst() {
             log::debug!("Detected wallpaper via ambxst: {:?}", path);
             return Some(path);
@@ -35,7 +34,7 @@ impl WallpaperAnalyzer {
             return Some(path);
         }
 
-        // 4. mpvpaper (GIFs/videos)
+        // 4. mpvpaper
         if let Some(path) = Self::from_mpvpaper() {
             log::debug!("Detected wallpaper via mpvpaper: {:?}", path);
             return Some(path);
@@ -54,29 +53,21 @@ impl WallpaperAnalyzer {
         None
     }
 
-    /// Obtiene el wallpaper actual desde el archivo JSON de ambxst.
     fn from_ambxst() -> Option<PathBuf> {
-        let cache_file = dirs::cache_dir()?.join("ambxst").join("wallpapers.json");
-        if !cache_file.exists() {
+        let cache_path = dirs::home_dir()?.join(".cache/ambxst/wallpapers.json");
+        if !cache_path.exists() {
             return None;
         }
-        let content = std::fs::read_to_string(cache_file).ok()?;
-        // Extraer el valor del campo "currentWall"
-        for line in content.lines() {
-            if let Some(start) = line.find("\"currentWall\"") {
-                if let Some(colon) = line[start..].find(':') {
-                    let rest = &line[start + colon + 1..];
-                    // El valor viene entre comillas
-                    if let Some(first_quote) = rest.find('"') {
-                        let after_first = &rest[first_quote + 1..];
-                        if let Some(second_quote) = after_first.find('"') {
-                            let path_str = &after_first[..second_quote];
-                            let path = PathBuf::from(path_str);
-                            if path.exists() {
-                                return Some(path);
-                            }
-                        }
-                    }
+        let content = fs::read_to_string(cache_path).ok()?;
+        // Extraer "currentWall":"/ruta/a/imagen"
+        let tag = "\"currentWall\":\"";
+        if let Some(start) = content.find(tag) {
+            let start_idx = start + tag.len();
+            if let Some(end) = content[start_idx..].find('"') {
+                let path_str = &content[start_idx..start_idx + end];
+                let path = PathBuf::from(path_str);
+                if path.exists() {
+                    return Some(path);
                 }
             }
         }
@@ -137,15 +128,11 @@ impl WallpaperAnalyzer {
         if !config_path.exists() {
             return None;
         }
-
-        let content = std::fs::read_to_string(config_path).ok()?;
+        let content = fs::read_to_string(config_path).ok()?;
         for line in content.lines() {
             let line = line.trim();
-            if line.starts_with('#') || line.is_empty() {
-                continue;
-            }
             if line.starts_with("wallpaper") {
-                if let Some((_key, value)) = line.split_once('=') {
+                if let Some((_, value)) = line.split_once('=') {
                     let path_str = value.trim().trim_matches(|c| c == '"' || c == '\'').to_string();
                     let path = PathBuf::from(&path_str);
                     if path.exists() {
@@ -154,21 +141,6 @@ impl WallpaperAnalyzer {
                 }
             }
         }
-
-        // Si no hay ruta, intentar con el backend configurado
-        for line in content.lines() {
-            if line.trim().starts_with("backend") {
-                if let Some((_, backend)) = line.split_once('=') {
-                    let backend = backend.trim().trim_matches(|c| c == '"' || c == '\'');
-                    match backend {
-                        "swaybg" => return Self::from_swaybg(),
-                        "swww" => return Self::from_swww_like("swww"),
-                        _ => {}
-                    }
-                }
-            }
-        }
-
         None
     }
 
@@ -188,7 +160,7 @@ impl WallpaperAnalyzer {
                 if status.success() {
                     let img = image::open(&temp_frame)
                         .context("Failed to open video frame")?;
-                    let _ = std::fs::remove_file(temp_frame);
+                    let _ = fs::remove_file(temp_frame);
                     return Ok(img);
                 }
             }
