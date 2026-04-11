@@ -42,30 +42,57 @@ fn main() -> Result<()> {
     let auto_colors_enabled = config.general.auto_colors;
 
     if auto_colors_enabled {
-        match WallpaperAnalyzer::generate_gradient_colors(8) {
-            Ok(generated) => {
-                info!("Auto-colors: replacing config colors with wallpaper palette");
-                config.colors.clear();
-                for (i, &color) in generated.iter().enumerate() {
-                    let hex = format!(
-                        "#{:02x}{:02x}{:02x}",
-                        (color[0] * 255.0) as u8,
-                        (color[1] * 255.0) as u8,
-                        (color[2] * 255.0) as u8
-                    );
-                    config.colors.insert(
-                        format!("gradient_color_{}", i + 1),
-                        ConfigColor::Complex(HexColorConfig {
-                            hex,
-                            alpha: Some(color[3]),
-                        }),
-                    );
+        let tx = color_tx.clone();
+        thread::spawn(move || {
+            let mut last_path: Option<std::path::PathBuf> = None;
+            let mut last_modified: Option<SystemTime> = None;
+            let mut last_sent = SystemTime::now();
+            loop {
+                thread::sleep(Duration::from_millis(1500));
+                match WallpaperAnalyzer::find_wallpaper() {
+                    Some(current_path) => {
+                        let modified = std::fs::metadata(&current_path)
+                            .and_then(|m| m.modified())
+                            .ok();
+                        
+                        let path_changed = last_path.as_ref() != Some(&current_path);
+                        let time_changed = match (&last_modified, &modified) {
+                            (Some(l), Some(m)) => l != m,
+                            _ => true,
+                        };
+
+                        if path_changed || time_changed {
+                            info!("Wallpaper changed: {:?}", current_path);
+                            
+                            // Debounce: esperar al menos 500ms desde el último envío
+                            let now = SystemTime::now();
+                            if now.duration_since(last_sent).unwrap_or(Duration::ZERO) < Duration::from_millis(500) {
+                                // Actualizar last_path pero no enviar aún
+                                last_path = Some(current_path);
+                                last_modified = modified;
+                                continue;
+                            }
+                            
+                            match WallpaperAnalyzer::generate_gradient_colors(8) {
+                                Ok(colors) => {
+                                    if tx.send(colors).is_err() {
+                                        error!("Failed to send new colors, stopping watcher.");
+                                        break;
+                                    }
+                                    last_sent = SystemTime::now();
+                                }
+                                Err(e) => error!("Failed to generate colors: {}", e),
+                            }
+                            last_path = Some(current_path);
+                            last_modified = modified;
+                        }
+                    }
+                    None => {
+                        thread::sleep(Duration::from_secs(3));
+                    }
                 }
             }
-            Err(e) => {
-                error!("Failed to generate auto colors: {}", e);
-            }
-        }
+        });
     }
 
     // Configurar cava

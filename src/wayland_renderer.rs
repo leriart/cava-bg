@@ -225,6 +225,7 @@ impl WaylandRenderer {
             gradient_colors_ssbo,
             gradient_colors: gradient_colors_rgba,
             running: self.running,
+            updating_colors: updating_colors.clone(),
         };
 
         event_loop
@@ -288,33 +289,43 @@ struct AppState {
     gradient_colors_ssbo: u32,
     gradient_colors: Vec<[f32; 4]>,
     running: Arc<AtomicBool>,
+    gradient_colors_ssbo: u32,
+    gradient_colors: Vec<[f32; 4]>,
+    running: Arc<AtomicBool>,
+    updating_colors: Arc<AtomicBool>,   // <-- NUEVO
 }
 
 impl AppState {
     fn update_colors(&mut self, new_colors: &[[f32; 4]]) {
+        self.updating_colors.store(true, Ordering::SeqCst);
+
         self.gradient_colors = new_colors.to_vec();
         let gradient_colors_len = self.gradient_colors.len() as i32;
         let mut buffer_data = gradient_colors_len.to_le_bytes().to_vec();
-        buffer_data.extend([0, 0, 0, 0].repeat(3));
+        buffer_data.extend([0, 0, 0, 0].repeat(3)); // padding para vec4
         for color in &self.gradient_colors {
             for &value in color {
                 buffer_data.extend_from_slice(&value.to_le_bytes());
             }
         }
+
         unsafe {
             gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, self.gradient_colors_ssbo);
-            gl::BufferData(
+            
+            // Usar BufferSubData en lugar de BufferData para no reasignar memoria
+            gl::BufferSubData(
                 gl::SHADER_STORAGE_BUFFER,
+                0, // offset
                 buffer_data.len() as GLsizeiptr,
                 buffer_data.as_ptr() as *const _,
-                gl::STATIC_DRAW,
             );
+            
             gl::BindBufferBase(gl::SHADER_STORAGE_BUFFER, 0, self.gradient_colors_ssbo);
-            
             gl::MemoryBarrier(gl::SHADER_STORAGE_BARRIER_BIT);
-            
             gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
         }
+
+        self.updating_colors.store(false, Ordering::SeqCst);
         info!("Updated gradient colors from wallpaper change");
     }
 
@@ -331,7 +342,13 @@ impl AppState {
             std::process::exit(0);
         }
 
-        // Revisar nuevos colores
+        // Si se están actualizando los colores, saltamos este frame
+        if self.updating_colors.load(Ordering::SeqCst) {
+            self.surface.frame(qh, self.surface.clone());
+            return;
+        }
+
+        // Revisar nuevos colores (try_recv no bloquea)
         if let Ok(new_colors) = self.color_rx.try_recv() {
             self.update_colors(&new_colors);
         }
@@ -397,7 +414,9 @@ impl AppState {
             gl::BindVertexArray(0);
         }
 
-        egl::API.swap_buffers(self.egl_display, self.egl_surface).unwrap();
+        if let Err(e) = egl::API.swap_buffers(self.egl_display, self.egl_surface) {
+            error!("Failed to swap buffers: {}", e);
+        }
         self.surface.frame(qh, self.surface.clone());
     }
 }
