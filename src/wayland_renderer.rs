@@ -663,15 +663,35 @@ fn compile_shader(shader_type: u32, src: &str) -> Result<u32> {
     unsafe {
         let shader = gl::CreateShader(shader_type);
         let c_str = CString::new(src).unwrap();
-        gl::ShaderSource(shader, 1, &c_str.as_ptr(), ptr::null());
+        gl::ShaderSource(shader, 1, &c_str.as_ptr(), std::ptr::null());
         gl::CompileShader(shader);
+
         let mut success = 0;
         gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut success);
         if success == 0 {
-            let mut log = vec![0u8; 512];
-            gl::GetShaderInfoLog(shader, 512, ptr::null_mut(), log.as_mut_ptr() as *mut _);
+            // --- CORRECCIÓN: Obtener la longitud real del log ---
+            let mut log_len = 0;
+            gl::GetShaderiv(shader, gl::INFO_LOG_LENGTH, &mut log_len);
+            
+            // Crear un buffer del tamaño exacto necesario
+            let mut log = vec![0u8; log_len as usize];
+            
+            // Obtener el log de error
+            gl::GetShaderInfoLog(
+                shader,
+                log_len,
+                std::ptr::null_mut(),
+                log.as_mut_ptr() as *mut _,
+            );
+            
+            // Convertir a String (manejando posibles errores de UTF-8)
             let msg = String::from_utf8_lossy(&log);
-            return Err(anyhow!("Shader compilation failed: {}", msg));
+            
+            // Imprimir el error de forma clara
+            eprintln!("Error de compilación del Shader:\n{}", msg);
+            
+            // Devolver el error para que Rust lo maneje
+            return Err(anyhow::anyhow!("Shader compilation failed: {}", msg));
         }
         Ok(shader)
     }
