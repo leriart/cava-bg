@@ -88,19 +88,23 @@ fn main() -> Result<()> {
         .map(|c| app_config::array_from_config_color(c.clone()))
         .collect();
 
-    // Intentar primero el renderizador Wayland
+    // Intentar primero el renderizador Wayland (se lleva el audio_rx)
     info!("Starting Wayland renderer (OpenGL 3.0)");
-    let wayland_result = WaylandRenderer::new(config.clone(), audio_rx.clone(), running.clone()).run();
+    let wayland_result = WaylandRenderer::new(config.clone(), audio_rx, running.clone()).run();
 
     if let Err(e) = wayland_result {
         warn!("Wayland/OpenGL renderer failed: {}. Falling back to SDL2 renderer.", e);
         info!("Starting SDL2 fallback renderer...");
 
+        // Crear un NUEVO backend de Cava para SDL2
+        let (_cava_backend2, audio_rx2) = CavaBackend::new(bar_count, &config)
+            .context("Failed to start cava backend for SDL2")?;
+
         let mut sdl2_renderer = Sdl2Renderer::new(
             bar_count,
             config.bars.gap,
             colors,
-            audio_rx,  // No usamos clone() aquí
+            audio_rx2,
             running,
         )?;
         sdl2_renderer.run()?;
