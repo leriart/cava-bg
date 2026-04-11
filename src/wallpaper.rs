@@ -14,39 +14,29 @@ const COLOR_SMOOTHING_FACTOR: f32 = 0.7;
 pub struct WallpaperAnalyzer;
 
 impl WallpaperAnalyzer {
-    /// Detecta el wallpaper actual. Prioridad: ambxst > Waypaper > swaybg > mpvpaper.
+    /// Detecta el wallpaper actual. Prioridad: ambxst > mpvpaper > Waypaper > swaybg.
     pub fn find_wallpaper() -> Option<PathBuf> {
         // 1. ambxst (lectura de ~/.cache/ambxst/wallpapers.json)
         if let Some(path) = Self::from_ambxst() {
-            log::debug!("Detected wallpaper via ambxst: {:?}", path);
+            log::info!("Detected wallpaper via ambxst: {:?}", path);
             return Some(path);
         }
 
-        // 2. Waypaper
-        if let Some(path) = Self::from_waypaper() {
-            log::debug!("Detected wallpaper via Waypaper: {:?}", path);
-            return Some(path);
-        }
-
-        // 3. swaybg
-        if let Some(path) = Self::from_swaybg() {
-            log::debug!("Detected wallpaper via swaybg: {:?}", path);
-            return Some(path);
-        }
-
-        // 4. mpvpaper
+        // 2. mpvpaper (para GIFs/videos)
         if let Some(path) = Self::from_mpvpaper() {
-            log::debug!("Detected wallpaper via mpvpaper: {:?}", path);
+            log::info!("Detected wallpaper via mpvpaper: {:?}", path);
             return Some(path);
         }
 
-        // 5. swww / awww
-        if let Some(path) = Self::from_swww_like("swww") {
-            log::debug!("Detected wallpaper via swww: {:?}", path);
+        // 3. Waypaper
+        if let Some(path) = Self::from_waypaper() {
+            log::info!("Detected wallpaper via Waypaper: {:?}", path);
             return Some(path);
         }
-        if let Some(path) = Self::from_swww_like("awww") {
-            log::debug!("Detected wallpaper via awww: {:?}", path);
+
+        // 4. swaybg
+        if let Some(path) = Self::from_swaybg() {
+            log::info!("Detected wallpaper via swaybg: {:?}", path);
             return Some(path);
         }
 
@@ -54,20 +44,28 @@ impl WallpaperAnalyzer {
     }
 
     fn from_ambxst() -> Option<PathBuf> {
-        let cache_path = dirs::home_dir()?.join(".cache/ambxst/wallpapers.json");
+        let home = dirs::home_dir()?;
+        let cache_path = home.join(".cache/ambxst/wallpapers.json");
+        log::debug!("Looking for ambxst config at: {:?}", cache_path);
         if !cache_path.exists() {
+            log::debug!("ambxst config file not found");
             return None;
         }
         let content = fs::read_to_string(cache_path).ok()?;
-        // Extraer "currentWall":"/ruta/a/imagen"
+        log::debug!("ambxst config content length: {}", content.len());
+
+        // Buscar "currentWall":"/ruta/a/imagen"
         let tag = "\"currentWall\":\"";
         if let Some(start) = content.find(tag) {
             let start_idx = start + tag.len();
             if let Some(end) = content[start_idx..].find('"') {
                 let path_str = &content[start_idx..start_idx + end];
                 let path = PathBuf::from(path_str);
+                log::debug!("Extracted path from ambxst: {:?}", path);
                 if path.exists() {
                     return Some(path);
+                } else {
+                    log::debug!("Path from ambxst does not exist: {:?}", path);
                 }
             }
         }
@@ -106,23 +104,6 @@ impl WallpaperAnalyzer {
         None
     }
 
-    fn from_swww_like(cmd: &str) -> Option<PathBuf> {
-        let output = Command::new(cmd).arg("query").output().ok()?;
-        if !output.status.success() {
-            return None;
-        }
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            if let Some((_monitor, path_str)) = line.split_once(':') {
-                let path = PathBuf::from(path_str.trim());
-                if path.exists() {
-                    return Some(path);
-                }
-            }
-        }
-        None
-    }
-
     fn from_waypaper() -> Option<PathBuf> {
         let config_path = dirs::config_dir()?.join("waypaper").join("config.ini");
         if !config_path.exists() {
@@ -144,7 +125,6 @@ impl WallpaperAnalyzer {
         None
     }
 
-    // --- Carga de imagen (soporta GIF y video vía ffmpeg) ---
     fn load_image_from_path(path: &PathBuf) -> Result<image::DynamicImage> {
         let ext = path.extension()
             .and_then(|e| e.to_str())
@@ -170,7 +150,6 @@ impl WallpaperAnalyzer {
         image::open(path).context("Failed to open image")
     }
 
-    // --- Paleta de colores por defecto (Catppuccin) ---
     pub fn default_colors(num_colors: usize) -> Vec<[f32; 4]> {
         let catppuccin = [
             [0.580, 0.886, 0.835, 1.0],
@@ -193,7 +172,6 @@ impl WallpaperAnalyzer {
         }
     }
 
-    /// Genera una paleta de colores usando el algoritmo Median Cut (color-thief)
     pub fn generate_gradient_colors(num_colors: usize) -> Result<Vec<[f32; 4]>> {
         let wallpaper_path = match Self::find_wallpaper() {
             Some(path) => path,

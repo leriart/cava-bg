@@ -1,10 +1,10 @@
 // src/wayland_renderer.rs
-// Basado en el main.rs de wallpaper-cava, con manejo de errores y multi-monitor
+// Basado fielmente en el main.rs original de wallpaper-cava, con EGL_PLATFORM forzado
 
 use anyhow::{anyhow, Context, Result};
 use gl::types::{GLsizei, GLsizeiptr};
 use khronos_egl as egl;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::ProvidesRegistryState;
@@ -65,7 +65,7 @@ impl WaylandRenderer {
     }
 
     pub fn run(self) -> Result<()> {
-        info!("Starting Wayland renderer (exact wallpaper-cava core)");
+        info!("Starting Wayland renderer (wallpaper-cava original core)");
         std::env::set_var("EGL_PLATFORM", "wayland");
 
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
@@ -86,7 +86,7 @@ impl WaylandRenderer {
             &qh,
             surface.clone(),
             Layer::Bottom,
-            Some("wallpaper-cava"),
+            Some("cava-bg"),
             None,
         );
         layer_surface.set_size(256, 256);
@@ -152,7 +152,6 @@ impl WaylandRenderer {
             }
         });
 
-        // Compilación de shaders con logs detallados
         let vert_shader = compile_shader(gl::VERTEX_SHADER, VERTEX_SHADER_SRC)?;
         let frag_shader = compile_shader(gl::FRAGMENT_SHADER, FRAGMENT_SHADER_SRC)?;
         let shader_program = link_program(vert_shader, frag_shader)?;
@@ -243,6 +242,7 @@ impl WaylandRenderer {
             gradient_colors: gradient_colors_rgba,
             running: self.running,
             updating_colors,
+            configured_output: None,
         };
 
         event_loop
@@ -307,6 +307,7 @@ struct AppState {
     gradient_colors: Vec<[f32; 4]>,
     running: Arc<AtomicBool>,
     updating_colors: Arc<AtomicBool>,
+    configured_output: Option<String>,
 }
 
 impl AppState {
@@ -429,16 +430,18 @@ impl AppState {
 
         if let Err(e) = egl::API.swap_buffers(self.egl_display, self.egl_surface) {
             error!("Failed to swap buffers: {}", e);
+        } else {
+            debug!("Frame rendered successfully");
         }
         self.surface.frame(qh, self.surface.clone());
     }
 }
 
-// Implementación de OutputHandler (idéntica a la que tienes, pero añadiendo logs)
 impl OutputHandler for AppState {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
     }
+
     fn new_output(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
         let info = match self.output_state.info(&output) {
             Some(i) => i,
@@ -446,9 +449,18 @@ impl OutputHandler for AppState {
         };
         let name = info.name.clone().unwrap_or_else(|| "unknown".to_string());
         info!("Output detected: {} ({:?})", name, info.logical_size);
+
+        // Evitar reconfiguraciones innecesarias
+        if let Some(ref configured) = self.configured_output {
+            if configured == &name {
+                debug!("Output {} already configured, skipping", name);
+                return;
+            }
+        }
+
         let mut need_configuration = false;
         if let Some(ref pref) = self.preferred_output_name {
-            if name == *pref {
+            if &name == pref {
                 need_configuration = true;
                 info!("Preferred output matched: {}", name);
             }
@@ -456,6 +468,7 @@ impl OutputHandler for AppState {
             need_configuration = true;
             info!("No preferred output set, using first available: {}", name);
         }
+
         if need_configuration {
             let old_surface = self.surface.clone();
             self.surface = self.compositor.create_surface(qh);
@@ -463,7 +476,7 @@ impl OutputHandler for AppState {
                 qh,
                 self.surface.clone(),
                 Layer::Bottom,
-                Some("wallpaper-cava"),
+                Some("cava-bg"),
                 Some(&output),
             );
             let logical_size = info.logical_size.unwrap_or((1920, 1080));
@@ -473,12 +486,55 @@ impl OutputHandler for AppState {
             self.layer_surface.set_anchor(Anchor::TOP);
             self.surface.commit();
             old_surface.destroy();
+
+            // Recrear superficie EGL
+            unsafe {
+                egl::API.make_current(self.egl_display, None, None, None).ok();
+                egl::API.destroy_surface(self.egl_display, self.egl_surface).ok();
+            }
+            self.wl_egl_surface =
+                match WlEglSurface::new(self.surface.id(), self.width as i32, self.height as i32) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        error!("Failed to create WlEglSurface in new_output: {}", e);
+                        return;
+                    }
+                };
+            self.egl_surface = unsafe {
+                match egl::API.create_window_surface(
+                    self.egl_display,
+                    self.egl_config,
+                    self.wl_egl_surface.ptr() as egl::NativeWindowType,
+                    None,
+                ) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        error!("Failed to create EGL surface in new_output: {}", e);
+                        return;
+                    }
+                }
+            };
+            unsafe {
+                if let Err(e) = egl::API.make_current(
+                    self.egl_display,
+                    Some(self.egl_surface),
+                    Some(self.egl_surface),
+                    Some(self.egl_context),
+                ) {
+                    error!("Failed to make EGL context current in new_output: {}", e);
+                    return;
+                }
+                gl::Viewport(0, 0, self.width as GLsizei, self.height as GLsizei);
+            }
+            self.configured_output = Some(name.clone());
             info!("Configured for output {}: {}x{}", name, self.width, self.height);
         }
     }
+
     fn update_output(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
         self.new_output(_conn, qh, output);
     }
+
     fn output_destroyed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _output: wl_output::WlOutput) {}
 }
 
@@ -506,6 +562,7 @@ impl CompositorHandler for AppState {
 
 impl LayerShellHandler for AppState {
     fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {}
+
     fn configure(
         &mut self,
         _conn: &Connection,
@@ -521,6 +578,7 @@ impl LayerShellHandler for AppState {
         }
         self.width = width;
         self.height = height;
+
         unsafe {
             egl::API.make_current(self.egl_display, None, None, None).ok();
             egl::API.destroy_surface(self.egl_display, self.egl_surface).ok();
@@ -573,12 +631,9 @@ fn compile_shader(shader_type: u32, src: &str) -> Result<u32> {
         let mut success = 0;
         gl::GetShaderiv(shader, gl::COMPILE_STATUS, &mut success);
         if success == 0 {
-            let mut log = vec![0u8; 1024];
-            let mut length = 0;
-            gl::GetShaderInfoLog(shader, 1024, &mut length, log.as_mut_ptr() as *mut _);
-            log.set_len(length as usize);
+            let mut log = vec![0u8; 512];
+            gl::GetShaderInfoLog(shader, 512, ptr::null_mut(), log.as_mut_ptr() as *mut _);
             let msg = String::from_utf8_lossy(&log);
-            error!("Shader compilation failed: {}", msg);
             return Err(anyhow!("Shader compilation failed: {}", msg));
         }
         Ok(shader)
@@ -594,12 +649,9 @@ fn link_program(vs: u32, fs: u32) -> Result<u32> {
         let mut success = 0;
         gl::GetProgramiv(prog, gl::LINK_STATUS, &mut success);
         if success == 0 {
-            let mut log = vec![0u8; 1024];
-            let mut length = 0;
-            gl::GetProgramInfoLog(prog, 1024, &mut length, log.as_mut_ptr() as *mut _);
-            log.set_len(length as usize);
+            let mut log = vec![0u8; 512];
+            gl::GetProgramInfoLog(prog, 512, ptr::null_mut(), log.as_mut_ptr() as *mut _);
             let msg = String::from_utf8_lossy(&log);
-            error!("Program linking failed: {}", msg);
             return Err(anyhow!("Program linking failed: {}", msg));
         }
         Ok(prog)
