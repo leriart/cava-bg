@@ -22,7 +22,6 @@ fn main() -> Result<()> {
 
     cli.init_logging();
 
-    // Cargar configuración
     let mut config = config::Config::load(&cli.config).context("Failed to load config")?;
 
     if cli.test_config {
@@ -51,7 +50,6 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Verificar que cava está instalado
     if Command::new("cava").arg("--version").output().is_err() {
         eprintln!("cava is not installed. Please install it first.");
         eprintln!("  Arch: sudo pacman -S cava");
@@ -62,7 +60,6 @@ fn main() -> Result<()> {
 
     info!("Starting cava-bg v{}", env!("CARGO_PKG_VERSION"));
 
-    // Generar colores automáticos si está activado
     if config.general.auto_colors {
         info!("Auto-colors enabled, analyzing wallpaper...");
         match wallpaper::WallpaperAnalyzer::generate_gradient_colors(8) {
@@ -89,27 +86,22 @@ fn main() -> Result<()> {
         }
     }
 
-    // Inicializar cava manager
     let mut cava_manager =
         cava_manager::CavaManager::new(&config).context("Failed to start cava manager")?;
     let cava_reader = cava_manager
         .take_reader()
         .context("Failed to get cava reader")?;
 
-    // Configurar manejador de Ctrl+C: termina inmediatamente
     ctrlc::set_handler(|| {
         std::process::exit(0);
     })
     .expect("Failed to set Ctrl+C handler");
 
-    // Canal para actualizaciones de colores desde el watcher
     let (color_tx, color_rx) = mpsc::channel();
 
-    // Iniciar watcher de wallpaper en un hilo si auto_colors está activado
     if config.general.auto_colors {
         let tx = color_tx.clone();
         thread::spawn(move || {
-            // Esperar un poco para que el sistema de archivos esté listo
             std::thread::sleep(std::time::Duration::from_secs(1));
             if let Ok(Some(wallpaper_path)) = wallpaper::WallpaperAnalyzer::find_wallpaper() {
                 let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -136,7 +128,6 @@ fn main() -> Result<()> {
         });
     }
 
-    // Iniciar el renderer Wayland (funcional)
     let wayland_renderer =
         wayland_renderer::WaylandRenderer::new(config.clone(), cava_reader, color_rx);
     if let Err(e) = wayland_renderer.run() {
