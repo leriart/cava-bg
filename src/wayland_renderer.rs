@@ -147,7 +147,7 @@ const SHADER_FALLBACKS: [ShaderConfig; 3] = [
         ],
         use_uniforms: false,
     },
-    // Intento 2: OpenGL 3.3 Core con Uniforms (si SSBO falla)
+    // Intento 2: OpenGL 3.3 Core con Uniforms
     ShaderConfig {
         vertex_src: VERTEX_SHADER_330,
         fragment_src: FRAGMENT_SHADER_330_UNIFORM,
@@ -159,13 +159,14 @@ const SHADER_FALLBACKS: [ShaderConfig; 3] = [
         ],
         use_uniforms: true,
     },
-    // Intento 3: OpenGL ES 2.0 (máxima compatibilidad)
+    // Intento 3: OpenGL ES 2.0
     ShaderConfig {
         vertex_src: VERTEX_SHADER_100,
         fragment_src: FRAGMENT_SHADER_100,
         context_attribs: [
             egl::CONTEXT_MAJOR_VERSION, 2,
             egl::CONTEXT_MINOR_VERSION, 0,
+            egl::NONE,
             egl::NONE,
             egl::NONE,
             egl::NONE,
