@@ -1,7 +1,7 @@
 // src/wayland_renderer.rs
-// Código basado íntegramente en el main.rs de wallpaper-cava
+// Código basado íntegramente en el main.rs de wallpaper-cava, con manejo de errores mejorado
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use gl::types::{GLsizei, GLsizeiptr};
 use khronos_egl as egl;
 use log::{error, info, warn};
@@ -33,7 +33,7 @@ use std::io::{BufReader, Read};
 use std::process::ChildStdout;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use std::{mem, ptr};
 
@@ -45,7 +45,7 @@ const FRAGMENT_SHADER_SRC: &str = include_str!("shaders/fragment_shader.glsl");
 pub struct WaylandRenderer {
     config: Config,
     cava_reader: BufReader<ChildStdout>,
-    color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
+    color_rx: Receiver<Vec<[f32; 4]>>,
     running: Arc<AtomicBool>,
 }
 
@@ -53,7 +53,7 @@ impl WaylandRenderer {
     pub fn new(
         config: Config,
         cava_reader: BufReader<ChildStdout>,
-        color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
+        color_rx: Receiver<Vec<[f32; 4]>>,
         running: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -92,13 +92,18 @@ impl WaylandRenderer {
         layer_surface.set_anchor(Anchor::TOP);
         surface.commit();
 
-        egl::API.bind_api(egl::OPENGL_API).context("Failed to bind EGL API")?;
+        // Inicialización EGL (con manejo de errores exhaustivo)
+        egl::API
+            .bind_api(egl::OPENGL_API)
+            .context("Failed to bind EGL API")?;
         let egl_display = unsafe {
             egl::API
                 .get_display(conn.display().id().as_ptr() as *mut std::ffi::c_void)
                 .context("Failed to get EGL display")?
         };
-        egl::API.initialize(egl_display).context("Failed to initialize EGL")?;
+        egl::API
+            .initialize(egl_display)
+            .context("Failed to initialize EGL")?;
 
         const ATTRIBUTES: [i32; 9] = [
             egl::RED_SIZE, 8,
@@ -122,6 +127,7 @@ impl WaylandRenderer {
             .create_context(egl_display, egl_config, None, &CONTEXT_ATTRIBUTES)
             .context("Failed to create EGL context")?;
 
+        // Crear superficie EGL con verificación de que la superficie Wayland está lista
         let wl_egl_surface = WlEglSurface::new(surface.id(), 256, 256)
             .context("Failed to create WlEglSurface")?;
         let egl_surface = unsafe {
@@ -138,7 +144,11 @@ impl WaylandRenderer {
             .make_current(egl_display, Some(egl_surface), Some(egl_surface), Some(egl_context))
             .context("Failed to make EGL context current")?;
 
-        gl::load_with(|name| egl::API.get_proc_address(name).unwrap() as *const std::ffi::c_void);
+        gl::load_with(|name| {
+            egl::API
+                .get_proc_address(name)
+                .unwrap_or(ptr::null_mut()) as *const std::ffi::c_void
+        });
 
         let vert_shader = compile_shader(gl::VERTEX_SHADER, VERTEX_SHADER_SRC)?;
         let frag_shader = compile_shader(gl::FRAGMENT_SHADER, FRAGMENT_SHADER_SRC)?;
@@ -148,7 +158,9 @@ impl WaylandRenderer {
             gl::DeleteShader(frag_shader);
         }
 
-        let gradient_colors_rgba: Vec<[f32; 4]> = self.config.colors
+        let gradient_colors_rgba: Vec<[f32; 4]> = self
+            .config
+            .colors
             .iter()
             .map(|(_, color)| array_from_config_color(color.clone()))
             .collect();
@@ -287,7 +299,7 @@ struct AppState {
     background_color: [f32; 4],
     preferred_output_name: Option<String>,
     compositor: CompositorState,
-    color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
+    color_rx: Receiver<Vec<[f32; 4]>>,
     gradient_colors_ssbo: u32,
     gradient_colors: Vec<[f32; 4]>,
     running: Arc<AtomicBool>,
@@ -341,10 +353,7 @@ impl AppState {
             return;
         }
 
-        // CORRECCIÓN: evitar conflicto de préstamo
-        let maybe_new_colors = self.color_rx.lock().unwrap().try_recv().ok();
-        // El lock se libera aquí al salir de la expresión
-        if let Some(new_colors) = maybe_new_colors {
+        if let Ok(new_colors) = self.color_rx.try_recv() {
             self.update_colors(&new_colors);
         }
 
@@ -421,7 +430,10 @@ impl OutputHandler for AppState {
         &mut self.output_state
     }
     fn new_output(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
-        let info = self.output_state.info(&output).unwrap();
+        let info = match self.output_state.info(&output) {
+            Some(i) => i,
+            None => return,
+        };
         let mut need_configuration = false;
         if let Some(output_name) = info.name {
             if let Some(ref pref) = self.preferred_output_name {
@@ -443,13 +455,14 @@ impl OutputHandler for AppState {
                 Some("wallpaper-cava"),
                 Some(&output),
             );
-            let logical_size = info.logical_size.unwrap();
+            let logical_size = info.logical_size.unwrap_or((256, 256));
             self.width = logical_size.0 as u32;
             self.height = logical_size.1 as u32;
             self.layer_surface.set_size(self.width, self.height);
             self.layer_surface.set_anchor(Anchor::TOP);
             self.surface.commit();
             old_surface.destroy();
+            // La recreación de EGL se hará en configure
         }
     }
     fn update_output(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
@@ -498,26 +511,45 @@ impl LayerShellHandler for AppState {
         self.width = width;
         self.height = height;
 
-        egl::API.make_current(self.egl_display, None, None, None).unwrap();
-        egl::API.destroy_surface(self.egl_display, self.egl_surface).unwrap();
+        unsafe {
+            egl::API.make_current(self.egl_display, None, None, None).ok();
+            egl::API.destroy_surface(self.egl_display, self.egl_surface).ok();
+        }
         self.wl_egl_surface =
-            WlEglSurface::new(self.surface.id(), self.width as i32, self.height as i32).unwrap();
+            match WlEglSurface::new(self.surface.id(), self.width as i32, self.height as i32) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!("Failed to create WlEglSurface after configure: {}", e);
+                    return;
+                }
+            };
         self.surface.commit();
         self.egl_surface = unsafe {
-            egl::API.create_window_surface(
+            match egl::API.create_window_surface(
                 self.egl_display,
                 self.egl_config,
                 self.wl_egl_surface.ptr() as egl::NativeWindowType,
                 None,
-            ).unwrap()
+            ) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!("Failed to create EGL surface after configure: {}", e);
+                    return;
+                }
+            }
         };
-        egl::API.make_current(
-            self.egl_display,
-            Some(self.egl_surface),
-            Some(self.egl_surface),
-            Some(self.egl_context),
-        ).unwrap();
-        unsafe { gl::Viewport(0, 0, self.width as GLsizei, self.height as GLsizei); }
+        unsafe {
+            if let Err(e) = egl::API.make_current(
+                self.egl_display,
+                Some(self.egl_surface),
+                Some(self.egl_surface),
+                Some(self.egl_context),
+            ) {
+                error!("Failed to make EGL context current: {}", e);
+                return;
+            }
+            gl::Viewport(0, 0, self.width as GLsizei, self.height as GLsizei);
+        }
         self.draw(_conn, qh);
     }
 }
@@ -534,7 +566,7 @@ fn compile_shader(shader_type: u32, src: &str) -> Result<u32> {
             let mut log = vec![0u8; 512];
             gl::GetShaderInfoLog(shader, 512, ptr::null_mut(), log.as_mut_ptr() as *mut _);
             let msg = String::from_utf8_lossy(&log);
-            return Err(anyhow::anyhow!("Shader compilation failed: {}", msg));
+            return Err(anyhow!("Shader compilation failed: {}", msg));
         }
         Ok(shader)
     }
@@ -552,7 +584,7 @@ fn link_program(vs: u32, fs: u32) -> Result<u32> {
             let mut log = vec![0u8; 512];
             gl::GetProgramInfoLog(prog, 512, ptr::null_mut(), log.as_mut_ptr() as *mut _);
             let msg = String::from_utf8_lossy(&log);
-            return Err(anyhow::anyhow!("Program linking failed: {}", msg));
+            return Err(anyhow!("Program linking failed: {}", msg));
         }
         Ok(prog)
     }
