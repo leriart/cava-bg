@@ -1,5 +1,5 @@
 // src/wayland_renderer.rs
-// Soporte multi-monitor: una superficie por salida, contexto EGL compartido.
+// Shaders embebidos directamente, contexto EGL con fallback a OpenGL 3.3
 
 use anyhow::{anyhow, Context, Result};
 use gl::types::{GLsizei, GLsizeiptr};
@@ -40,8 +40,37 @@ use std::{mem, ptr};
 
 use crate::app_config::{array_from_config_color, Config};
 
-const VERTEX_SHADER_SRC: &str = include_str!("shaders/vertex_shader.glsl");
-const FRAGMENT_SHADER_SRC: &str = include_str!("shaders/fragment_shader.glsl");
+// Shaders embebidos (evita problemas de include_str!)
+const VERTEX_SHADER_SRC: &str = r#"
+#version 330 core
+in vec2 position;
+void main() {
+    gl_Position = vec4(position, 0.0, 1.0);
+}
+"#;
+
+const FRAGMENT_SHADER_SRC: &str = r#"
+#version 330 core
+layout(std430, binding = 0) buffer GradientColors {
+    int gradient_colors_size;
+    vec4 gradient_colors[];
+};
+uniform vec2 WindowSize;
+out vec4 fragColor;
+void main() {
+    if (gradient_colors_size == 1) {
+        fragColor = gradient_colors[0];
+    } else {
+        float findex = (gl_FragCoord.y * float(gradient_colors_size - 1)) / WindowSize.y;
+        int index = int(findex);
+        float step = findex - float(index);
+        if (index == gradient_colors_size - 1) {
+            index--;
+        }
+        fragColor = mix(gradient_colors[index], gradient_colors[index + 1], step);
+    }
+}
+"#;
 
 struct PerOutputState {
     surface: WlSurface,
@@ -118,17 +147,35 @@ impl WaylandRenderer {
             .context("Failed to choose EGL config")?
             .context("No EGL config found")?;
 
-        const CONTEXT_ATTRIBUTES: [i32; 7] = [
+        // Intentar OpenGL 4.6 Core, luego 3.3 Core, luego cualquier versión
+        let context_attributes_46: [i32; 7] = [
             egl::CONTEXT_MAJOR_VERSION, 4,
             egl::CONTEXT_MINOR_VERSION, 6,
             egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
             egl::NONE,
         ];
-        let egl_context = egl::API
-            .create_context(egl_display, egl_config, None, &CONTEXT_ATTRIBUTES)
-            .context("Failed to create EGL context")?;
-
-        // No creamos superficie principal todavía; las crearemos por cada salida.
+        let mut egl_context = egl::API
+            .create_context(egl_display, egl_config, None, &context_attributes_46)
+            .ok();
+        if egl_context.is_none() {
+            warn!("OpenGL 4.6 Core not supported, trying 3.3 Core");
+            let context_attributes_33: [i32; 7] = [
+                egl::CONTEXT_MAJOR_VERSION, 3,
+                egl::CONTEXT_MINOR_VERSION, 3,
+                egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
+                egl::NONE,
+            ];
+            egl_context = egl::API
+                .create_context(egl_display, egl_config, None, &context_attributes_33)
+                .ok();
+        }
+        if egl_context.is_none() {
+            warn!("OpenGL 3.3 Core not supported, trying default");
+            egl_context = egl::API
+                .create_context(egl_display, egl_config, None, &[egl::NONE])
+                .ok();
+        }
+        let egl_context = egl_context.context("Failed to create any EGL context")?;
 
         gl::load_with(|name| {
             let name_c = CString::new(name).unwrap();
@@ -322,7 +369,6 @@ impl AppState {
             return Ok(());
         }
 
-        // Solo crear si coincide con la preferencia o no hay preferencia
         if let Some(ref pref) = self.preferred_output_name {
             if &name != pref {
                 debug!("Skipping output {} (preferred is {})", name, pref);
@@ -388,7 +434,6 @@ impl AppState {
             return;
         }
 
-        // Hacer current el contexto EGL con la superficie de esta salida
         unsafe {
             egl::API
                 .make_current(
@@ -401,7 +446,6 @@ impl AppState {
             gl::Viewport(0, 0, state.width as GLsizei, state.height as GLsizei);
         }
 
-        // Leer datos de cava (usamos el mismo reader para todas las salidas)
         let mut cava_buffer: Vec<u8> = vec![0; self.bar_count as usize * 2];
         if let Err(e) = self.cava_reader.read_exact(&mut cava_buffer) {
             warn!("Failed to read from cava: {}", e);
@@ -474,7 +518,6 @@ impl AppState {
     pub fn draw(&mut self, _conn: &Connection, qh: &QueueHandle<Self>) {
         if !self.running.load(Ordering::SeqCst) {
             info!("Shutting down gracefully...");
-            // Limpiar recursos EGL
             unsafe {
                 for (_, state) in self.per_output.iter() {
                     egl::API.destroy_surface(self.egl_display, state.egl_surface).ok();
@@ -487,8 +530,7 @@ impl AppState {
         }
 
         if self.updating_colors.load(Ordering::SeqCst) {
-            // Reenviar frame a todas las superficies
-            for (name, state) in self.per_output.iter() {
+            for (_, state) in self.per_output.iter() {
                 state.surface.frame(qh, state.surface.clone());
             }
             return;
@@ -504,7 +546,6 @@ impl AppState {
             self.update_colors(&colors);
         }
 
-        // Dibujar en todas las salidas configuradas
         let names: Vec<String> = self.per_output.keys().cloned().collect();
         for name in names {
             self.draw_output(&name, qh);
@@ -575,7 +616,6 @@ impl LayerShellHandler for AppState {
         configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
-        // Buscar a qué salida pertenece esta capa
         let mut target_name = None;
         for (name, state) in self.per_output.iter_mut() {
             if &state.layer_surface == layer {
@@ -587,7 +627,6 @@ impl LayerShellHandler for AppState {
                 state.width = width;
                 state.height = height;
 
-                // Recrear superficie EGL
                 unsafe {
                     egl::API.make_current(self.egl_display, None, None, None).ok();
                     egl::API.destroy_surface(self.egl_display, state.egl_surface).ok();
@@ -623,7 +662,6 @@ impl LayerShellHandler for AppState {
         }
 
         if let Some(name) = target_name {
-            // Forzar un redibujado en esa salida
             self.draw_output(&name, qh);
         }
     }

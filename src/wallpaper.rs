@@ -14,15 +14,14 @@ const COLOR_SMOOTHING_FACTOR: f32 = 0.7;
 pub struct WallpaperAnalyzer;
 
 impl WallpaperAnalyzer {
-    /// Detecta el wallpaper actual. Prioridad: ambxst > mpvpaper > Waypaper > swaybg.
     pub fn find_wallpaper() -> Option<PathBuf> {
-        // 1. ambxst (lectura de ~/.cache/ambxst/wallpapers.json)
+        // 1. ambxst
         if let Some(path) = Self::from_ambxst() {
             log::info!("Detected wallpaper via ambxst: {:?}", path);
             return Some(path);
         }
 
-        // 2. mpvpaper (para GIFs/videos)
+        // 2. mpvpaper
         if let Some(path) = Self::from_mpvpaper() {
             log::info!("Detected wallpaper via mpvpaper: {:?}", path);
             return Some(path);
@@ -48,31 +47,37 @@ impl WallpaperAnalyzer {
         let cache_path = home.join(".cache/ambxst/wallpapers.json");
         log::debug!("Looking for ambxst config at: {:?}", cache_path);
         if !cache_path.exists() {
-            log::warn!("ambxst config file not found at {:?}", cache_path);
+            log::debug!("ambxst config file not found");
             return None;
         }
         let content = fs::read_to_string(cache_path).ok()?;
         log::debug!("ambxst config content: {}", content);
 
-        // Buscar "currentWall":"/ruta/a/imagen"
-        let tag = "\"currentWall\":\"";
+        // Buscar "currentWall" seguido de cualquier espacio y dos puntos, luego comillas
+        // Usamos una aproximación simple pero robusta.
+        let tag = "currentWall";
         if let Some(start) = content.find(tag) {
-            let start_idx = start + tag.len();
-            if let Some(end) = content[start_idx..].find('"') {
-                let path_str = &content[start_idx..start_idx + end];
-                let path = PathBuf::from(path_str);
-                log::debug!("Extracted path from ambxst: {:?}", path);
-                if path.exists() {
-                    return Some(path);
-                } else {
-                    log::warn!("Path from ambxst does not exist: {:?}", path);
+            // Buscar el primer ':' después del tag
+            let after_tag = &content[start + tag.len()..];
+            if let Some(colon_pos) = after_tag.find(':') {
+                let after_colon = &after_tag[colon_pos + 1..];
+                // Buscar la primera comilla doble
+                if let Some(quote_start) = after_colon.find('"') {
+                    let after_quote = &after_colon[quote_start + 1..];
+                    if let Some(quote_end) = after_quote.find('"') {
+                        let path_str = &after_quote[..quote_end];
+                        let path = PathBuf::from(path_str);
+                        log::debug!("Extracted path from ambxst: {:?}", path);
+                        if path.exists() {
+                            return Some(path);
+                        } else {
+                            log::debug!("Path from ambxst does not exist: {:?}", path);
+                        }
+                    }
                 }
-            } else {
-                log::warn!("Could not find closing quote for currentWall");
             }
-        } else {
-            log::warn!("Could not find 'currentWall' tag in ambxst config");
         }
+        log::warn!("Could not extract currentWall from ambxst config");
         None
     }
 
