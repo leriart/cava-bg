@@ -1,10 +1,10 @@
-// src/wayland_renderer.rs (CORREGIDO)
-// Basado fielmente en el main.rs de wallpaper-cava, con recreación de EGL en new_output
+// src/wayland_renderer.rs
+// Versión corregida: recrea EGL en new_output, anclaje consistente, logs de depuración
 
 use anyhow::{anyhow, Context, Result};
 use gl::types::{GLsizei, GLsizeiptr};
 use khronos_egl as egl;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::ProvidesRegistryState;
@@ -242,6 +242,7 @@ impl WaylandRenderer {
             gradient_colors: gradient_colors_rgba,
             running: self.running,
             updating_colors,
+            configured_output: None,
         };
 
         event_loop
@@ -306,6 +307,7 @@ struct AppState {
     gradient_colors: Vec<[f32; 4]>,
     running: Arc<AtomicBool>,
     updating_colors: Arc<AtomicBool>,
+    configured_output: Option<String>,
 }
 
 impl AppState {
@@ -429,8 +431,7 @@ impl AppState {
         if let Err(e) = egl::API.swap_buffers(self.egl_display, self.egl_surface) {
             error!("Failed to swap buffers: {}", e);
         } else {
-            // Log de éxito para depuración
-            log::debug!("Frame rendered successfully");
+            debug!("Frame rendered successfully");
         }
         self.surface.frame(qh, self.surface.clone());
     }
@@ -447,11 +448,19 @@ impl OutputHandler for AppState {
             None => return,
         };
         let name = info.name.clone().unwrap_or_else(|| "unknown".to_string());
-        info!("Output detected: {} ({:?})", name, info.logical_size);
+        debug!("Output detected: {} ({:?})", name, info.logical_size);
+
+        // Evitar reconfiguraciones innecesarias
+        if let Some(ref configured) = self.configured_output {
+            if configured == &name {
+                debug!("Output {} already configured, skipping", name);
+                return;
+            }
+        }
 
         let mut need_configuration = false;
         if let Some(ref pref) = self.preferred_output_name {
-            if Some(&name) == Some(pref) {
+            if &name == pref {
                 need_configuration = true;
                 info!("Preferred output matched: {}", name);
             }
@@ -518,6 +527,7 @@ impl OutputHandler for AppState {
                 }
                 gl::Viewport(0, 0, self.width as GLsizei, self.height as GLsizei);
             }
+            self.configured_output = Some(name.clone());
             info!("Configured for output {}: {}x{}", name, self.width, self.height);
         }
     }

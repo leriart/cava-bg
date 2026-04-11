@@ -36,7 +36,6 @@ fn main() -> Result<()> {
         path
     };
 
-    // Si el archivo no existe, generamos uno por defecto
     if !config_filename.exists() {
         info!("Config file not found, creating default config at {:?}", config_filename);
         if let Some(parent) = config_filename.parent() {
@@ -54,8 +53,9 @@ fn main() -> Result<()> {
 
     let auto_colors_enabled = config.general.auto_colors;
 
-    // Auto-colors inicial
+    // Forzar detección inicial del wallpaper desde el JSON de ambxst
     if auto_colors_enabled {
+        info!("Initial wallpaper detection...");
         match WallpaperAnalyzer::generate_gradient_colors(8) {
             Ok(generated) => {
                 info!("Auto-colors: replacing config colors with wallpaper palette");
