@@ -3,7 +3,6 @@ use gazo;
 use image::RgbaImage;
 use log;
 use once_cell::sync::Lazy;
-use rgb::ComponentBytes;
 use std::sync::Mutex;
 
 static PREVIOUS_COLORS: Lazy<Mutex<Vec<[f32; 4]>>> = Lazy::new(|| Mutex::new(Vec::new()));
@@ -14,21 +13,24 @@ pub struct WallpaperAnalyzer;
 impl WallpaperAnalyzer {
     /// Captura la pantalla actual y extrae una paleta de colores.
     pub fn capture_and_extract_colors(num_colors: usize) -> Result<Vec<[f32; 4]>> {
-        // Capturar todas las salidas (pantalla completa). false = no incluir cursor.
+        // Capturar todas las salidas sin cursor
         let capture = gazo::capture_all_outputs(false)
             .context("Failed to capture screen with gazo")?;
 
         log::debug!("Captured image: {}x{}", capture.width, capture.height);
 
-        // Convertir los datos de la captura a una imagen RgbaImage.
-        // Los datos están en formato RGBA8 y se pueden obtener como un slice de bytes.
+        // Convertir Vec<Rgba<u8>> a Vec<u8>
+        let pixel_bytes: Vec<u8> = capture.pixel_data
+            .iter()
+            .flat_map(|p| [p.r, p.g, p.b, p.a])
+            .collect();
+
         let img = RgbaImage::from_raw(
             capture.width as u32,
             capture.height as u32,
-            capture.pixel_data.as_bytes().to_vec(),
+            pixel_bytes,
         ).context("Failed to create image from capture data")?;
 
-        // Extraer colores
         let new_colors = Self::extract_and_generate_gradient(&img, num_colors);
 
         // Suavizar con colores anteriores
@@ -55,19 +57,39 @@ impl WallpaperAnalyzer {
         Ok(smoothed)
     }
 
+    pub fn default_colors(num_colors: usize) -> Vec<[f32; 4]> {
+        let catppuccin = [
+            [0.580, 0.886, 0.835, 1.0],
+            [0.537, 0.863, 0.922, 1.0],
+            [0.455, 0.780, 0.925, 1.0],
+            [0.537, 0.706, 0.980, 1.0],
+            [0.796, 0.651, 0.969, 1.0],
+            [0.961, 0.761, 0.906, 1.0],
+            [0.922, 0.627, 0.675, 1.0],
+            [0.953, 0.545, 0.659, 1.0],
+        ];
+        if num_colors <= catppuccin.len() {
+            catppuccin[0..num_colors].to_vec()
+        } else {
+            let mut colors = Vec::new();
+            for i in 0..num_colors {
+                colors.push(catppuccin[i % catppuccin.len()]);
+            }
+            colors
+        }
+    }
+
     fn extract_and_generate_gradient(img: &RgbaImage, num_colors: usize) -> Vec<[f32; 4]> {
         let (width, height) = img.dimensions();
         let mut samples = Vec::new();
 
-        // Muestrear la imagen para obtener píxeles relevantes
         let step = (width * height / 10000).max(1);
         for y in (0..height).step_by(step as usize) {
             for x in (0..width).step_by(step as usize) {
                 let pixel = img.get_pixel(x, y);
-                let channels = pixel.0;
-                let r = channels[0] as f32;
-                let g = channels[1] as f32;
-                let b = channels[2] as f32;
+                let r = pixel[0] as f32;
+                let g = pixel[1] as f32;
+                let b = pixel[2] as f32;
                 let brightness = (r + g + b) / 3.0;
                 let max_ch = r.max(g).max(b);
                 let min_ch = r.min(g).min(b);
@@ -86,13 +108,11 @@ impl WallpaperAnalyzer {
             }
         }
 
-        // Si no se encontraron muestras suficientes, usar un muestreo más denso
         if samples.is_empty() {
             for y in (0..height).step_by((step * 2) as usize) {
                 for x in (0..width).step_by((step * 2) as usize) {
                     let pixel = img.get_pixel(x, y);
-                    let channels = pixel.0;
-                    samples.push([channels[0] as f32, channels[1] as f32, channels[2] as f32]);
+                    samples.push([pixel[0] as f32, pixel[1] as f32, pixel[2] as f32]);
                 }
             }
         }
@@ -193,28 +213,6 @@ impl WallpaperAnalyzer {
             c[2] = c[2].clamp(0.0, 1.0);
         }
         palette
-    }
-
-    pub fn default_colors(num_colors: usize) -> Vec<[f32; 4]> {
-        let catppuccin = [
-            [0.580, 0.886, 0.835, 1.0],
-            [0.537, 0.863, 0.922, 1.0],
-            [0.455, 0.780, 0.925, 1.0],
-            [0.537, 0.706, 0.980, 1.0],
-            [0.796, 0.651, 0.969, 1.0],
-            [0.961, 0.761, 0.906, 1.0],
-            [0.922, 0.627, 0.675, 1.0],
-            [0.953, 0.545, 0.659, 1.0],
-        ];
-        if num_colors <= catppuccin.len() {
-            catppuccin[0..num_colors].to_vec()
-        } else {
-            let mut colors = Vec::new();
-            for i in 0..num_colors {
-                colors.push(catppuccin[i % catppuccin.len()]);
-            }
-            colors
-        }
     }
 
     fn color_distance(a: &[f32; 3], b: &[f32; 3]) -> f32 {

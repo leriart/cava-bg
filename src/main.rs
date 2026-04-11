@@ -41,7 +41,6 @@ fn main() -> Result<()> {
     let mut config: Config = toml::from_str(&config_str)
         .map_err(|e| anyhow::anyhow!("Error parsing config: {}", e))?;
 
-    // Auto-colors inicial
     let auto_colors_enabled = config.general.auto_colors;
     if auto_colors_enabled {
         match WallpaperAnalyzer::capture_and_extract_colors(8) {
@@ -118,17 +117,24 @@ fn main() -> Result<()> {
     // Canal para actualizaciones de color
     let (color_tx, color_rx) = mpsc::channel();
 
-    // Hilo que captura periódicamente la pantalla y envía nuevos colores
+    // Iniciar watcher de captura si auto_colors está activado
     if auto_colors_enabled {
         let tx = color_tx.clone();
         thread::spawn(move || {
-            let mut last_hash = 0;
+            let mut last_hash = 0u64;
             loop {
                 thread::sleep(Duration::from_secs(3));
                 match WallpaperAnalyzer::capture_and_extract_colors(8) {
                     Ok(colors) => {
+                        // Calcular hash de los colores de forma manual
                         let mut hasher = DefaultHasher::new();
-                        colors.hash(&mut hasher);
+                        for color in &colors {
+                            for &component in color {
+                                // Convertir f32 a bytes para hashear
+                                let bytes = component.to_le_bytes();
+                                bytes.hash(&mut hasher);
+                            }
+                        }
                         let new_hash = hasher.finish();
 
                         if new_hash != last_hash {
