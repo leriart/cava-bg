@@ -124,8 +124,8 @@ struct PerOutputState {
     height: u32,
     configured: bool,
     frame_count: u64,
-    // Se almacena el color de fondo por si se quiere usar en clear
     background_color: [f32; 4],
+    pending_frame: bool,   // Indica si ya hay un frame callback en espera
 }
 
 pub struct WaylandRenderer {
@@ -161,7 +161,7 @@ impl WaylandRenderer {
             EventLoop::try_new().context("Failed to create event loop")?;
         let loop_handle = event_loop.handle();
         WaylandSource::new(conn.clone(), event_queue)
-            .insert(loop_handle.clone())
+            .insert(loop_handle)
             .map_err(|e| anyhow::anyhow!("Wayland source error: {:?}", e))?;
 
         let compositor = CompositorState::bind(&globals, &qh).context("wl_compositor not available")?;
@@ -180,6 +180,7 @@ impl WaylandRenderer {
             .collect();
 
         let background_color = array_from_config_color(self.config.general.background_color.clone());
+        let frame_duration = Duration::from_secs_f64(1.0 / self.config.general.framerate as f64);
 
         let mut app_state = AppState {
             registry_state: RegistryState::new(&globals),
@@ -195,13 +196,14 @@ impl WaylandRenderer {
             running,
             current_colors: initial_colors,
             background_color,
+            frame_duration,
             conn: conn.clone(),
             qh: qh.clone(),
         };
 
-        // El bucle de eventos se ejecuta sin timeout; los frames son impulsados por surface.frame()
+        // El event loop se ejecuta con un timeout periódico, igual que el original
         event_loop
-            .run(None, &mut app_state, |_| {})
+            .run(Some(frame_duration), &mut app_state, |_| {})
             .context("Event loop failed")?;
 
         Ok(())
@@ -222,6 +224,7 @@ struct AppState {
     running: Arc<AtomicBool>,
     current_colors: Vec<[f32; 4]>,
     background_color: [f32; 4],
+    frame_duration: Duration,
     conn: Connection,
     qh: QueueHandle<Self>,
 }
@@ -403,7 +406,6 @@ impl AppState {
             multiview: None,
         });
 
-        // La superficie debe vivir 'static, pero aquí sabemos que el programa no terminará antes que ella.
         let static_surface = unsafe { std::mem::transmute::<_, wgpu::Surface<'static>>(wgpu_surface) };
 
         let state = PerOutputState {
@@ -423,6 +425,7 @@ impl AppState {
             configured: false,
             frame_count: 0,
             background_color: self.background_color,
+            pending_frame: false,
         };
 
         self.per_output.insert(name.clone(), state);
@@ -439,6 +442,11 @@ impl AppState {
             }
             None => return,
         };
+
+        // Si ya hay un frame pendiente, no encolamos otro (evita acumulación)
+        if state.pending_frame {
+            return;
+        }
 
         // Actualizar colores desde el watcher (si hay nuevos)
         if let Ok(guard) = self.color_rx.lock() {
@@ -530,8 +538,11 @@ impl AppState {
         frame.present();
 
         state.frame_count += 1;
-        // Solicitar el siguiente frame callback para mantener el ciclo
+        state.pending_frame = false; // El frame se completó
+
+        // Solicitar el siguiente frame callback para la próxima iteración
         state.surface.frame(&self.qh, state.surface.clone());
+        state.pending_frame = true;
     }
 
     pub fn draw(&mut self) {
@@ -592,8 +603,9 @@ impl CompositorHandler for AppState {
     fn scale_factor_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_factor: i32) {}
     fn transform_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_transform: wl_output::Transform) {}
     fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {
-        // Este callback se invoca cuando el compositor está listo para un nuevo frame
-        self.draw();
+        // Este callback se invoca cuando el compositor está listo para un nuevo frame.
+        // No hacemos nada aquí porque el renderizado se dispara desde el timer principal.
+        // Pero es necesario para que `surface.frame()` funcione.
     }
     fn surface_enter(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
     fn surface_leave(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
@@ -634,8 +646,9 @@ impl LayerShellHandler for AppState {
             }
         }
         if let Some(name) = target_name {
-            // Cuando la superficie está configurada, solicitamos el primer frame
-            if let Some(state) = self.per_output.get(&name) {
+            // Iniciar el ciclo de frames
+            if let Some(state) = self.per_output.get_mut(&name) {
+                state.pending_frame = true;
                 state.surface.frame(&self.qh, state.surface.clone());
             }
             self.draw_output(&name);
