@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use log::{debug, error, info, warn};
-use smithay_client_toolkit::reexports::calloop::EventLoop;
+use smithay_client_toolkit::reexports::calloop::timer::{Timer, TimerHandle};
+use smithay_client_toolkit::reexports::calloop::{EventLoop, LoopHandle};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::ProvidesRegistryState;
 use smithay_client_toolkit::shell::wlr_layer::{
@@ -35,6 +36,7 @@ use std::time::Duration;
 
 use crate::app_config::{array_from_config_color, Config};
 
+// --- Shader WGSL ---
 const SHADER_WGSL: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -159,7 +161,7 @@ impl WaylandRenderer {
             EventLoop::try_new().context("Failed to create event loop")?;
         let loop_handle = event_loop.handle();
         WaylandSource::new(conn.clone(), event_queue)
-            .insert(loop_handle)
+            .insert(loop_handle.clone())
             .map_err(|e| anyhow::anyhow!("Wayland source error: {:?}", e))?;
 
         let compositor = CompositorState::bind(&globals, &qh).context("wl_compositor not available")?;
@@ -179,6 +181,11 @@ impl WaylandRenderer {
 
         let frame_duration = Duration::from_secs_f64(1.0 / self.config.general.framerate as f64);
 
+        // Crear un timer que disparará periódicamente
+        let timer = Timer::new().context("Failed to create timer")?;
+        let timer_handle = timer.handle();
+        timer_handle.add_timeout(frame_duration, ());
+
         let mut app_state = AppState {
             registry_state: RegistryState::new(&globals),
             output_state: OutputState::new(&globals, &qh),
@@ -195,10 +202,22 @@ impl WaylandRenderer {
             frame_duration,
             conn: conn.clone(),
             qh,
+            loop_handle: loop_handle.clone(),
+            timer_handle,
         };
 
+        // Insertar el timer en el event loop
+        loop_handle
+            .insert_source(timer, |_, state: &mut AppState| {
+                // Este closure se llama cuando el timer expira
+                state.draw();
+                // Reprogramar el timer para el siguiente frame
+                state.timer_handle.add_timeout(state.frame_duration, ());
+            })
+            .map_err(|e| anyhow::anyhow!("Failed to insert timer source: {:?}", e))?;
+
         event_loop
-            .run(Some(frame_duration), &mut app_state, |_| {})
+            .run(None, &mut app_state, |_| {})
             .context("Event loop failed")?;
 
         Ok(())
@@ -221,6 +240,8 @@ struct AppState {
     frame_duration: Duration,
     conn: Connection,
     qh: QueueHandle<Self>,
+    loop_handle: LoopHandle<'static, Self>,
+    timer_handle: TimerHandle,
 }
 
 impl AppState {
@@ -525,6 +546,7 @@ impl AppState {
         frame.present();
 
         state.frame_count += 1;
+        // Solicitar frame callback (ayuda en algunos compositores)
         state.surface.frame(&self.qh, state.surface.clone());
     }
 
@@ -540,6 +562,8 @@ impl AppState {
         }
     }
 }
+
+// --- Implementaciones de handlers ---
 
 impl OutputHandler for AppState {
     fn output_state(&mut self) -> &mut OutputState {
@@ -581,51 +605,13 @@ impl ProvidesRegistryState for AppState {
 }
 
 impl CompositorHandler for AppState {
-    fn scale_factor_changed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _new_factor: i32,
-    ) {
-    }
-
-    fn transform_changed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _new_transform: wl_output::Transform,
-    ) {
-    }
-
-    fn frame(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _time: u32,
-    ) {
+    fn scale_factor_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_factor: i32) {}
+    fn transform_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_transform: wl_output::Transform) {}
+    fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {
         self.draw();
     }
-
-    fn surface_enter(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _output: &wl_output::WlOutput,
-    ) {
-    }
-
-    fn surface_leave(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _output: &wl_output::WlOutput,
-    ) {
-    }
+    fn surface_enter(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
+    fn surface_leave(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
 }
 
 impl LayerShellHandler for AppState {
