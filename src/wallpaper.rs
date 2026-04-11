@@ -5,7 +5,6 @@ use once_cell::sync::Lazy;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
-use walkdir::WalkDir;
 
 static PREVIOUS_COLORS: Lazy<Mutex<Vec<[f32; 4]>>> = Lazy::new(|| Mutex::new(Vec::new()));
 const COLOR_SMOOTHING_FACTOR: f32 = 0.8;

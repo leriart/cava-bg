@@ -4,7 +4,7 @@
 use anyhow::{Context, Result};
 use gl::types::{GLsizei, GLsizeiptr};
 use khronos_egl as egl;
-use log::{info, warn};
+use log::{error, info, warn};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::ProvidesRegistryState;
@@ -198,6 +198,8 @@ impl WaylandRenderer {
         let windows_size_location =
             unsafe { gl::GetUniformLocation(shader_program, window_size_string.as_ptr()) };
 
+        let updating_colors = Arc::new(AtomicBool::new(false));
+
         let mut app_state = AppState {
             registry_state: RegistryState::new(&globals),
             output_state: OutputState::new(&globals, &qh),
@@ -225,7 +227,7 @@ impl WaylandRenderer {
             gradient_colors_ssbo,
             gradient_colors: gradient_colors_rgba,
             running: self.running,
-            updating_colors: updating_colors.clone(),
+            updating_colors,
         };
 
         event_loop
@@ -239,7 +241,7 @@ impl WaylandRenderer {
 fn create_ssbo(colors: &[[f32; 4]]) -> (u32, Vec<[f32; 4]>) {
     let gradient_colors_len = colors.len() as i32;
     let mut buffer_data: Vec<u8> = (gradient_colors_len).to_le_bytes().to_vec();
-    buffer_data.extend([0, 0, 0, 0].repeat(3)); // alineación vec4
+    buffer_data.extend([0, 0, 0, 0].repeat(3));
     for color in colors {
         for &value in color {
             buffer_data.extend_from_slice(&value.to_le_bytes());
@@ -289,10 +291,7 @@ struct AppState {
     gradient_colors_ssbo: u32,
     gradient_colors: Vec<[f32; 4]>,
     running: Arc<AtomicBool>,
-    gradient_colors_ssbo: u32,
-    gradient_colors: Vec<[f32; 4]>,
-    running: Arc<AtomicBool>,
-    updating_colors: Arc<AtomicBool>,   // <-- NUEVO
+    updating_colors: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -302,24 +301,20 @@ impl AppState {
         self.gradient_colors = new_colors.to_vec();
         let gradient_colors_len = self.gradient_colors.len() as i32;
         let mut buffer_data = gradient_colors_len.to_le_bytes().to_vec();
-        buffer_data.extend([0, 0, 0, 0].repeat(3)); // padding para vec4
+        buffer_data.extend([0, 0, 0, 0].repeat(3));
         for color in &self.gradient_colors {
             for &value in color {
                 buffer_data.extend_from_slice(&value.to_le_bytes());
             }
         }
-
         unsafe {
             gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, self.gradient_colors_ssbo);
-            
-            // Usar BufferSubData en lugar de BufferData para no reasignar memoria
             gl::BufferSubData(
                 gl::SHADER_STORAGE_BUFFER,
-                0, // offset
+                0,
                 buffer_data.len() as GLsizeiptr,
                 buffer_data.as_ptr() as *const _,
             );
-            
             gl::BindBufferBase(gl::SHADER_STORAGE_BUFFER, 0, self.gradient_colors_ssbo);
             gl::MemoryBarrier(gl::SHADER_STORAGE_BARRIER_BIT);
             gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
@@ -330,7 +325,6 @@ impl AppState {
     }
 
     pub fn draw(&mut self, _conn: &Connection, qh: &QueueHandle<Self>) {
-        // Salida controlada
         if !self.running.load(Ordering::SeqCst) {
             info!("Shutting down gracefully...");
             unsafe {
@@ -342,13 +336,11 @@ impl AppState {
             std::process::exit(0);
         }
 
-        // Si se están actualizando los colores, saltamos este frame
         if self.updating_colors.load(Ordering::SeqCst) {
             self.surface.frame(qh, self.surface.clone());
             return;
         }
 
-        // Revisar nuevos colores (try_recv no bloquea)
         if let Ok(new_colors) = self.color_rx.try_recv() {
             self.update_colors(&new_colors);
         }
@@ -421,7 +413,6 @@ impl AppState {
     }
 }
 
-// --- Handlers (idénticos al original, excepto new_output sin tocar EGL) ---
 impl OutputHandler for AppState {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
@@ -456,7 +447,6 @@ impl OutputHandler for AppState {
             self.layer_surface.set_anchor(Anchor::TOP);
             self.surface.commit();
             old_surface.destroy();
-            // No recreamos EGL aquí – se hará en configure
         }
     }
     fn update_output(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
@@ -529,7 +519,6 @@ impl LayerShellHandler for AppState {
     }
 }
 
-// --- Funciones auxiliares para shaders ---
 fn compile_shader(shader_type: u32, src: &str) -> Result<u32> {
     unsafe {
         let shader = gl::CreateShader(shader_type);
