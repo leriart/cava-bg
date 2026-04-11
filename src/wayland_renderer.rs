@@ -431,12 +431,27 @@ impl AppState {
             }
         }
 
-        // Leer audio
+        // Leer audio o generar prueba
         let mut bar_heights = vec![0.0; self.bar_count];
+        let mut test_mode = false;
         if let Ok(new_heights) = self.audio_rx.try_recv() {
             bar_heights = new_heights;
             if let Some(first) = bar_heights.first() {
                 debug!("Altura barra 0: {}", first);
+            }
+        } else {
+            // Modo de prueba: onda sinusoidal
+            test_mode = true;
+            let phase = (std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs_f32())
+                * 5.0;
+            for i in 0..self.bar_count {
+                bar_heights[i] = ((phase + i as f32 * 0.3).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
+            }
+            if state.frame_count % 60 == 0 {
+                warn!("Usando datos de prueba para visualización");
             }
         }
 
@@ -476,8 +491,8 @@ impl AppState {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        // Clear color rojo semitransparente para depuración
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 0.0, b: 0.0, a: 0.5 }),
+                        // Fondo transparente
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -494,6 +509,9 @@ impl AppState {
         state.wgpu_queue.submit(std::iter::once(encoder.finish()));
         frame.present();
         state.surface.frame(&self.qh, state.surface.clone());
+        // Incrementar contador de frames (lo añadimos a PerOutputState)
+        // Nota: necesitamos un contador por output, pero para simplificar usamos un contador global en AppState.
+        // Mejor añadimos un campo frame_count a PerOutputState.
     }
 
     pub fn draw(&mut self) {
@@ -579,6 +597,7 @@ impl LayerShellHandler for AppState {
                 state.wgpu_config.height = height;
                 state.wgpu_surface.configure(&state.wgpu_device, &state.wgpu_config);
                 // Actualizar uniforme de tamaño
+                // Obtener colores actuales del buffer o de initial_colors (simplificamos)
                 let current_colors = self.initial_colors.clone();
                 let new_uniforms = Uniforms::new(&current_colors, width as f32, height as f32);
                 state.wgpu_queue.write_buffer(&state.uniform_buffer, 0, bytemuck::cast_slice(&[new_uniforms]));
