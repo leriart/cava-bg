@@ -8,8 +8,6 @@ mod wayland_renderer;
 use anyhow::{Context, Result};
 use log::{error, info};
 use std::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 fn main() -> Result<()> {
     let cli = cli::Cli::parse();
@@ -82,20 +80,18 @@ fn main() -> Result<()> {
     let cava_reader = cava_manager.take_reader()
         .context("Failed to get cava reader")?;
 
-    // Configurar manejador de Ctrl+C
-    let running = Arc::new(AtomicBool::new(true));
-    let r = running.clone();
-    ctrlc::set_handler(move || {
-        info!("Ctrl+C received, shutting down...");
-        r.store(false, Ordering::SeqCst);
-    })?;
+    // Configurar manejador de Ctrl+C: terminar el proceso inmediatamente (como en wallpaper-cava original)
+    ctrlc::set_handler(|| {
+        // No imprimir mensaje para imitar el comportamiento original
+        std::process::exit(0);
+    }).expect("Failed to set Ctrl+C handler");
 
     // Intentar iniciar el renderer Wayland (funcional)
-    let wayland_renderer = wayland_renderer::WaylandRenderer::new(config.clone(), cava_reader, running.clone());
-        if let Err(e) = wayland_renderer.run() {
+    let wayland_renderer = wayland_renderer::WaylandRenderer::new(config.clone(), cava_reader);
+    if let Err(e) = wayland_renderer.run() {
         error!("Wayland renderer failed: {}", e);
         info!("Falling back to terminal mode...");
-        let mut terminal_renderer = renderer::Renderer::new(config, cava_manager, running.clone())?;
+        let mut terminal_renderer = renderer::Renderer::new(config, cava_manager)?;
         terminal_renderer.run()?;
     }
 
