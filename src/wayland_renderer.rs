@@ -27,11 +27,9 @@ use wayland_egl::WlEglSurface;
 
 use std::collections::HashMap;
 use std::ffi::{c_void, CString};
-use std::io::{BufReader, Read};
-use std::process::ChildStdout;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 use std::{mem, ptr};
 
@@ -222,9 +220,7 @@ impl WaylandRenderer {
             color_locs[i] = unsafe { gl::GetUniformLocation(shader_program, cname.as_ptr()) };
         }
 
-        let updating_colors = Arc::new(AtomicBool::new(false));
-
-        let mut app_state = AppState {
+        let app_state = AppState {
             registry_state: RegistryState::new(&globals),
             output_state: OutputState::new(&globals, &qh),
             layer_shell,
@@ -243,17 +239,14 @@ impl WaylandRenderer {
             bar_gap: self.config.bars.gap,
             background_color: [0.0, 0.0, 0.0, 0.0],
             preferred_output_name: self.config.general.preferred_output,
-            cava_reader: self.cava_reader,
-            color_rx: self.color_rx,
+            audio_rx: self.audio_rx,
             gradient_colors: gradient_colors_rgba,
             running: self.running,
-            updating_colors,
-            test_phase: 0.0,
             frame_count: 0,
         };
 
         event_loop
-            .run(frame_duration, &mut app_state, |_| {})
+            .run(frame_duration, app_state, |_| {})
             .context("Event loop failed")?;
 
         Ok(())
@@ -279,23 +272,13 @@ struct AppState {
     bar_gap: f32,
     background_color: [f32; 4],
     preferred_output_name: Option<String>,
-    cava_reader: BufReader<ChildStdout>,
-    color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
+    audio_rx: Receiver<Vec<f32>>,
     gradient_colors: Vec<[f32; 4]>,
     running: Arc<AtomicBool>,
-    updating_colors: Arc<AtomicBool>,
-    test_phase: f32,
     frame_count: u64,
 }
 
 impl AppState {
-    fn update_colors(&mut self, new_colors: &[[f32; 4]]) {
-        self.updating_colors.store(true, Ordering::SeqCst);
-        self.gradient_colors = new_colors.to_vec();
-        self.updating_colors.store(false, Ordering::SeqCst);
-        info!("Colores degradado actualizados: {} colores", self.gradient_colors.len());
-    }
-
     fn ensure_output(&mut self, qh: &QueueHandle<Self>, output: &wl_output::WlOutput) -> Result<()> {
         let info = self.output_state.info(output).context("Failed to get output info")?;
         let name = info.name.clone().unwrap_or_else(|| "unknown".to_string());
@@ -375,31 +358,12 @@ impl AppState {
         }
 
         let mut unpacked_data: Vec<f32> = vec![0.0; self.bar_count as usize];
-        let mut cava_buffer: Vec<u8> = vec![0; self.bar_count as usize * 2];
-        let used_test = match self.cava_reader.read_exact(&mut cava_buffer) {
-            Ok(_) => {
-                for (i, chunk) in cava_buffer.chunks_exact(2).enumerate() {
-                    let num = u16::from_le_bytes([chunk[0], chunk[1]]);
-                    unpacked_data[i] = (num as f32) / 65530.0;
-                }
-                false
-            }
-            Err(e) => {
-                self.test_phase += 0.1;
-                for i in 0..unpacked_data.len() {
-                    unpacked_data[i] = ((self.test_phase + i as f32 * 0.5).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
-                }
-                if self.frame_count % 60 == 0 {
-                    warn!("Usando datos de prueba (cava read error: {}), alturas: {:?}", e, &unpacked_data[0..3]);
-                }
-                true
-            }
-        };
-
-        if self.frame_count % 120 == 0 {
-            debug!("Barra 0 altura: {:.3} (test={})", unpacked_data[0], used_test);
+        // Recibir nuevos datos de audio (no bloqueante)
+        if let Ok(new_data) = self.audio_rx.try_recv() {
+            unpacked_data = new_data;
         }
 
+        // Generar geometría de barras
         let bar_width: f32 =
             2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
         let bar_gap_width: f32 = bar_width * self.bar_gap;
@@ -471,23 +435,6 @@ impl AppState {
             std::process::exit(0);
         }
 
-        if self.updating_colors.load(Ordering::SeqCst) {
-            for (_, state) in self.per_output.iter() {
-                state.surface.frame(qh, state.surface.clone());
-            }
-            return;
-        }
-
-        let new_colors = {
-            match self.color_rx.lock() {
-                Ok(guard) => guard.try_recv().ok(),
-                Err(_) => None,
-            }
-        };
-        if let Some(colors) = new_colors {
-            self.update_colors(&colors);
-        }
-
         let names: Vec<String> = self.per_output.keys().cloned().collect();
         for name in names {
             self.draw_output(&name, qh);
@@ -496,9 +443,7 @@ impl AppState {
 }
 
 impl OutputHandler for AppState {
-    fn output_state(&mut self) -> &mut OutputState {
-        &mut self.output_state
-    }
+    fn output_state(&mut self) -> &mut OutputState { &mut self.output_state }
     fn new_output(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
         if let Err(e) = self.ensure_output(qh, &output) {
             error!("Fallo al crear output: {}", e);
@@ -526,48 +471,18 @@ delegate_registry!(AppState);
 delegate_layer!(AppState);
 
 impl ProvidesRegistryState for AppState {
-    fn registry(&mut self) -> &mut RegistryState {
-        &mut self.registry_state
-    }
+    fn registry(&mut self) -> &mut RegistryState { &mut self.registry_state }
     registry_handlers![];
 }
 
 impl CompositorHandler for AppState {
-    fn scale_factor_changed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _new_factor: i32,
-    ) {
-    }
-    fn transform_changed(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _new_transform: wl_output::Transform,
-    ) {
-    }
+    fn scale_factor_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_factor: i32) {}
+    fn transform_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_transform: wl_output::Transform) {}
     fn frame(&mut self, conn: &Connection, qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {
         self.draw(conn, qh);
     }
-    fn surface_enter(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _output: &wl_output::WlOutput,
-    ) {
-    }
-    fn surface_leave(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
-        _surface: &wl_surface::WlSurface,
-        _output: &wl_output::WlOutput,
-    ) {
-    }
+    fn surface_enter(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
+    fn surface_leave(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
 }
 
 impl LayerShellHandler for AppState {

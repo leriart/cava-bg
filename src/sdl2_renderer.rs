@@ -1,8 +1,5 @@
-// src/sdl2_renderer.rs
-// Renderizador de respaldo usando SDL2 (compatible con cualquier hardware).
-
 use anyhow::{Context, Result};
-use log::{info, warn};
+use log::info;
 use sdl2::event::Event;
 use sdl2::pixels::Color;
 use sdl2::rect::Rect;
@@ -29,22 +26,23 @@ impl Sdl2Renderer {
         running: Arc<AtomicBool>,
     ) -> Result<Self> {
         let sdl_context = sdl2::init().map_err(|e| anyhow::anyhow!("SDL2 init failed: {}", e))?;
-        let video_subsystem = sdl_context.video().context("Failed to get SDL2 video subsystem")?;
-        
+        let video_subsystem = sdl_context.video().map_err(|e| anyhow::anyhow!("SDL2 video: {}", e))?;
+
         // Obtener el tamaño de la pantalla (usar monitor primario)
         let display_mode = video_subsystem.current_display_mode(0)
-            .context("Failed to get current display mode")?;
+            .map_err(|e| anyhow::anyhow!("Failed to get display mode: {}", e))?;
         let width = display_mode.w as u32;
         let height = display_mode.h as u32;
-        
+
         let window = video_subsystem
             .window("cava-bg", width, height)
             .position_centered()
             .borderless()
             .build()
-            .context("Failed to create SDL2 window")?;
-        
-        let canvas = window.into_canvas().build().context("Failed to create SDL2 canvas")?;
+            .map_err(|e| anyhow::anyhow!("Failed to create window: {}", e))?;
+
+        let canvas = window.into_canvas().build()
+            .map_err(|e| anyhow::anyhow!("Failed to create canvas: {}", e))?;
 
         info!("SDL2 renderer initialized: {}x{}", width, height);
         Ok(Self {
@@ -61,7 +59,8 @@ impl Sdl2Renderer {
         let bar_width = 2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
         let bar_gap_width = bar_width * self.bar_gap;
         let window_height = self.canvas.window().size().1;
-        let sdl_context = self.canvas.window().subsystem();
+        let mut event_pump = self.canvas.window().subsystem().event_pump()
+            .map_err(|e| anyhow::anyhow!("Failed to get event pump: {}", e))?;
 
         // Configurar ventana como transparente
         self.canvas.set_draw_color(Color::RGBA(0, 0, 0, 0));
@@ -72,8 +71,6 @@ impl Sdl2Renderer {
 
         while self.running.load(Ordering::SeqCst) {
             // Procesar eventos (por si el usuario cierra la ventana)
-            let mut event_pump = sdl_context.event_pump()
-                .map_err(|e| anyhow::anyhow!("Failed to get event pump: {}", e))?;
             for event in event_pump.poll_iter() {
                 if let Event::Quit { .. } = event {
                     return Ok(());
