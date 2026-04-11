@@ -125,7 +125,7 @@ impl WaylandRenderer {
     }
 
     pub fn run(self) -> Result<()> {
-        info!("Iniciando renderizador Wayland con OpenGL 3.0 legacy");
+        info::("Iniciando renderizador Wayland con OpenGL 3.0 legacy");
         std::env::set_var("EGL_PLATFORM", "wayland");
 
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
