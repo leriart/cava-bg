@@ -1,5 +1,5 @@
 // src/wayland_renderer.rs
-// Shaders embebidos directamente, contexto EGL con fallback a OpenGL 3.3
+// Shaders embebidos, EGL robusto para Intel/NVIDIA, multi‑monitor con contexto compartido.
 
 use anyhow::{anyhow, Context, Result};
 use gl::types::{GLsizei, GLsizeiptr};
@@ -40,7 +40,7 @@ use std::{mem, ptr};
 
 use crate::app_config::{array_from_config_color, Config};
 
-// Shaders embebidos (evita problemas de include_str!)
+// Shaders embebidos (versión 330 core para máxima compatibilidad)
 const VERTEX_SHADER_SRC: &str = r#"
 #version 330 core
 in vec2 position;
@@ -51,7 +51,7 @@ void main() {
 
 const FRAGMENT_SHADER_SRC: &str = r#"
 #version 330 core
-layout(std430, binding = 0) buffer GradientColors {
+layout(std430) buffer GradientColors {
     int gradient_colors_size;
     vec4 gradient_colors[];
 };
@@ -135,48 +135,40 @@ impl WaylandRenderer {
             .initialize(egl_display)
             .context("Failed to initialize EGL")?;
 
-        const ATTRIBUTES: [i32; 9] = [
+        // Intentar con canal alfa, luego sin él
+        const ATTRIBUTES_WITH_ALPHA: [i32; 9] = [
             egl::RED_SIZE, 8,
             egl::GREEN_SIZE, 8,
             egl::BLUE_SIZE, 8,
             egl::ALPHA_SIZE, 8,
             egl::NONE,
         ];
+        const ATTRIBUTES_NO_ALPHA: [i32; 7] = [
+            egl::RED_SIZE, 8,
+            egl::GREEN_SIZE, 8,
+            egl::BLUE_SIZE, 8,
+            egl::NONE,
+        ];
+
         let egl_config = egl::API
-            .choose_first_config(egl_display, &ATTRIBUTES)
+            .choose_first_config(egl_display, &ATTRIBUTES_WITH_ALPHA)
+            .or_else(|_| egl::API.choose_first_config(egl_display, &ATTRIBUTES_NO_ALPHA))
             .context("Failed to choose EGL config")?
             .context("No EGL config found")?;
 
-        // Intentar OpenGL 4.6 Core, luego 3.3 Core, luego cualquier versión
-        let context_attributes_46: [i32; 7] = [
-            egl::CONTEXT_MAJOR_VERSION, 4,
-            egl::CONTEXT_MINOR_VERSION, 6,
+        // Contexto OpenGL 3.3 para máxima compatibilidad
+        const CONTEXT_ATTRIBUTES: [i32; 7] = [
+            egl::CONTEXT_MAJOR_VERSION, 3,
+            egl::CONTEXT_MINOR_VERSION, 3,
             egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
             egl::NONE,
         ];
-        let mut egl_context = egl::API
-            .create_context(egl_display, egl_config, None, &context_attributes_46)
-            .ok();
-        if egl_context.is_none() {
-            warn!("OpenGL 4.6 Core not supported, trying 3.3 Core");
-            let context_attributes_33: [i32; 7] = [
-                egl::CONTEXT_MAJOR_VERSION, 3,
-                egl::CONTEXT_MINOR_VERSION, 3,
-                egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
-                egl::NONE,
-            ];
-            egl_context = egl::API
-                .create_context(egl_display, egl_config, None, &context_attributes_33)
-                .ok();
-        }
-        if egl_context.is_none() {
-            warn!("OpenGL 3.3 Core not supported, trying default");
-            egl_context = egl::API
-                .create_context(egl_display, egl_config, None, &[egl::NONE])
-                .ok();
-        }
-        let egl_context = egl_context.context("Failed to create any EGL context")?;
 
+        let egl_context = egl::API
+            .create_context(egl_display, egl_config, None, &CONTEXT_ATTRIBUTES)
+            .context("Failed to create EGL context")?;
+
+        // Carga de funciones OpenGL
         gl::load_with(|name| {
             let name_c = CString::new(name).unwrap();
             match egl::API.get_proc_address(name_c.to_str().unwrap()) {
