@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use log::{debug, error, info, warn};
-use smithay_client_toolkit::reexports::calloop::timer::Timer;
+use smithay_client_toolkit::reexports::calloop::timer::{Timer, TimerHandle, TimeoutAction};
 use smithay_client_toolkit::reexports::calloop::{EventLoop, LoopHandle};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::ProvidesRegistryState;
@@ -199,14 +199,14 @@ impl WaylandRenderer {
             loop_handle: loop_handle.clone(),
         };
 
-        // Crear e insertar el temporizador.
+        // Crear e insertar el temporizador periódico
         let timer = Timer::from_duration(frame_duration);
         loop_handle
-            .insert_source(timer, move |_event: std::time::Instant, metadata: &mut TimerHandle, state: &mut AppState| {
-                // Este callback se ejecuta cada vez que el temporizador expira.
+            .insert_source(timer, move |_event, _metadata: &mut TimerHandle<()>, state: &mut AppState| {
+                // Renderizar un frame
                 state.draw();
-                // Reprogramar el temporizador para el siguiente frame.
-                metadata.add_timeout(state.frame_duration);
+                // Devolver TimeoutAction para reprogramar el temporizador
+                TimeoutAction::ToDuration(state.frame_duration)
             })
             .map_err(|e| anyhow::anyhow!("Failed to insert timer source: {:?}", e))?;
 
