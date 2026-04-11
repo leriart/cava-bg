@@ -213,7 +213,7 @@ struct AppState {
     bar_gap: f32,
     preferred_output_name: Option<String>,
     audio_rx: Receiver<Vec<f32>>,
-    color_rx: Arc<Mutex<Receiver<Vec<f32; 4]>>>>,
+    color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
     running: Arc<AtomicBool>,
     initial_colors: Vec<[f32; 4]>,
     frame_duration: Duration,
@@ -255,7 +255,6 @@ impl AppState {
         let wl_display = self.conn.display().id().as_ptr();
         let wl_surface_ptr = surface.id().as_ptr();
         
-        // Convertir los punteros a NonNull<c_void>
         let display_ptr = NonNull::new(wl_display as *mut std::ffi::c_void).unwrap();
         let surface_ptr = NonNull::new(wl_surface_ptr as *mut std::ffi::c_void).unwrap();
         
@@ -302,13 +301,11 @@ impl AppState {
             .unwrap_or(wgpu::CompositeAlphaMode::Auto);
         wgpu_surface.configure(&device, &surface_config);
 
-        // Shader
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(SHADER_WGSL.into()),
         });
 
-        // Índices
         let mut indices = Vec::with_capacity(self.bar_count * 6);
         for i in 0..self.bar_count {
             let base = (i * 4) as u16;
@@ -392,7 +389,6 @@ impl AppState {
             multiview: None,
         });
 
-        // Convertir la superficie a 'static
         let static_surface = unsafe { std::mem::transmute(wgpu_surface) };
 
         let state = PerOutputState {
@@ -439,7 +435,6 @@ impl AppState {
         let mut bar_heights = vec![0.0; self.bar_count];
         if let Ok(new_heights) = self.audio_rx.try_recv() {
             bar_heights = new_heights;
-            // Log para depurar: primera barra
             if let Some(first) = bar_heights.first() {
                 debug!("Altura barra 0: {}", first);
             }
@@ -481,7 +476,7 @@ impl AppState {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        // Cambiar temporalmente a color rojo para ver si la superficie se muestra
+                        // Clear color rojo semitransparente para depuración
                         load: wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 0.0, b: 0.0, a: 0.5 }),
                         store: wgpu::StoreOp::Store,
                     },
