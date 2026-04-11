@@ -122,15 +122,16 @@ void main() {
 struct ShaderConfig {
     vertex_src: &'static str,
     fragment_src: &'static str,
-    context_attribs: [i32; 9],
+    context_attribs: &'static [i32],
     use_uniforms: bool,
 }
 
 const SHADER_FALLBACKS: [ShaderConfig; 3] = [
+    // Intento 1: OpenGL 3.3 Core con SSBO
     ShaderConfig {
         vertex_src: VERTEX_SHADER_330,
         fragment_src: FRAGMENT_SHADER_330_SSBO,
-        context_attribs: [
+        context_attribs: &[
             egl::CONTEXT_MAJOR_VERSION, 3,
             egl::CONTEXT_MINOR_VERSION, 3,
             egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
@@ -138,10 +139,11 @@ const SHADER_FALLBACKS: [ShaderConfig; 3] = [
         ],
         use_uniforms: false,
     },
+    // Intento 2: OpenGL 3.3 Core con Uniforms
     ShaderConfig {
         vertex_src: VERTEX_SHADER_330,
         fragment_src: FRAGMENT_SHADER_330_UNIFORM,
-        context_attribs: [
+        context_attribs: &[
             egl::CONTEXT_MAJOR_VERSION, 3,
             egl::CONTEXT_MINOR_VERSION, 3,
             egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
@@ -149,16 +151,13 @@ const SHADER_FALLBACKS: [ShaderConfig; 3] = [
         ],
         use_uniforms: true,
     },
+    // Intento 3: OpenGL ES 2.0
     ShaderConfig {
         vertex_src: VERTEX_SHADER_100,
         fragment_src: FRAGMENT_SHADER_100,
-        context_attribs: [
+        context_attribs: &[
             egl::CONTEXT_MAJOR_VERSION, 2,
             egl::CONTEXT_MINOR_VERSION, 0,
-            egl::NONE,
-            egl::NONE,
-            egl::NONE,
-            egl::NONE,
             egl::NONE,
         ],
         use_uniforms: true,
@@ -255,7 +254,7 @@ impl WaylandRenderer {
         for (i, config) in SHADER_FALLBACKS.iter().enumerate() {
             info!("Trying shader fallback #{}...", i + 1);
             let context = egl::API
-                .create_context(egl_display, egl_config, None, &config.context_attribs)
+                .create_context(egl_display, egl_config, None, config.context_attribs)
                 .context("Failed to create EGL context")?;
             let dummy_surface = unsafe {
                 egl::API
