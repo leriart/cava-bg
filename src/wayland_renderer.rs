@@ -3,10 +3,10 @@
 // Adaptado para usar la nueva configuración y el flujo modular.
 
 use anyhow::{Context, Result};
-use gl::types::{GLsizei, GLsizeiptr, GLuint};
+use gl::types::{GLsizei, GLsizeiptr};
 use khronos_egl as egl;
-use smithay_client_toolkit::reexports::calloop::EventLoop;
 use log::{error, info, warn};
+use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::ProvidesRegistryState;
 use smithay_client_toolkit::shell::wlr_layer::{
@@ -54,7 +54,14 @@ impl WaylandRenderer {
     pub fn run(self) -> Result<()> {
         info!("Starting Wayland renderer (wallpaper-cava core)");
 
-        // Construir el array de colores desde la configuración (ya procesada con auto-colors)
+        // Extraer valores de configuración
+        let framerate = self.config.general.framerate;
+        let bar_count = self.config.bars.amount;
+        let bar_gap = self.config.bars.gap;
+        let background_color = self.config.general.background_color.to_array();
+        let preferred_output = self.config.general.preferred_output.clone();
+
+        // Construir array de colores (ya generados por el módulo wallpaper)
         let gradient_colors: Vec<[f32; 4]> = self
             .config
             .colors
@@ -62,13 +69,6 @@ impl WaylandRenderer {
             .values()
             .map(|c| c.to_array())
             .collect();
-
-        // Estructuras equivalentes a las del original
-        let framerate = self.config.general.framerate;
-        let bar_count = self.config.bars.amount;
-        let bar_gap = self.config.bars.gap;
-        let background_color = self.config.general.background_color.to_array();
-        let preferred_output = self.config.general.preferred_output.clone();
 
         // Conexión Wayland
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
@@ -96,7 +96,7 @@ impl WaylandRenderer {
         layer_surface.set_anchor(Anchor::TOP);
         surface.commit();
 
-        // EGL
+        // Inicialización EGL
         egl::API.bind_api(egl::OPENGL_API).context("Failed to bind EGL API")?;
         let egl_display = unsafe {
             egl::API
@@ -157,7 +157,7 @@ impl WaylandRenderer {
 
         gl::load_with(|name| egl::API.get_proc_address(name).unwrap() as *const std::ffi::c_void);
 
-        // Compilar shaders (con verificación de errores mejorada)
+        // Compilar shaders (con verificación de errores)
         let vert_shader = compile_shader(gl::VERTEX_SHADER, VERTEX_SHADER_SRC)?;
         let frag_shader = compile_shader(gl::FRAGMENT_SHADER, FRAGMENT_SHADER_SRC)?;
         let shader_program = link_program(vert_shader, frag_shader)?;
@@ -166,7 +166,7 @@ impl WaylandRenderer {
             gl::DeleteShader(frag_shader);
         }
 
-        // Preparar SSBO con colores (misma lógica que el original)
+        // SSBO con colores (misma lógica que el original)
         let gradient_colors_len = gradient_colors.len() as i32;
         let mut buffer_data: Vec<u8> = gradient_colors_len.to_le_bytes().to_vec();
         buffer_data.extend([0, 0, 0, 0].repeat(3)); // alineación vec4
@@ -268,7 +268,7 @@ impl WaylandRenderer {
     }
 }
 
-// --- Estructura AppState (copia exacta del original, con tipos adaptados) ---
+// --- Estructura AppState (copia exacta del original) ---
 struct AppState {
     registry_state: RegistryState,
     output_state: OutputState,
@@ -296,11 +296,9 @@ struct AppState {
 
 impl AppState {
     fn draw(&mut self, _conn: &Connection, qh: &QueueHandle<Self>) {
-        // Leer datos de cava (exactamente como el original)
         let mut cava_buffer: Vec<u8> = vec![0; self.bar_count as usize * 2];
         if let Err(e) = self.cava_reader.read_exact(&mut cava_buffer) {
             warn!("Failed to read from cava: {}", e);
-            // Aún así pedimos el siguiente frame para no detener el bucle
             self.surface.frame(qh, self.surface.clone());
             return;
         }
@@ -311,11 +309,13 @@ impl AppState {
             unpacked_data[unpacked_data_index] = (num as f32) / 65530.0;
         }
 
-        // Calcular geometría de barras (fórmula original)
         let bar_width: f32 =
             2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
         let bar_gap_width: f32 = bar_width * self.bar_gap;
         let mut vertices: Vec<f32> = vec![0.0; self.bar_count as usize * 8];
+        let fwidth: f32 = self.width as f32;
+        let fheight: f32 = self.height as f32;
+
         for i in 0..self.bar_count as usize {
             let bar_height: f32 = 2.0 * unpacked_data[i] - 1.0;
             vertices[i * 8] = bar_gap_width * i as f32 + bar_width * i as f32 - 1.0;
@@ -347,16 +347,11 @@ impl AppState {
             );
             gl::Clear(gl::COLOR_BUFFER_BIT);
             gl::UseProgram(self.shader_program);
-            gl::Uniform2f(
-                self.window_size_location,
-                self.width as f32,
-                self.height as f32,
-            );
-            // NOTA: En el original se usaba `(self.bar_count as usize * 3 * size_of::<u16>())`
-            // lo cual es incorrecto pero funcionaba. Aquí usamos el número correcto de índices.
+            gl::Uniform2f(self.window_size_location, fwidth, fheight);
+            // Se mantiene la fórmula original (que aunque extraña, funciona)
             gl::DrawElements(
                 gl::TRIANGLES,
-                (self.bar_count as usize * 6) as GLsizei,
+                (self.bar_count as usize * 3 * mem::size_of::<u16>()) as GLsizei,
                 gl::UNSIGNED_SHORT,
                 ptr::null(),
             );
@@ -370,7 +365,7 @@ impl AppState {
     }
 }
 
-// --- Implementaciones de handlers (idénticas al original) ---
+// --- Handlers de Wayland (idénticos al original) ---
 impl OutputHandler for AppState {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
@@ -393,7 +388,8 @@ impl OutputHandler for AppState {
                     need_configuration = true;
                 }
             }
-        } else {
+        }
+        if self.preferred_output_name.is_none() {
             need_configuration = true;
         }
 
@@ -415,7 +411,7 @@ impl OutputHandler for AppState {
             self.surface.commit();
             old_surface.destroy();
 
-            // Recrear superficie EGL (esto no estaba en el original pero es necesario para que funcione)
+            // Recrear superficie EGL (necesario para evitar fallos)
             egl::API
                 .make_current(self.egl_display, None, None, None)
                 .unwrap();
@@ -531,6 +527,7 @@ impl LayerShellHandler for AppState {
         if width == self.width && height == self.height {
             return;
         }
+
         self.width = width;
         self.height = height;
 
@@ -580,8 +577,8 @@ impl ProvidesRegistryState for AppState {
     registry_handlers![];
 }
 
-// --- Funciones auxiliares para shaders (con logs mejorados) ---
-fn compile_shader(shader_type: GLuint, src: &str) -> Result<GLuint> {
+// --- Funciones auxiliares para shaders ---
+fn compile_shader(shader_type: u32, src: &str) -> Result<u32> {
     unsafe {
         let shader = gl::CreateShader(shader_type);
         let c_str = CString::new(src).unwrap();
@@ -601,7 +598,7 @@ fn compile_shader(shader_type: GLuint, src: &str) -> Result<GLuint> {
     }
 }
 
-fn link_program(vs: GLuint, fs: GLuint) -> Result<GLuint> {
+fn link_program(vs: u32, fs: u32) -> Result<u32> {
     unsafe {
         let program = gl::CreateProgram();
         gl::AttachShader(program, vs);
