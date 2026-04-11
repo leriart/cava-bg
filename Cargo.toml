@@ -2,10 +2,6 @@
 name = "cava-bg"
 version = "0.2.0"
 edition = "2021"
-authors = ["leriart"]
-description = "A native Wayland implementation of wallpaper-cava with auto-colors"
-license = "MIT"
-repository = "https://github.com/leriart/cava-bg"
 
 [dependencies]
 anyhow = "1.0"

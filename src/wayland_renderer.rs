@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use gl::types::{GLsizei, GLsizeiptr, GLint};
 use khronos_egl as egl;
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::ProvidesRegistryState;

@@ -1,3 +1,4 @@
+// src/sdl2_renderer.rs
 use anyhow::Result;
 use log::info;
 use sdl2::event::Event;

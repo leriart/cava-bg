@@ -1,3 +1,4 @@
+// src/main.rs
 mod app_config;
 mod wallpaper;
 mod wayland_renderer;
@@ -33,8 +34,6 @@ fn main() -> Result<()> {
 
     // Determinar la ruta del archivo de configuración
     let config_path = get_config_path(&args);
-
-    // Crear directorio de configuración si no existe
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -101,7 +100,7 @@ fn main() -> Result<()> {
             bar_count,
             config.bars.gap,
             colors,
-            audio_rx,
+            audio_rx,  // No usamos clone() aquí
             running,
         )?;
         sdl2_renderer.run()?;
@@ -110,8 +109,8 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-/// Obtiene la ruta del archivo de configuración según los argumentos de línea de comandos
-/// o la ruta por defecto en ~/.config/cava-bg/config.toml
+// El resto de funciones auxiliares (get_config_path, load_or_create_config, kill_existing_instance)
+// son iguales al código anterior y no se muestran aquí por brevedad. Puedes copiarlas de tu versión anterior.
 fn get_config_path(args: &[String]) -> PathBuf {
     if args.len() == 3 && args[1] == "--config" {
         return PathBuf::from(&args[2]);
@@ -120,7 +119,6 @@ fn get_config_path(args: &[String]) -> PathBuf {
     home.join(".config").join(CONFIG_DIR).join(CONFIG_FILE)
 }
 
-/// Carga la configuración desde un archivo TOML; si no existe, crea una por defecto.
 fn load_or_create_config(path: &PathBuf) -> Result<Config> {
     if path.exists() {
         let content = fs::read_to_string(path)
@@ -137,7 +135,6 @@ fn load_or_create_config(path: &PathBuf) -> Result<Config> {
     }
 }
 
-/// Mata cualquier proceso existente de cava-bg usando `pkill`.
 fn kill_existing_instance() -> Result<()> {
     let output = Command::new("pgrep")
         .arg("-f")
