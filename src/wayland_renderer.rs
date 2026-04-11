@@ -167,6 +167,8 @@ const SHADER_FALLBACKS: [ShaderConfig; 3] = [
             egl::CONTEXT_MAJOR_VERSION, 2,
             egl::CONTEXT_MINOR_VERSION, 0,
             egl::NONE,
+            egl::NONE, // padding para igualar tamaño del array
+            egl::NONE,
         ],
         use_uniforms: true,
     },
@@ -270,13 +272,10 @@ impl WaylandRenderer {
                 .create_context(egl_display, egl_config, None, &config.context_attribs)
                 .context("Failed to create EGL context")?;
             
-            // Hacer el contexto current temporalmente (necesitamos una superficie dummy)
-            // Usamos una superficie de 1x1 para la compilación
-            let dummy_surface = unsafe {
-                egl::API
-                    .create_pbuffer_surface(egl_display, egl_config, &[egl::WIDTH, 1, egl::HEIGHT, 1, egl::NONE])
-                    .context("Failed to create pbuffer surface")?
-            };
+            // Crear una superficie Pbuffer de 1x1 para hacer current
+            let dummy_surface = egl::API
+                .create_pbuffer_surface(egl_display, egl_config, &[egl::WIDTH, 1, egl::HEIGHT, 1, egl::NONE])
+                .context("Failed to create pbuffer surface")?;
             egl::API
                 .make_current(egl_display, Some(dummy_surface), Some(dummy_surface), Some(context))
                 .context("Failed to make context current")?;
@@ -306,7 +305,7 @@ impl WaylandRenderer {
                     use_uniforms = config.use_uniforms;
                     egl_context = Some(context);
                     info!("Successfully compiled shaders with fallback #{}", i + 1);
-                    unsafe { egl::API.destroy_surface(egl_display, dummy_surface).ok(); }
+                    egl::API.destroy_surface(egl_display, dummy_surface).ok();
                     break;
                 } else {
                     last_error = format!("Program linking failed for fallback #{}", i + 1);
@@ -316,10 +315,8 @@ impl WaylandRenderer {
             }
             
             // Limpiar antes de probar el siguiente
-            unsafe {
-                egl::API.destroy_surface(egl_display, dummy_surface).ok();
-                egl::API.destroy_context(egl_display, context).ok();
-            }
+            egl::API.destroy_surface(egl_display, dummy_surface).ok();
+            egl::API.destroy_context(egl_display, context).ok();
         }
 
         let egl_context = egl_context.ok_or_else(|| anyhow!("All shader fallbacks failed. Last error: {}", last_error))?;
@@ -646,7 +643,6 @@ impl AppState {
 
             if self.use_uniforms {
                 // Enviar colores como uniform array
-                let loc = self.gradient_colors_uniform_loc;
                 let colors_count = self.gradient_colors.len() as i32;
                 let colors_loc = CString::new("gradient_colors_size").unwrap();
                 let size_loc = gl::GetUniformLocation(self.shader_program, colors_loc.as_ptr());
