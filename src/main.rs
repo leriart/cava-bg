@@ -1,3 +1,7 @@
+// main.rs
+// Punto de entrada principal con soporte para comando "kill", configuración en ~/.config/cava-bg/
+// y detección automática de disponibilidad de OpenGL (fallback a SDL2 si es necesario)
+
 mod app_config;
 mod wallpaper;
 mod wayland_renderer;
@@ -12,8 +16,6 @@ use std::path::PathBuf;
 use std::process::{Command, exit};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
 
 use app_config::Config;
 use cava_backend::CavaBackend;
@@ -74,11 +76,6 @@ fn main() -> Result<()> {
         }
     }
 
-    // Iniciar el backend de Cava (proporciona un canal de datos de audio)
-    let bar_count = config.bars.amount as usize;
-    let (_cava_backend, audio_rx) = CavaBackend::new(bar_count, &config)
-        .context("Failed to start cava backend")?;
-
     // Bandera para controlar la ejecución (Ctrl+C)
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
@@ -88,30 +85,34 @@ fn main() -> Result<()> {
 
     // Intentar primero el renderizador nativo Wayland (usa OpenGL)
     info!("Attempting to start Wayland renderer (OpenGL)...");
-    let wayland_result = WaylandRenderer::new(config.clone(), audio_rx.clone(), running.clone()).run();
+
+    // Crear backend de Cava y mover el receptor al renderizador Wayland
+    let (cava_backend, audio_rx) = CavaBackend::new(config.bars.amount as usize, &config)?;
+    let wayland_result = WaylandRenderer::new(config.clone(), audio_rx, running.clone()).run();
 
     if let Err(e) = wayland_result {
         warn!("Wayland/OpenGL renderer failed: {}. Falling back to SDL2 renderer.", e);
         info!("Starting SDL2 fallback renderer...");
 
-        // Obtener dimensiones de pantalla (por defecto 1920x1080)
-        // En un caso real se podrían obtener del monitor actual, pero para simplificar usamos 1920x1080.
-        let (width, height) = (1920, 1080);
+        // Crear un NUEVO backend de Cava para el renderizador SDL2
+        let (_cava_backend2, audio_rx2) = CavaBackend::new(config.bars.amount as usize, &config)?;
+
         let colors: Vec<[f32; 4]> = config.colors.values()
             .map(|c| app_config::array_from_config_color(c.clone()))
             .collect();
 
         let mut sdl2_renderer = Sdl2Renderer::new(
-            width, height,
-            bar_count,
+            config.bars.amount as usize,
             config.bars.gap,
             colors,
-            audio_rx,
+            audio_rx2,
             running,
         )?;
         sdl2_renderer.run()?;
     }
 
+    // Mantener el backend vivo hasta el final
+    drop(cava_backend);
     Ok(())
 }
 

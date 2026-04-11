@@ -1,5 +1,8 @@
+// src/sdl2_renderer.rs
+// Renderizador de respaldo usando SDL2 (compatible con cualquier hardware).
+
 use anyhow::{Context, Result};
-use log::{info, error};
+use log::{info, warn};
 use sdl2::event::Event;
 use sdl2::pixels::Color;
 use sdl2::rect::Rect;
@@ -19,22 +22,28 @@ pub struct Sdl2Renderer {
 
 impl Sdl2Renderer {
     pub fn new(
-        width: u32,
-        height: u32,
         bar_count: usize,
         bar_gap: f32,
         colors: Vec<[f32; 4]>,
         audio_rx: Receiver<Vec<f32>>,
         running: Arc<AtomicBool>,
     ) -> Result<Self> {
-        let sdl_context = sdl2::init().context("Failed to initialize SDL2")?;
+        let sdl_context = sdl2::init().map_err(|e| anyhow::anyhow!("SDL2 init failed: {}", e))?;
         let video_subsystem = sdl_context.video().context("Failed to get SDL2 video subsystem")?;
+        
+        // Obtener el tamaño de la pantalla (usar monitor primario)
+        let display_mode = video_subsystem.current_display_mode(0)
+            .context("Failed to get current display mode")?;
+        let width = display_mode.w as u32;
+        let height = display_mode.h as u32;
+        
         let window = video_subsystem
             .window("cava-bg", width, height)
             .position_centered()
             .borderless()
             .build()
             .context("Failed to create SDL2 window")?;
+        
         let canvas = window.into_canvas().build().context("Failed to create SDL2 canvas")?;
 
         info!("SDL2 renderer initialized: {}x{}", width, height);
@@ -52,8 +61,9 @@ impl Sdl2Renderer {
         let bar_width = 2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
         let bar_gap_width = bar_width * self.bar_gap;
         let window_height = self.canvas.window().size().1;
+        let sdl_context = self.canvas.window().subsystem();
 
-        // Configurar ventana como siempre encima (opcional) y transparente
+        // Configurar ventana como transparente
         self.canvas.set_draw_color(Color::RGBA(0, 0, 0, 0));
         self.canvas.clear();
         self.canvas.present();
@@ -62,7 +72,9 @@ impl Sdl2Renderer {
 
         while self.running.load(Ordering::SeqCst) {
             // Procesar eventos (por si el usuario cierra la ventana)
-            for event in self.canvas.window().subsystem().event_pump()?.poll_iter() {
+            let mut event_pump = sdl_context.event_pump()
+                .map_err(|e| anyhow::anyhow!("Failed to get event pump: {}", e))?;
+            for event in event_pump.poll_iter() {
                 if let Event::Quit { .. } = event {
                     return Ok(());
                 }
@@ -75,7 +87,7 @@ impl Sdl2Renderer {
 
                 for (i, &height) in audio_data.iter().enumerate().take(self.bar_count) {
                     let x = (bar_gap_width * i as f32 + bar_width * i as f32) as i32;
-                    let w = (bar_width) as u32;
+                    let w = (bar_width * window_height as f32) as u32;
                     let h = (height * window_height as f32) as u32;
                     let color = self.colors[i % self.colors.len()];
                     self.canvas.set_draw_color(Color::RGBA(

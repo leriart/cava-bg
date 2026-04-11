@@ -1,3 +1,4 @@
+// src/cava_backend.rs
 use anyhow::{Context, Result};
 use log::info;
 use std::io::{BufReader, Read, Write};
@@ -12,11 +13,8 @@ pub struct CavaBackend {
 }
 
 impl CavaBackend {
-    /// Inicia cava y devuelve un receptor que recibe vectores de f32 (alturas de barras).
     pub fn new(bar_count: usize, config: &Config) -> Result<(Self, Receiver<Vec<f32>>)> {
         let (tx, rx): (Sender<Vec<f32>>, Receiver<Vec<f32>>) = channel();
-
-        // Generar la configuración TOML para cava (raw output)
         let cava_config_str = config.to_cava_raw_config();
 
         let mut cmd = Command::new("cava")
@@ -27,7 +25,6 @@ impl CavaBackend {
             .spawn()
             .context("Failed to spawn cava process")?;
 
-        // Escribir la configuración en stdin de cava
         if let Some(mut stdin) = cmd.stdin.take() {
             stdin.write_all(cava_config_str.as_bytes())
                 .context("Failed to write config to cava stdin")?;
@@ -40,7 +37,6 @@ impl CavaBackend {
 
         info!("cava backend started, reading {} bars", bar_count);
 
-        // Hilo separado para leer continuamente los datos de cava
         thread::spawn(move || {
             let mut buffer = vec![0u8; bar_count * 2];
             loop {
@@ -52,7 +48,7 @@ impl CavaBackend {
                             unpacked[i] = (num as f32) / 65530.0;
                         }
                         if tx.send(unpacked).is_err() {
-                            break; // El receptor ha sido cerrado
+                            break;
                         }
                     }
                     Err(_) => break,

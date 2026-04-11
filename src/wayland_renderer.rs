@@ -80,24 +80,13 @@ struct PerOutputState {
 
 pub struct WaylandRenderer {
     config: Config,
-    cava_reader: BufReader<ChildStdout>,
-    color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
+    audio_rx: Receiver<Vec<f32>>,
     running: Arc<AtomicBool>,
 }
 
 impl WaylandRenderer {
-    pub fn new(
-        config: Config,
-        cava_reader: BufReader<ChildStdout>,
-        color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
-        running: Arc<AtomicBool>,
-    ) -> Self {
-        Self {
-            config,
-            cava_reader,
-            color_rx,
-            running,
-        }
+    pub fn new(config: Config, audio_rx: Receiver<Vec<f32>>, running: Arc<AtomicBool>) -> Self {
+        Self { config, audio_rx, running }
     }
 
     pub fn run(self) -> Result<()> {
