@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use log::{debug, error, info, warn};
-use smithay_client_toolkit::reexports::calloop::timer::{Timer, TimeoutAction};
-use smithay_client_toolkit::reexports::calloop::{EventLoop, LoopHandle};
+use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::ProvidesRegistryState;
 use smithay_client_toolkit::shell::wlr_layer::{
@@ -32,7 +31,7 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crate::app_config::{array_from_config_color, Config};
 
@@ -125,6 +124,8 @@ struct PerOutputState {
     height: u32,
     configured: bool,
     frame_count: u64,
+    // Se almacena el color de fondo por si se quiere usar en clear
+    background_color: [f32; 4],
 }
 
 pub struct WaylandRenderer {
@@ -178,7 +179,7 @@ impl WaylandRenderer {
             .map(|c| array_from_config_color(c.clone()))
             .collect();
 
-        let frame_duration = Duration::from_secs_f64(1.0 / self.config.general.framerate as f64);
+        let background_color = array_from_config_color(self.config.general.background_color.clone());
 
         let mut app_state = AppState {
             registry_state: RegistryState::new(&globals),
@@ -193,24 +194,12 @@ impl WaylandRenderer {
             color_rx,
             running,
             current_colors: initial_colors,
-            frame_duration,
+            background_color,
             conn: conn.clone(),
-            qh,
-            loop_handle: loop_handle.clone(),
+            qh: qh.clone(),
         };
 
-        // Crear e insertar el temporizador periódico
-        let timer = Timer::from_duration(frame_duration);
-        loop_handle
-            .insert_source(
-                timer,
-                move |_event: Instant, _: &mut (), state: &mut AppState| {
-                    state.draw();
-                    TimeoutAction::ToDuration(state.frame_duration)
-                },
-            )
-            .map_err(|e| anyhow::anyhow!("Failed to insert timer source: {:?}", e))?;
-
+        // El bucle de eventos se ejecuta sin timeout; los frames son impulsados por surface.frame()
         event_loop
             .run(None, &mut app_state, |_| {})
             .context("Event loop failed")?;
@@ -232,10 +221,9 @@ struct AppState {
     color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
     running: Arc<AtomicBool>,
     current_colors: Vec<[f32; 4]>,
-    frame_duration: Duration,
+    background_color: [f32; 4],
     conn: Connection,
     qh: QueueHandle<Self>,
-    loop_handle: LoopHandle<'static, Self>,
 }
 
 impl AppState {
@@ -434,6 +422,7 @@ impl AppState {
             height,
             configured: false,
             frame_count: 0,
+            background_color: self.background_color,
         };
 
         self.per_output.insert(name.clone(), state);
@@ -511,6 +500,7 @@ impl AppState {
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = state.wgpu_device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         {
+            let bg = state.background_color;
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -518,10 +508,10 @@ impl AppState {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.0,
-                            g: 0.0,
-                            b: 0.0,
-                            a: 0.0,
+                            r: bg[0] as f64,
+                            g: bg[1] as f64,
+                            b: bg[2] as f64,
+                            a: bg[3] as f64,
                         }),
                         store: wgpu::StoreOp::Store,
                     },
@@ -540,7 +530,7 @@ impl AppState {
         frame.present();
 
         state.frame_count += 1;
-        // Solicitar frame callback (ayuda en algunos compositores)
+        // Solicitar el siguiente frame callback para mantener el ciclo
         state.surface.frame(&self.qh, state.surface.clone());
     }
 
@@ -602,6 +592,7 @@ impl CompositorHandler for AppState {
     fn scale_factor_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_factor: i32) {}
     fn transform_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_transform: wl_output::Transform) {}
     fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {
+        // Este callback se invoca cuando el compositor está listo para un nuevo frame
         self.draw();
     }
     fn surface_enter(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
@@ -643,6 +634,10 @@ impl LayerShellHandler for AppState {
             }
         }
         if let Some(name) = target_name {
+            // Cuando la superficie está configurada, solicitamos el primer frame
+            if let Some(state) = self.per_output.get(&name) {
+                state.surface.frame(&self.qh, state.surface.clone());
+            }
             self.draw_output(&name);
         }
     }
