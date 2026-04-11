@@ -6,6 +6,7 @@ use anyhow::{Context, Result};
 use gl::types::{GLsizei, GLsizeiptr, GLuint};
 use khronos_egl as egl;
 use smithay_client_toolkit::reexports::calloop::EventLoop;
+use log::{error, info, warn};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::ProvidesRegistryState;
 use smithay_client_toolkit::shell::wlr_layer::{
