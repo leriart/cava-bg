@@ -1,3 +1,4 @@
+// src/wallpaper.rs
 use anyhow::{Context, Result};
 use color_thief::{get_palette, ColorFormat};
 use image::{self, GenericImageView};
@@ -13,34 +14,38 @@ const COLOR_SMOOTHING_FACTOR: f32 = 0.7;
 pub struct WallpaperAnalyzer;
 
 impl WallpaperAnalyzer {
-    /// Detecta el wallpaper actual consultando diferentes backends y gestores.
-    /// Prioridad: Waypaper (imágenes estáticas) -> swaybg -> mpvpaper (GIFs/videos).
+    /// Detecta el wallpaper actual consultando diferentes fuentes.
+    /// Prioridad: ambxst (JSON) -> Waypaper -> swaybg -> mpvpaper -> swww
     pub fn find_wallpaper() -> Option<PathBuf> {
-        // 1. Waypaper (lee su archivo de configuración)
+        // 1. ambxst (el más fiable si está activo)
+        if let Some(path) = Self::from_ambxst() {
+            log::debug!("Detected wallpaper via ambxst: {:?}", path);
+            return Some(path);
+        }
+
+        // 2. Waypaper
         if let Some(path) = Self::from_waypaper() {
             log::debug!("Detected wallpaper via Waypaper: {:?}", path);
             return Some(path);
         }
 
-        // 2. swaybg (usado comúnmente por Waypaper y otros)
+        // 3. swaybg
         if let Some(path) = Self::from_swaybg() {
             log::debug!("Detected wallpaper via swaybg: {:?}", path);
             return Some(path);
         }
 
-        // 3. mpvpaper (para videos y GIFs animados)
+        // 4. mpvpaper (GIFs/videos)
         if let Some(path) = Self::from_mpvpaper() {
             log::debug!("Detected wallpaper via mpvpaper: {:?}", path);
             return Some(path);
         }
 
-        // 4. swww (otro backend popular)
+        // 5. swww / awww
         if let Some(path) = Self::from_swww_like("swww") {
             log::debug!("Detected wallpaper via swww: {:?}", path);
             return Some(path);
         }
-
-        // 5. awww (sucesor de swww)
         if let Some(path) = Self::from_swww_like("awww") {
             log::debug!("Detected wallpaper via awww: {:?}", path);
             return Some(path);
@@ -49,7 +54,34 @@ impl WallpaperAnalyzer {
         None
     }
 
-    // --- Métodos de detección individuales ---
+    /// Obtiene el wallpaper actual desde el archivo JSON de ambxst.
+    fn from_ambxst() -> Option<PathBuf> {
+        let cache_file = dirs::cache_dir()?.join("ambxst").join("wallpapers.json");
+        if !cache_file.exists() {
+            return None;
+        }
+        let content = std::fs::read_to_string(cache_file).ok()?;
+        // Extraer el valor del campo "currentWall"
+        for line in content.lines() {
+            if let Some(start) = line.find("\"currentWall\"") {
+                if let Some(colon) = line[start..].find(':') {
+                    let rest = &line[start + colon + 1..];
+                    // El valor viene entre comillas
+                    if let Some(first_quote) = rest.find('"') {
+                        let after_first = &rest[first_quote + 1..];
+                        if let Some(second_quote) = after_first.find('"') {
+                            let path_str = &after_first[..second_quote];
+                            let path = PathBuf::from(path_str);
+                            if path.exists() {
+                                return Some(path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
 
     fn from_mpvpaper() -> Option<PathBuf> {
         let output = Command::new("pgrep").arg("-a").arg("mpvpaper").output().ok()?;
@@ -100,47 +132,34 @@ impl WallpaperAnalyzer {
         None
     }
 
-    /// Detecta wallpapers gestionados por Waypaper utilizando su archivo de configuración.
     fn from_waypaper() -> Option<PathBuf> {
         let config_path = dirs::config_dir()?.join("waypaper").join("config.ini");
-        log::debug!("Looking for Waypaper config at: {:?}", config_path);
         if !config_path.exists() {
-            log::debug!("Waypaper config file not found");
             return None;
         }
 
         let content = std::fs::read_to_string(config_path).ok()?;
-        log::debug!("Waypaper config content:\n{}", content);
-
         for line in content.lines() {
             let line = line.trim();
-            // Ignorar comentarios y líneas vacías
             if line.starts_with('#') || line.is_empty() {
                 continue;
             }
-            // Buscar línea que comience con "wallpaper"
             if line.starts_with("wallpaper") {
-                // Dividir por el primer '='
                 if let Some((_key, value)) = line.split_once('=') {
-                    // Limpiar el valor: eliminar comillas (simples o dobles) y espacios
                     let path_str = value.trim().trim_matches(|c| c == '"' || c == '\'').to_string();
-                    log::debug!("Found wallpaper path in config: '{}'", path_str);
                     let path = PathBuf::from(&path_str);
                     if path.exists() {
                         return Some(path);
-                    } else {
-                        log::debug!("Wallpaper path from config does not exist: {:?}", path);
                     }
                 }
             }
         }
 
-        // Si no se encontró ruta, intentar con el backend configurado
+        // Si no hay ruta, intentar con el backend configurado
         for line in content.lines() {
             if line.trim().starts_with("backend") {
                 if let Some((_, backend)) = line.split_once('=') {
                     let backend = backend.trim().trim_matches(|c| c == '"' || c == '\'');
-                    log::debug!("Waypaper backend configured: {}", backend);
                     match backend {
                         "swaybg" => return Self::from_swaybg(),
                         "swww" => return Self::from_swww_like("swww"),
