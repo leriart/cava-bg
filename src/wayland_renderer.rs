@@ -1,4 +1,4 @@
-// src/wayland_renderer.rs
+// src/wayland_renderer.rs (CORREGIDO PARA IGUALAR COMPORTAMIENTO ORIGINAL)
 
 use anyhow::{Context, Result};
 use gl::types::*;
@@ -32,10 +32,6 @@ use crate::config::Config;
 
 const VERTEX_SHADER_SRC: &str = include_str!("shaders/vertex_shader.glsl");
 const FRAGMENT_SHADER_SRC: &str = include_str!("shaders/fragment_shader.glsl");
-
-// Factor de suavizado para las barras (0.0 = muy lento/suave, 1.0 = instantáneo)
-// 0.35 produce un movimiento agradable y sin parpadeo
-const SMOOTHING_FACTOR: f32 = 0.35;
 
 pub struct WaylandRenderer {
     config: Config,
@@ -71,7 +67,7 @@ impl WaylandRenderer {
             colors: gradient_colors,
         };
 
-        // Wayland
+        // Wayland connection
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland display")?;
         let (globals, event_queue) = registry_queue_init(&conn).context("Failed to init registry")?;
         let qh = event_queue.handle();
@@ -92,10 +88,12 @@ impl WaylandRenderer {
             Some("cava-bg"),
             None,
         );
-        layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+        // ANCLAJE SOLO SUPERIOR (como el original)
+        layer_surface.set_anchor(Anchor::TOP);
+        layer_surface.set_size(256, 256);
         surface.commit();
 
-        // EGL
+        // EGL initialization
         egl::API.bind_api(egl::OPENGL_API).context("Failed to bind EGL API")?;
         let egl_display = unsafe {
             egl::API.get_display(conn.display().id().as_ptr() as *mut std::ffi::c_void)
@@ -143,11 +141,11 @@ impl WaylandRenderer {
         let shader_program = link_program(vert_shader, frag_shader)?;
         unsafe { gl::DeleteShader(vert_shader); gl::DeleteShader(frag_shader); }
 
-        // SSBO con colores
+        // SSBO with colors
         let mut ssbo = 0;
         let colors_len = legacy_config.colors.len() as i32;
         let mut buffer_data = colors_len.to_le_bytes().to_vec();
-        buffer_data.extend([0,0,0,0].repeat(3));
+        buffer_data.extend([0,0,0,0].repeat(3)); // alignment padding
         for color in &legacy_config.colors {
             for &comp in color {
                 buffer_data.extend_from_slice(&comp.to_le_bytes());
@@ -158,7 +156,7 @@ impl WaylandRenderer {
         let mut indices = vec![0u16; bar_count * 6];
         for i in 0..bar_count {
             let base = (i * 4) as u16;
-            indices[i*6] = base;
+            indices[i*6]   = base;
             indices[i*6+1] = base+1;
             indices[i*6+2] = base+2;
             indices[i*6+3] = base+1;
@@ -225,7 +223,7 @@ impl WaylandRenderer {
     }
 }
 
-// ---- Estructura legacy ----
+// --- Estructuras Legacy (idénticas a las del original) ---
 struct LegacyConfig {
     general: LegacyGeneral,
     bars: LegacyBars,
@@ -243,7 +241,7 @@ struct LegacyBars {
     gap: f32,
 }
 
-// ---- Funciones auxiliares de shader ----
+// --- Funciones de shader (mejoradas) ---
 fn compile_shader(shader_type: GLenum, src: &str) -> Result<GLuint> {
     unsafe {
         let shader = gl::CreateShader(shader_type);
@@ -261,6 +259,7 @@ fn compile_shader(shader_type: GLenum, src: &str) -> Result<GLuint> {
         Ok(shader)
     }
 }
+
 fn link_program(vs: GLuint, fs: GLuint) -> Result<GLuint> {
     unsafe {
         let prog = gl::CreateProgram();
@@ -279,7 +278,7 @@ fn link_program(vs: GLuint, fs: GLuint) -> Result<GLuint> {
     }
 }
 
-// ---- AppState y sus implementaciones ----
+// --- AppState ---
 struct AppState {
     registry_state: RegistryState,
     output_state: OutputState,
@@ -303,7 +302,7 @@ struct AppState {
     background_color: [f32; 4],
     preferred_output: Option<String>,
     compositor: CompositorState,
-    previous_audio: Vec<f32>,
+    previous_audio: Vec<f32>, // no se usa, mantenido por compatibilidad
 }
 
 impl AppState {
@@ -322,16 +321,6 @@ impl AppState {
             unpacked[i] = val;
         }
 
-        // Filtro exponencial para suavizar el movimiento (más lento y agradable)
-        if self.previous_audio.is_empty() {
-            self.previous_audio = unpacked.clone();
-        } else {
-            for i in 0..bar_count {
-                unpacked[i] = SMOOTHING_FACTOR * unpacked[i] + (1.0 - SMOOTHING_FACTOR) * self.previous_audio[i];
-            }
-            self.previous_audio = unpacked.clone();
-        }
-
         let bar_width = 2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
         let gap_width = bar_width * self.bar_gap;
         let mut vertices = vec![0.0f32; bar_count * 8];
@@ -339,7 +328,7 @@ impl AppState {
             let height = 2.0 * unpacked[i] - 1.0;
             let x1 = gap_width * i as f32 + bar_width * i as f32 - 1.0;
             let x2 = x1 + bar_width;
-            vertices[i*8] = x1;
+            vertices[i*8]   = x1;
             vertices[i*8+1] = height;
             vertices[i*8+2] = x2;
             vertices[i*8+3] = height;
@@ -369,31 +358,64 @@ impl AppState {
 
 impl OutputHandler for AppState {
     fn output_state(&mut self) -> &mut OutputState { &mut self.output_state }
+
     fn new_output(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
-        let info = self.output_state.info(&output).unwrap();
-        let mut need = false;
+        let info = match self.output_state.info(&output) {
+            Some(i) => i,
+            None => return,
+        };
+        let mut need_reconfig = false;
         if let Some(pref) = &self.preferred_output {
             if let Some(name) = &info.name {
-                if name == pref { need = true; }
+                if name == pref {
+                    need_reconfig = true;
+                }
             }
+        } else {
+            need_reconfig = true;
         }
-        if self.preferred_output.is_none() { need = true; }
-        if need {
+
+        if need_reconfig {
+            // Recrear superficie wayland
             let old_surface = self.surface.clone();
             self.surface = self.compositor.create_surface(qh);
-            self.layer_surface = self.layer_shell.create_layer_surface(qh, self.surface.clone(), Layer::Bottom, Some("cava-bg"), Some(&output));
-            let logical = info.logical_size.unwrap();
+            self.layer_surface = self.layer_shell.create_layer_surface(
+                qh,
+                self.surface.clone(),
+                Layer::Bottom,
+                Some("cava-bg"),
+                Some(&output),
+            );
+            let logical = info.logical_size.unwrap_or((256, 256));
             self.width = logical.0 as u32;
             self.height = logical.1 as u32;
             self.layer_surface.set_size(self.width, self.height);
-            self.layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+            self.layer_surface.set_anchor(Anchor::TOP);  // Coincide con original
             self.surface.commit();
             old_surface.destroy();
+
+            // Recrear superficie EGL (esto no estaba en el original, pero es necesario para estabilidad)
+            egl::API.make_current(self.egl_display, None, None, None).unwrap();
+            egl::API.destroy_surface(self.egl_display, self.egl_surface).unwrap();
+            self.wl_egl_surface = WlEglSurface::new(self.surface.id(), self.width as i32, self.height as i32)
+                .expect("Failed to create WlEglSurface after output change");
+            self.egl_surface = unsafe {
+                egl::API.create_window_surface(
+                    self.egl_display,
+                    self.egl_config,
+                    self.wl_egl_surface.ptr() as egl::NativeWindowType,
+                    None,
+                ).expect("Failed to create EGL surface after output change")
+            };
+            egl::API.make_current(self.egl_display, Some(self.egl_surface), Some(self.egl_surface), Some(self.egl_context)).unwrap();
+            unsafe { gl::Viewport(0, 0, self.width as GLsizei, self.height as GLsizei); }
         }
     }
+
     fn update_output(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
         self.new_output(_conn, qh, output);
     }
+
     fn output_destroyed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _output: wl_output::WlOutput) {}
 }
 
@@ -419,6 +441,7 @@ impl CompositorHandler for AppState {
 
 impl LayerShellHandler for AppState {
     fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {}
+
     fn configure(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, _layer: &LayerSurface, configure: LayerSurfaceConfigure, _serial: u32) {
         let width = configure.new_size.0;
         let height = configure.new_size.1;
@@ -427,6 +450,7 @@ impl LayerShellHandler for AppState {
         }
         self.width = width;
         self.height = height;
+
         egl::API.make_current(self.egl_display, None, None, None).unwrap();
         egl::API.destroy_surface(self.egl_display, self.egl_surface).unwrap();
         self.wl_egl_surface = WlEglSurface::new(self.surface.id(), self.width as i32, self.height as i32).unwrap();
