@@ -1,3 +1,6 @@
+// src/wayland_renderer.rs
+// Final: background transparent hardcoded, test waveform if cava silent, debug prints.
+
 use anyhow::{anyhow, Context, Result};
 use gl::types::{GLsizei, GLsizeiptr};
 use khronos_egl as egl;
@@ -116,7 +119,7 @@ impl WaylandRenderer {
     }
 
     pub fn run(self) -> Result<()> {
-        info!("Starting Wayland renderer (final, transparent bg)");
+        info!("Starting Wayland renderer (final, transparent bg, debug prints)");
         std::env::set_var("EGL_PLATFORM", "wayland");
 
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
@@ -256,14 +259,16 @@ impl WaylandRenderer {
             windows_size_location,
             bar_count: self.config.bars.amount,
             bar_gap: self.config.bars.gap,
-            background_color: [0.0, 0.0, 0.0, 0.0], // 强制透明
+            background_color: [0.0, 0.0, 0.0, 0.0], // hardcoded transparent
             preferred_output_name: self.config.general.preferred_output,
             cava_reader: self.cava_reader,
             color_rx: self.color_rx,
             gradient_colors: gradient_colors_rgba,
             running: self.running,
             updating_colors,
+            use_uniforms: true,
             test_phase: 0.0,
+            frame_count: 0,
         };
 
         event_loop
@@ -296,7 +301,9 @@ struct AppState {
     gradient_colors: Vec<[f32; 4]>,
     running: Arc<AtomicBool>,
     updating_colors: Arc<AtomicBool>,
+    use_uniforms: bool,
     test_phase: f32,
+    frame_count: u64,
 }
 
 impl AppState {
@@ -392,22 +399,24 @@ impl AppState {
                     let num = u16::from_le_bytes([chunk[0], chunk[1]]);
                     unpacked_data[i] = (num as f32) / 65530.0;
                 }
+                // Reset test_phase when real data arrives
+                self.test_phase = 0.0;
             }
             Err(e) => {
+                // Use test waveform
                 self.test_phase += 0.1;
                 for i in 0..unpacked_data.len() {
                     unpacked_data[i] = ((self.test_phase + i as f32 * 0.5).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
                 }
-                if self.test_phase < 1.0 {
-                    warn!("Using test audio data (cava read error: {})", e);
+                if self.frame_count % 60 == 0 {
+                    warn!("Using test audio data (cava read error: {}), heights: {:?}", e, &unpacked_data[0..3]);
                 }
             }
         }
 
-        if unpacked_data.is_empty() {
-            return;
+        if self.frame_count % 60 == 0 {
+            info!("Bar 0 height: {:.3}", unpacked_data[0]);
         }
-        debug!("Bar 0 height: {:.2}", unpacked_data[0]);
 
         let bar_width: f32 =
             2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
@@ -479,10 +488,9 @@ impl AppState {
 
         if let Err(e) = egl::API.swap_buffers(self.egl_display, state.egl_surface) {
             error!("Failed to swap buffers for {}: {}", name, e);
-        } else {
-            debug!("Frame rendered on {}", name);
         }
         state.surface.frame(qh, state.surface.clone());
+        self.frame_count += 1;
     }
 
     pub fn draw(&mut self, _conn: &Connection, qh: &QueueHandle<Self>) {
