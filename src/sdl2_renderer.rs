@@ -1,4 +1,5 @@
-use anyhow::{Context, Result};
+// src/sdl2_renderer.rs
+use anyhow::Result;
 use log::info;
 use sdl2::event::Event;
 use sdl2::pixels::Color;
@@ -28,7 +29,6 @@ impl Sdl2Renderer {
         let sdl_context = sdl2::init().map_err(|e| anyhow::anyhow!("SDL2 init failed: {}", e))?;
         let video_subsystem = sdl_context.video().map_err(|e| anyhow::anyhow!("SDL2 video: {}", e))?;
 
-        // Obtener el tamaño de la pantalla (usar monitor primario)
         let display_mode = video_subsystem.current_display_mode(0)
             .map_err(|e| anyhow::anyhow!("Failed to get display mode: {}", e))?;
         let width = display_mode.w as u32;
@@ -59,10 +59,12 @@ impl Sdl2Renderer {
         let bar_width = 2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
         let bar_gap_width = bar_width * self.bar_gap;
         let window_height = self.canvas.window().size().1;
-        let mut event_pump = self.canvas.window().subsystem().event_pump()
+
+        // Obtener el context SDL (necesario para event_pump)
+        let sdl_context = self.canvas.window().subsystem().clone();
+        let mut event_pump = sdl_context.event_pump()
             .map_err(|e| anyhow::anyhow!("Failed to get event pump: {}", e))?;
 
-        // Configurar ventana como transparente
         self.canvas.set_draw_color(Color::RGBA(0, 0, 0, 0));
         self.canvas.clear();
         self.canvas.present();
@@ -70,14 +72,12 @@ impl Sdl2Renderer {
         info!("SDL2 renderer entering main loop");
 
         while self.running.load(Ordering::SeqCst) {
-            // Procesar eventos (por si el usuario cierra la ventana)
             for event in event_pump.poll_iter() {
                 if let Event::Quit { .. } = event {
                     return Ok(());
                 }
             }
 
-            // Recibir nuevos datos de audio (no bloqueante)
             if let Ok(audio_data) = self.audio_rx.try_recv() {
                 self.canvas.set_draw_color(Color::RGBA(0, 0, 0, 0));
                 self.canvas.clear();
@@ -103,7 +103,6 @@ impl Sdl2Renderer {
                 self.canvas.present();
             }
 
-            // Control de framerate (~60 fps)
             std::thread::sleep(Duration::from_millis(16));
         }
 
