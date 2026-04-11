@@ -13,61 +13,66 @@ const COLOR_SMOOTHING_FACTOR: f32 = 0.7;
 pub struct WallpaperAnalyzer;
 
 impl WallpaperAnalyzer {
-    /// Encuentra el archivo de wallpaper actual preguntando **exclusivamente** a gestores conocidos.
-    /// No realiza búsquedas heurísticas en directorios.
+    /// Returns the path of the current wallpaper if a known manager is active.
     pub fn find_wallpaper() -> Option<PathBuf> {
-        // 1. mpvpaper (el más probable según tu configuración)
+        // 1. mpvpaper (very common for GIFs/videos)
         if let Some(path) = Self::from_mpvpaper() {
-            log::debug!("Detected wallpaper via mpvpaper: {:?}", path);
-            return Some(path);
-        }
-        // 2. hyprpaper (vía hyprctl)
-        if let Some(path) = Self::from_hyprctl_hyprpaper() {
-            log::debug!("Detected wallpaper via hyprctl hyprpaper: {:?}", path);
-            return Some(path);
-        }
-        // 3. awww
-        if let Some(path) = Self::from_swww_like("awww") {
-            log::debug!("Detected wallpaper via awww: {:?}", path);
-            return Some(path);
-        }
-        // 4. swww
-        if let Some(path) = Self::from_swww_like("swww") {
-            log::debug!("Detected wallpaper via swww: {:?}", path);
-            return Some(path);
-        }
-        // 5. swaybg
-        if let Some(path) = Self::from_swaybg() {
-            log::debug!("Detected wallpaper via swaybg: {:?}", path);
-            return Some(path);
-        }
-        // 6. hyprpaper (archivo de configuración)
-        if let Some(path) = Self::from_hyprpaper_conf() {
-            log::debug!("Detected wallpaper via hyprpaper.conf: {:?}", path);
-            return Some(path);
-        }
-        // 7. wpaperd
-        if let Some(path) = Self::from_wpaperd() {
-            log::debug!("Detected wallpaper via wpaperd: {:?}", path);
-            return Some(path);
-        }
-        // 8. wbg
-        if let Some(path) = Self::from_wbg() {
-            log::debug!("Detected wallpaper via wbg: {:?}", path);
-            return Some(path);
-        }
-        // 9. waypaper
-        if let Some(path) = Self::from_waypaper() {
-            log::debug!("Detected wallpaper via waypaper config: {:?}", path);
+            log::info!("Detected wallpaper via mpvpaper: {:?}", path);
             return Some(path);
         }
 
-        // Si llegamos aquí, ningún gestor conocido está activo
+        // 2. swww / awww (daemons with query command)
+        if let Some(path) = Self::from_swww_like("awww") {
+            log::info!("Detected wallpaper via awww: {:?}", path);
+            return Some(path);
+        }
+        if let Some(path) = Self::from_swww_like("swww") {
+            log::info!("Detected wallpaper via swww: {:?}", path);
+            return Some(path);
+        }
+
+        // 3. swaybg (classic Wayland wallpaper setter)
+        if let Some(path) = Self::from_swaybg() {
+            log::info!("Detected wallpaper via swaybg: {:?}", path);
+            return Some(path);
+        }
+
+        // 4. hyprpaper (via hyprctl)
+        if let Some(path) = Self::from_hyprctl_hyprpaper() {
+            log::info!("Detected wallpaper via hyprctl hyprpaper: {:?}", path);
+            return Some(path);
+        }
+
+        // 5. hyprpaper (via config file)
+        if let Some(path) = Self::from_hyprpaper_conf() {
+            log::info!("Detected wallpaper via hyprpaper.conf: {:?}", path);
+            return Some(path);
+        }
+
+        // 6. wpaperd (state file)
+        if let Some(path) = Self::from_wpaperd() {
+            log::info!("Detected wallpaper via wpaperd: {:?}", path);
+            return Some(path);
+        }
+
+        // 7. wbg
+        if let Some(path) = Self::from_wbg() {
+            log::info!("Detected wallpaper via wbg: {:?}", path);
+            return Some(path);
+        }
+
+        // 8. waypaper (frontend config)
+        if let Some(path) = Self::from_waypaper() {
+            log::info!("Detected wallpaper via waypaper config: {:?}", path);
+            return Some(path);
+        }
+
         log::warn!("No active wallpaper manager detected");
         None
     }
 
-    // --- Métodos de detección (los mismos de antes, pero sin fallback) ---
+    // --- Detection helpers ---
+
     fn from_hyprctl_hyprpaper() -> Option<PathBuf> {
         let output = Command::new("hyprctl")
             .args(["hyprpaper", "listloaded"])
@@ -107,13 +112,13 @@ impl WallpaperAnalyzer {
     }
 
     fn from_swaybg() -> Option<PathBuf> {
-        let output = Command::new("ps").arg("aux").output().ok()?;
+        let output = Command::new("pgrep").arg("-a").arg("swaybg").output().ok()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
-            if line.contains("swaybg") && line.contains("-i") {
-                if let Some(idx) = line.find("-i") {
-                    let rest = &line[idx + 2..].trim();
-                    if let Some(path_str) = rest.split_whitespace().next() {
+            if line.contains("swaybg") && line.contains(" -i ") {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if let Some(pos) = parts.iter().position(|&s| s == "-i") {
+                    if let Some(path_str) = parts.get(pos + 1) {
                         let path = PathBuf::from(path_str);
                         if path.exists() {
                             return Some(path);
@@ -149,10 +154,12 @@ impl WallpaperAnalyzer {
     }
 
     fn from_mpvpaper() -> Option<PathBuf> {
-        let output = Command::new("ps").arg("aux").output().ok()?;
+        // Use pgrep -a to get full command line of mpvpaper
+        let output = Command::new("pgrep").arg("-a").arg("mpvpaper").output().ok()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
-            if line.contains("mpvpaper") && !line.contains("grep") {
+            if line.contains("mpvpaper") {
+                // The last argument that looks like a file path is likely the wallpaper.
                 let parts: Vec<&str> = line.split_whitespace().collect();
                 for part in parts.iter().rev() {
                     let path = PathBuf::from(part);
@@ -220,7 +227,8 @@ impl WallpaperAnalyzer {
         None
     }
 
-    // --- Carga de imagen ---
+    // --- Image loading ---
+
     fn load_image_from_path(path: &PathBuf) -> Result<image::DynamicImage> {
         let ext = path.extension()
             .and_then(|e| e.to_str())
@@ -268,11 +276,12 @@ impl WallpaperAnalyzer {
         }
     }
 
+    /// Generate a color palette from the current wallpaper using color-thief (Median Cut).
     pub fn generate_gradient_colors(num_colors: usize) -> Result<Vec<[f32; 4]>> {
         let wallpaper_path = match Self::find_wallpaper() {
             Some(path) => path,
             None => {
-                log::warn!("No wallpaper found, using default colors");
+                // Already logged, just return defaults.
                 return Ok(Self::default_colors(num_colors));
             }
         };
@@ -301,7 +310,7 @@ impl WallpaperAnalyzer {
             .map(|c| [c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0, 1.0])
             .collect();
 
-        // Ordenar por luminosidad
+        // Sort by luminance for a smoother gradient
         new_colors.sort_by(|a, b| {
             let lum_a = 0.299 * a[0] + 0.587 * a[1] + 0.114 * a[2];
             let lum_b = 0.299 * b[0] + 0.587 * b[1] + 0.114 * b[2];
