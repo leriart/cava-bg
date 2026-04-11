@@ -4,7 +4,7 @@
 use anyhow::{Context, Result};
 use gl::types::{GLsizei, GLsizeiptr};
 use khronos_egl as egl;
-use log::{error, info, warn};
+use log::{info, warn};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::ProvidesRegistryState;
@@ -37,7 +37,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::{mem, ptr};
 
-use crate::app_config::{array_from_config_color, Config, ConfigColor, HexColorConfig};
+use crate::app_config::{array_from_config_color, Config};
 
 const VERTEX_SHADER_SRC: &str = include_str!("shaders/vertex_shader.glsl");
 const FRAGMENT_SHADER_SRC: &str = include_str!("shaders/fragment_shader.glsl");

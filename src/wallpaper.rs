@@ -1,12 +1,11 @@
 use anyhow::{Context, Result};
-use gazo::{Capture, Output};
-use image::{GenericImageView, Pixel};
+use gazo;
+use image::{GenericImageView, Pixel, RgbaImage};
 use log;
-use std::path::PathBuf;
-use std::process::Command;
-use std::sync::Mutex;
-use walkdir::WalkDir;
 use once_cell::sync::Lazy;
+use std::sync::Mutex;
+use std::time::Duration;
+use std::thread;
 
 static PREVIOUS_COLORS: Lazy<Mutex<Vec<[f32; 4]>>> = Lazy::new(|| Mutex::new(Vec::new()));
 const COLOR_SMOOTHING_FACTOR: f32 = 0.5;
@@ -14,230 +13,104 @@ const COLOR_SMOOTHING_FACTOR: f32 = 0.5;
 pub struct WallpaperAnalyzer;
 
 impl WallpaperAnalyzer {
-    /// Encuentra el archivo de wallpaper actual explorando procesos comunes de Wayland.
-    pub fn find_wallpaper() -> Result<Option<PathBuf>> {
-        // 1. Intentar obtener de procesos conocidos
-        if let Some(path) = Self::from_swaybg() {
-            return Ok(Some(path));
-        }
-        if let Some(path) = Self::from_hyprpaper() {
-            return Ok(Some(path));
-        }
-        if let Some(path) = Self::from_mpvpaper() {
-            return Ok(Some(path));
-        }
-        if let Some(path) = Self::from_azote() {
-            return Ok(Some(path));
-        }
-
-        // 2. Buscar en ubicaciones comunes
-        let possible_paths = [
-            dirs::config_dir().map(|mut p| { p.push("hypr"); p.push("wallpaper.jpg"); p }),
-            dirs::config_dir().map(|mut p| { p.push("hypr"); p.push("wallpaper.png"); p }),
-            dirs::config_dir().map(|mut p| { p.push("sway"); p.push("wallpaper"); p }),
-            dirs::picture_dir().map(|mut p| { p.push("wallpaper"); p }),
-            dirs::picture_dir().map(|mut p| { p.push("wallpaper.jpg"); p }),
-            dirs::picture_dir().map(|mut p| { p.push("wallpaper.png"); p }),
-            dirs::home_dir().map(|mut p| { p.push(".wallpaper"); p }),
-        ];
-        for path in possible_paths.iter().flatten() {
-            if path.exists() {
-                return Ok(Some(path.clone()));
-            }
-        }
-
-        // 3. Búsqueda heurística en Pictures/
-        if let Some(pictures) = dirs::picture_dir() {
-            for entry in WalkDir::new(pictures).max_depth(2).into_iter().filter_map(|e| e.ok()) {
-                let path = entry.path();
-                if path.is_file() {
-                    if let Some(ext) = path.extension() {
-                        let ext_str = ext.to_string_lossy().to_lowercase();
-                        if matches!(ext_str.as_str(), "jpg" | "jpeg" | "png" | "bmp" | "webp" | "gif") {
-                            let filename = path.file_stem().unwrap_or_default().to_string_lossy().to_lowercase();
-                            if filename.contains("wallpaper") || filename.contains("background") || filename.contains("bg") {
-                                return Ok(Some(path.to_path_buf()));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        Ok(None)
-    }
-
-    fn from_swaybg() -> Option<PathBuf> {
-        let output = Command::new("pgrep").arg("-a").arg("swaybg").output().ok()?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            if let Some(idx) = line.find(" -i ") {
-                let path = line[idx + 4..].split_whitespace().next()?;
-                let path = PathBuf::from(path);
-                if path.exists() {
-                    return Some(path);
-                }
-            }
-        }
-        None
-    }
-
-    fn from_hyprpaper() -> Option<PathBuf> {
-        let conf = dirs::config_dir()?.join("hypr/hyprpaper.conf");
-        if conf.exists() {
-            let content = std::fs::read_to_string(conf).ok()?;
-            for line in content.lines() {
-                if line.starts_with("wallpaper") || line.starts_with("preload") {
-                    if let Some(path_str) = line.split_whitespace().nth(2) {
-                        let path = PathBuf::from(path_str);
-                        if path.exists() {
-                            return Some(path);
-                        }
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    fn from_mpvpaper() -> Option<PathBuf> {
-        let output = Command::new("pgrep").arg("-a").arg("mpvpaper").output().ok()?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 3 {
-                let path = PathBuf::from(parts[2]);
-                if path.exists() {
-                    return Some(path);
-                }
-            }
-        }
-        None
-    }
-
-    fn from_azote() -> Option<PathBuf> {
-        let output = Command::new("pgrep").arg("-a").arg("azote").output().ok()?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            if line.contains("azote") {
-                let current = dirs::home_dir()?.join(".azote/current");
-                if current.exists() {
-                    let link = std::fs::read_link(current).ok()?;
-                    return Some(link);
-                }
-            }
-        }
-        None
-    }
-
-    pub fn default_colors(num_colors: usize) -> Vec<[f32; 4]> {
-        let catppuccin = [
-            [0.580, 0.886, 0.835, 1.0],
-            [0.537, 0.863, 0.922, 1.0],
-            [0.455, 0.780, 0.925, 1.0],
-            [0.537, 0.706, 0.980, 1.0],
-            [0.796, 0.651, 0.969, 1.0],
-            [0.961, 0.761, 0.906, 1.0],
-            [0.922, 0.627, 0.675, 1.0],
-            [0.953, 0.545, 0.659, 1.0],
-        ];
-        if num_colors <= catppuccin.len() {
-            catppuccin[0..num_colors].to_vec()
-        } else {
-            let mut colors = Vec::new();
-            for i in 0..num_colors {
-                colors.push(catppuccin[i % catppuccin.len()]);
-            }
-            colors
-        }
-    }
-
-    /// Captura la pantalla actual y extrae colores dominantes.
-    /// Esto funciona para cualquier tipo de fondo (imagen, video, GIF).
+    /// Captura la pantalla actual y extrae una paleta de colores.
     pub fn capture_and_extract_colors(num_colors: usize) -> Result<Vec<[f32; 4]>> {
-        // Obtener todas las salidas
-        let outputs = Output::all().context("Failed to get outputs")?;
-        if outputs.is_empty() {
-            anyhow::bail!("No outputs found");
-        }
+        // Obtener el primer monitor disponible
+        let monitors = gazo::Monitor::all().context("Failed to get monitors")?;
+        let monitor = monitors.first().context("No monitor found")?;
 
-        // Usar la primera salida (o podríamos buscar la preferida)
-        let output = &outputs[0];
-        log::info!("Capturing output: {}", output.name().unwrap_or("unknown"));
+        log::info!("Capturing monitor: {:?}", monitor.name());
 
-        // Capturar la pantalla
-        let capture = Capture::new(output).context("Failed to create capture")?;
-        let image = capture.capture().context("Failed to capture screen")?;
+        // Realizar la captura
+        let capture = gazo::capture_monitor(monitor).context("Failed to capture monitor")?;
 
-        // Convertir a DynamicImage para usar el mismo pipeline de extracción
-        let (width, height) = (image.width(), image.height());
-        let data = image.data();
-        
-        // gazo puede devolver en formato BGRA o RGBA dependiendo del compositor.
-        // Normalmente es BGRA en la mayoría de Wayland compositors.
-        let img = image::ImageBuffer::from_raw(width, height, data.to_vec())
-            .map(image::DynamicImage::ImageRgba8)
-            .context("Failed to create image buffer from captured data")?;
+        // Los datos están en formato BGRA (8 bits por canal)
+        let (width, height) = (capture.width(), capture.height());
+        let data = capture.data();
+        log::debug!("Captured image: {}x{}", width, height);
 
-        log::info!("Captured screen: {}x{}", width, height);
-        let mut new_colors = Self::extract_and_generate_gradient(&img, num_colors);
+        // Convertir a una imagen que podamos procesar
+        let img = RgbaImage::from_raw(width, height, data.to_vec())
+            .context("Failed to create image from capture")?;
+
+        // Extraer colores
+        let new_colors = Self::extract_and_generate_gradient(&img, num_colors);
 
         // Suavizar con colores anteriores
         let mut prev_guard = PREVIOUS_COLORS.lock().unwrap();
-        if !prev_guard.is_empty() && prev_guard.len() == new_colors.len() {
-            for i in 0..new_colors.len() {
-                for c in 0..4 {
-                    new_colors[i][c] = COLOR_SMOOTHING_FACTOR * new_colors[i][c]
-                        + (1.0 - COLOR_SMOOTHING_FACTOR) * prev_guard[i][c];
-                }
-            }
-        }
-        *prev_guard = new_colors.clone();
-        Ok(new_colors)
+        let smoothed = if !prev_guard.is_empty() && prev_guard.len() == new_colors.len() {
+            new_colors
+                .iter()
+                .enumerate()
+                .map(|(i, &color)| {
+                    let prev = prev_guard[i];
+                    [
+                        COLOR_SMOOTHING_FACTOR * color[0] + (1.0 - COLOR_SMOOTHING_FACTOR) * prev[0],
+                        COLOR_SMOOTHING_FACTOR * color[1] + (1.0 - COLOR_SMOOTHING_FACTOR) * prev[1],
+                        COLOR_SMOOTHING_FACTOR * color[2] + (1.0 - COLOR_SMOOTHING_FACTOR) * prev[2],
+                        COLOR_SMOOTHING_FACTOR * color[3] + (1.0 - COLOR_SMOOTHING_FACTOR) * prev[3],
+                    ]
+                })
+                .collect()
+        } else {
+            new_colors
+        };
+
+        *prev_guard = smoothed.clone();
+        Ok(smoothed)
     }
 
-    /// Función de compatibilidad para el resto del código.
+    /// Versión de compatibilidad para llamadas antiguas (cuando solo se usaba imagen estática).
     pub fn generate_gradient_colors(num_colors: usize) -> Result<Vec<[f32; 4]>> {
         Self::capture_and_extract_colors(num_colors)
     }
 
-    fn extract_and_generate_gradient(img: &image::DynamicImage, num_colors: usize) -> Vec<[f32; 4]> {
+    fn extract_and_generate_gradient(img: &RgbaImage, num_colors: usize) -> Vec<[f32; 4]> {
         let (width, height) = img.dimensions();
         let mut samples = Vec::new();
-        let step = (width * height / 10000).max(1) as u32;
+
+        // Muestrear la imagen para obtener píxeles relevantes
+        let step = (width * height / 10000).max(1);
         for y in (0..height).step_by(step as usize) {
             for x in (0..width).step_by(step as usize) {
                 let pixel = img.get_pixel(x, y);
-                let rgb = pixel.to_rgb();
-                let channels = rgb.channels();
-                let brightness = (channels[0] as f32 + channels[1] as f32 + channels[2] as f32) / 3.0;
-                let max_ch = channels[0].max(channels[1]).max(channels[2]) as f32;
-                let min_ch = channels[0].min(channels[1]).min(channels[2]) as f32;
+                let channels = pixel.0;
+                let r = channels[0] as f32;
+                let g = channels[1] as f32;
+                let b = channels[2] as f32;
+                let brightness = (r + g + b) / 3.0;
+                let max_ch = r.max(g).max(b);
+                let min_ch = r.min(g).min(b);
                 let saturation = if max_ch > 0.0 { (max_ch - min_ch) / max_ch } else { 0.0 };
                 let is_bw = saturation < 0.1;
+
                 if is_bw {
                     if brightness > 20.0 && brightness < 230.0 {
-                        samples.push([channels[0] as f32, channels[1] as f32, channels[2] as f32]);
+                        samples.push([r, g, b]);
                     }
                 } else {
                     if brightness > 50.0 && saturation > 0.2 {
-                        samples.push([channels[0] as f32, channels[1] as f32, channels[2] as f32]);
+                        samples.push([r, g, b]);
                     }
                 }
             }
         }
+
+        // Si no se encontraron muestras suficientes, usar un muestreo más denso
         if samples.is_empty() {
             for y in (0..height).step_by((step * 2) as usize) {
                 for x in (0..width).step_by((step * 2) as usize) {
                     let pixel = img.get_pixel(x, y);
-                    let rgb = pixel.to_rgb();
-                    let channels = rgb.channels();
+                    let channels = pixel.0;
                     samples.push([channels[0] as f32, channels[1] as f32, channels[2] as f32]);
                 }
             }
         }
+
         if samples.is_empty() {
             return Self::default_colors(num_colors);
         }
+
         let dominant = Self::find_dominant_colors(&samples, 4.min(samples.len()));
         Self::generate_gradient_palette(&dominant, num_colors)
     }
@@ -330,6 +203,28 @@ impl WallpaperAnalyzer {
             c[2] = c[2].clamp(0.0, 1.0);
         }
         palette
+    }
+
+    pub fn default_colors(num_colors: usize) -> Vec<[f32; 4]> {
+        let catppuccin = [
+            [0.580, 0.886, 0.835, 1.0],
+            [0.537, 0.863, 0.922, 1.0],
+            [0.455, 0.780, 0.925, 1.0],
+            [0.537, 0.706, 0.980, 1.0],
+            [0.796, 0.651, 0.969, 1.0],
+            [0.961, 0.761, 0.906, 1.0],
+            [0.922, 0.627, 0.675, 1.0],
+            [0.953, 0.545, 0.659, 1.0],
+        ];
+        if num_colors <= catppuccin.len() {
+            catppuccin[0..num_colors].to_vec()
+        } else {
+            let mut colors = Vec::new();
+            for i in 0..num_colors {
+                colors.push(catppuccin[i % catppuccin.len()]);
+            }
+            colors
+        }
     }
 
     fn color_distance(a: &[f32; 3], b: &[f32; 3]) -> f32 {
