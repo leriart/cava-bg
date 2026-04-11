@@ -7,7 +7,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use winit::dpi::PhysicalSize;
 use winit::event::{Event, WindowEvent};
-use winit::event_loop::EventLoop;
+use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
 use wgpu::util::DeviceExt;
 
@@ -211,15 +211,17 @@ impl WgpuRenderer {
         let color_rx = self.color_rx;
         let bar_gap = self.config.bars.gap;
 
-        event_loop.run(move |event, event_loop| {
+        // Bucle de eventos corregido para winit 0.29
+        event_loop.run(move |event, control_flow| {
             if !running.load(Ordering::SeqCst) {
-                event_loop.exit();
+                control_flow.exit();
                 return;
             }
 
             match event {
+                // Eventos de ventana
                 Event::WindowEvent { event, .. } => match event {
-                    WindowEvent::CloseRequested => event_loop.exit(),
+                    WindowEvent::CloseRequested => control_flow.exit(),
                     WindowEvent::Resized(new_size) => {
                         if new_size.width > 0 && new_size.height > 0 {
                             surface_config.width = new_size.width;
@@ -231,7 +233,8 @@ impl WgpuRenderer {
                     }
                     _ => {}
                 },
-                Event::RedrawRequested(_) => {
+                // Se solicita un redibujado de la ventana (antes era Event::RedrawRequested)
+                Event::WindowEvent { event: WindowEvent::RedrawRequested, .. } => {
                     if let Ok(guard) = color_rx.lock() {
                         if let Ok(new_colors) = guard.try_recv() {
                             current_colors = new_colors;
@@ -302,7 +305,5 @@ impl WgpuRenderer {
                 _ => {}
             }
         });
-
-        Ok(())
     }
 }
