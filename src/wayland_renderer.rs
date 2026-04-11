@@ -480,7 +480,9 @@ impl AppState {
         self.updating_colors.store(true, Ordering::SeqCst);
         self.gradient_colors = new_colors.to_vec();
 
-        if !self.use_uniforms {
+        if self.use_uniforms {
+            // Para uniformes, simplemente actualizamos la copia local (se enviará en cada draw)
+        } else {
             let gradient_colors_len = self.gradient_colors.len() as i32;
             let mut buffer_data = gradient_colors_len.to_le_bytes().to_vec();
             buffer_data.extend([0, 0, 0, 0].repeat(3));
@@ -800,12 +802,18 @@ impl LayerShellHandler for AppState {
                     };
                 state.surface.commit();
                 state.egl_surface = unsafe {
-                    egl::API.create_window_surface(
+                    match egl::API.create_window_surface(
                         self.egl_display,
                         self.egl_config,
                         state.wl_egl_surface.ptr() as egl::NativeWindowType,
                         None,
-                    ).unwrap()
+                    ) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            error!("Failed to create EGL surface after configure: {}", e);
+                            return;
+                        }
+                    }
                 };
                 state.configured = true;
                 target_name = Some(name.clone());
