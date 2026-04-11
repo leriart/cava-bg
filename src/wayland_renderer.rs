@@ -1,6 +1,3 @@
-// src/wayland_renderer.rs
-// Versión corregida para khronos-egl 6.0 con feature "static"
-
 use anyhow::{Context, Result};
 use gl::types::{GLsizei, GLsizeiptr};
 use khronos_egl as egl;
@@ -101,7 +98,7 @@ impl WaylandRenderer {
         layer_surface.set_anchor(Anchor::TOP);
         surface.commit();
 
-        // EGL initialization (usando feature "static")
+        // EGL initialization (feature "static" required)
         egl::bind_api(egl::OPENGL_API).context("Failed to bind EGL API")?;
         let egl_display = unsafe {
             egl::get_display(conn.display().id().as_ptr() as *mut c_void)
