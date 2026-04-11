@@ -462,7 +462,6 @@ impl AppState {
                 warn!("Usando datos de prueba para visualización");
             }
         }
-        }
 
         // Calcular vértices
         let bar_width = 2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
