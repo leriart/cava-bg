@@ -13,89 +13,85 @@ const COLOR_SMOOTHING_FACTOR: f32 = 0.5;
 pub struct WallpaperAnalyzer;
 
 impl WallpaperAnalyzer {
-    /// Encuentra el archivo de wallpaper actual explorando múltiples gestores y ubicaciones comunes.
-    pub fn find_wallpaper() -> Result<Option<PathBuf>> {
-        // 1. awww (sucesor moderno de swww)
-        if let Some(path) = Self::from_awww() {
-            return Ok(Some(path));
+    /// Encuentra el archivo de wallpaper actual. Devuelve Some si lo encuentra.
+    pub fn find_wallpaper() -> Option<PathBuf> {
+        // 1. Preguntar a hyprpaper a través de hyprctl (muy fiable)
+        if let Some(path) = Self::from_hyprctl_hyprpaper() {
+            log::info!("Detected wallpaper via hyprctl hyprpaper: {:?}", path);
+            return Some(path);
         }
-        // 2. swww (por compatibilidad)
-        if let Some(path) = Self::from_swww() {
-            return Ok(Some(path));
+
+        // 2. awww / swww (consulta vía línea de comandos)
+        if let Some(path) = Self::from_swww_like("awww") {
+            log::info!("Detected wallpaper via awww: {:?}", path);
+            return Some(path);
         }
-        // 3. swaybg
+        if let Some(path) = Self::from_swww_like("swww") {
+            log::info!("Detected wallpaper via swww: {:?}", path);
+            return Some(path);
+        }
+
+        // 3. swaybg (búsqueda exhaustiva en procesos)
         if let Some(path) = Self::from_swaybg() {
-            return Ok(Some(path));
+            log::info!("Detected wallpaper via swaybg: {:?}", path);
+            return Some(path);
         }
-        // 4. hyprpaper
-        if let Some(path) = Self::from_hyprpaper() {
-            return Ok(Some(path));
+
+        // 4. hyprpaper (archivo de configuración)
+        if let Some(path) = Self::from_hyprpaper_conf() {
+            log::info!("Detected wallpaper via hyprpaper.conf: {:?}", path);
+            return Some(path);
         }
+
         // 5. mpvpaper
         if let Some(path) = Self::from_mpvpaper() {
-            return Ok(Some(path));
+            log::info!("Detected wallpaper via mpvpaper: {:?}", path);
+            return Some(path);
         }
-        // 6. wpaperd (vía IPC)
+
+        // 6. wpaperd
         if let Some(path) = Self::from_wpaperd() {
-            return Ok(Some(path));
+            log::info!("Detected wallpaper via wpaperd: {:?}", path);
+            return Some(path);
         }
-        // 7. wbg (vía línea de comandos)
+
+        // 7. wbg
         if let Some(path) = Self::from_wbg() {
-            return Ok(Some(path));
+            log::info!("Detected wallpaper via wbg: {:?}", path);
+            return Some(path);
         }
-        // 8. waypaper (respaldo leyendo su archivo de configuración)
+
+        // 8. waypaper (config)
         if let Some(path) = Self::from_waypaper() {
-            return Ok(Some(path));
+            log::info!("Detected wallpaper via waypaper config: {:?}", path);
+            return Some(path);
         }
 
-        // 9. Búsqueda en ubicaciones fijas
-        let possible_paths = [
-            dirs::config_dir().map(|mut p| { p.push("hypr"); p.push("wallpaper.jpg"); p }),
-            dirs::config_dir().map(|mut p| { p.push("hypr"); p.push("wallpaper.png"); p }),
-            dirs::config_dir().map(|mut p| { p.push("sway"); p.push("wallpaper"); p }),
-            dirs::picture_dir().map(|mut p| { p.push("wallpaper"); p }),
-            dirs::picture_dir().map(|mut p| { p.push("wallpaper.jpg"); p }),
-            dirs::picture_dir().map(|mut p| { p.push("wallpaper.png"); p }),
-            dirs::home_dir().map(|mut p| { p.push(".wallpaper"); p }),
-        ];
-        for path in possible_paths.iter().flatten() {
-            if path.exists() {
-                return Ok(Some(path.clone()));
-            }
+        // 9. Fallback: buscar la imagen más reciente en directorios típicos
+        if let Some(path) = Self::fallback_most_recent() {
+            log::info!("Fallback: using most recent image in wallpaper dirs: {:?}", path);
+            return Some(path);
         }
 
-        // 10. Búsqueda heurística en Pictures/
-        if let Some(pictures) = dirs::picture_dir() {
-            for entry in WalkDir::new(pictures).max_depth(2).into_iter().filter_map(|e| e.ok()) {
-                let path = entry.path();
-                if path.is_file() {
-                    if let Some(ext) = path.extension() {
-                        let ext_str = ext.to_string_lossy().to_lowercase();
-                        if matches!(ext_str.as_str(), "jpg" | "jpeg" | "png" | "bmp" | "webp" | "gif" | "mp4" | "mkv" | "webm") {
-                            let filename = path.file_stem().unwrap_or_default().to_string_lossy().to_lowercase();
-                            if filename.contains("wallpaper") || filename.contains("background") || filename.contains("bg") {
-                                return Ok(Some(path.to_path_buf()));
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(None)
+        log::warn!("No wallpaper could be detected by any method");
+        None
     }
 
-    // --- Métodos de detección por gestor ---
+    // --- Métodos concretos de detección ---
 
-    fn from_awww() -> Option<PathBuf> {
-        let output = Command::new("awww").arg("query").output().ok()?;
+    fn from_hyprctl_hyprpaper() -> Option<PathBuf> {
+        let output = Command::new("hyprctl")
+            .args(["hyprpaper", "listloaded"])
+            .output()
+            .ok()?;
         if !output.status.success() {
             return None;
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
-            if let Some((_monitor, path_str)) = line.split_once(':') {
-                let path = PathBuf::from(path_str.trim());
+            if line.starts_with("wallpaper ") {
+                let path_str = line.trim_start_matches("wallpaper ").trim();
+                let path = PathBuf::from(path_str);
                 if path.exists() {
                     return Some(path);
                 }
@@ -104,8 +100,8 @@ impl WallpaperAnalyzer {
         None
     }
 
-    fn from_swww() -> Option<PathBuf> {
-        let output = Command::new("swww").arg("query").output().ok()?;
+    fn from_swww_like(cmd: &str) -> Option<PathBuf> {
+        let output = Command::new(cmd).arg("query").output().ok()?;
         if !output.status.success() {
             return None;
         }
@@ -122,27 +118,36 @@ impl WallpaperAnalyzer {
     }
 
     fn from_swaybg() -> Option<PathBuf> {
-        let output = Command::new("pgrep").arg("-a").arg("swaybg").output().ok()?;
+        let output = Command::new("ps").arg("aux").output().ok()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
-            if let Some(idx) = line.find(" -i ") {
-                let path = line[idx + 4..].split_whitespace().next()?;
-                let path = PathBuf::from(path);
-                if path.exists() {
-                    return Some(path);
+            if line.contains("swaybg") && line.contains("-i") {
+                if let Some(idx) = line.find("-i") {
+                    let rest = &line[idx + 2..].trim();
+                    if let Some(path_str) = rest.split_whitespace().next() {
+                        let path = PathBuf::from(path_str);
+                        if path.exists() {
+                            return Some(path);
+                        }
+                    }
                 }
             }
         }
         None
     }
 
-    fn from_hyprpaper() -> Option<PathBuf> {
+    fn from_hyprpaper_conf() -> Option<PathBuf> {
         let conf = dirs::config_dir()?.join("hypr/hyprpaper.conf");
-        if conf.exists() {
-            let content = std::fs::read_to_string(conf).ok()?;
-            for line in content.lines() {
-                if line.starts_with("wallpaper") || line.starts_with("preload") {
-                    if let Some(path_str) = line.split_whitespace().nth(2) {
+        if !conf.exists() {
+            return None;
+        }
+        let content = std::fs::read_to_string(conf).ok()?;
+        for line in content.lines() {
+            if line.starts_with("wallpaper") || line.starts_with("preload") {
+                let parts: Vec<&str> = line.split('=').collect();
+                if parts.len() >= 2 {
+                    let right = parts[1].trim();
+                    if let Some((_, path_str)) = right.split_once(',') {
                         let path = PathBuf::from(path_str);
                         if path.exists() {
                             return Some(path);
@@ -170,8 +175,6 @@ impl WallpaperAnalyzer {
     }
 
     fn from_wpaperd() -> Option<PathBuf> {
-        // wpaperd expone un socket en /tmp/wpaperd.sock
-        // Como alternativa sencilla, leemos el archivo de estado si existe
         let state_file = dirs::runtime_dir()?.join("wpaperd.state");
         if state_file.exists() {
             if let Ok(content) = std::fs::read_to_string(state_file) {
@@ -188,7 +191,6 @@ impl WallpaperAnalyzer {
         let output = Command::new("pgrep").arg("-a").arg("wbg").output().ok()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
-            // wbg se invoca como "wbg /ruta/imagen.jpg"
             let parts: Vec<&str> = line.split_whitespace().collect();
             if parts.len() >= 2 {
                 let path = PathBuf::from(parts[1]);
@@ -201,23 +203,53 @@ impl WallpaperAnalyzer {
     }
 
     fn from_waypaper() -> Option<PathBuf> {
-        // Waypaper guarda la configuración en ~/.config/waypaper/config.ini
         let conf = dirs::config_dir()?.join("waypaper/config.ini");
-        if conf.exists() {
-            if let Ok(content) = std::fs::read_to_string(conf) {
-                for line in content.lines() {
-                    if line.starts_with("wallpaper") {
-                        if let Some((_, path_str)) = line.split_once('=') {
-                            let path = PathBuf::from(path_str.trim().trim_matches('"'));
-                            if path.exists() {
-                                return Some(path);
+        if !conf.exists() {
+            return None;
+        }
+        let content = std::fs::read_to_string(conf).ok()?;
+        for line in content.lines() {
+            if line.starts_with("wallpaper") {
+                if let Some((_, path_str)) = line.split_once('=') {
+                    let path = PathBuf::from(path_str.trim().trim_matches('"'));
+                    if path.exists() {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    fn fallback_most_recent() -> Option<PathBuf> {
+        let mut candidates = Vec::new();
+        let dirs_to_check = vec![
+            dirs::picture_dir().map(|p| p.join("Wallpapers")),
+            dirs::config_dir().map(|p| p.join("hypr")),
+        ];
+        for dir in dirs_to_check.into_iter().flatten() {
+            if dir.exists() {
+                if let Ok(entries) = std::fs::read_dir(dir) {
+                    for entry in entries.filter_map(|e| e.ok()) {
+                        let path = entry.path();
+                        if path.is_file() {
+                            if let Some(ext) = path.extension() {
+                                let ext = ext.to_string_lossy().to_lowercase();
+                                if matches!(ext.as_str(), "jpg"|"jpeg"|"png"|"bmp"|"webp"|"gif") {
+                                    candidates.push(path);
+                                }
                             }
                         }
                     }
                 }
             }
         }
-        None
+        candidates.sort_by_key(|p| {
+            std::fs::metadata(p)
+                .and_then(|m| m.modified())
+                .ok()
+        });
+        candidates.into_iter().last()
     }
 
     // --- Carga de imagen (soporta GIF y video vía ffmpeg) ---
@@ -271,7 +303,7 @@ impl WallpaperAnalyzer {
 
     /// Genera una paleta de colores a partir del archivo de wallpaper actual.
     pub fn generate_gradient_colors(num_colors: usize) -> Result<Vec<[f32; 4]>> {
-        let wallpaper_path = match Self::find_wallpaper()? {
+        let wallpaper_path = match Self::find_wallpaper() {
             Some(path) => path,
             None => {
                 log::warn!("No wallpaper found, using default colors");

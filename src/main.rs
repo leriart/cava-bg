@@ -41,7 +41,6 @@ fn main() -> Result<()> {
 
     let auto_colors_enabled = config.general.auto_colors;
 
-    // Auto-colors inicial
     if auto_colors_enabled {
         match WallpaperAnalyzer::generate_gradient_colors(8) {
             Ok(generated) => {
@@ -106,7 +105,6 @@ fn main() -> Result<()> {
     let cava_stdout = cava_process.stdout.take().context("failed to get cava stdout")?;
     let cava_reader = BufReader::new(cava_stdout);
 
-    // Control de ejecución
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     ctrlc::set_handler(move || {
@@ -114,19 +112,17 @@ fn main() -> Result<()> {
     })
     .expect("Error setting Ctrl-C handler");
 
-    // Canal para actualizaciones de color
     let (color_tx, color_rx) = mpsc::channel();
 
-    // Hilo de vigilancia de wallpaper (polling cada 2 segundos)
     if auto_colors_enabled {
         let tx = color_tx.clone();
         thread::spawn(move || {
             let mut last_path: Option<std::path::PathBuf> = None;
             let mut last_modified: Option<SystemTime> = None;
             loop {
-                thread::sleep(Duration::from_secs(2));
+                thread::sleep(Duration::from_secs(1));
                 match WallpaperAnalyzer::find_wallpaper() {
-                    Ok(Some(current_path)) => {
+                    Some(current_path) => {
                         let modified = std::fs::metadata(&current_path)
                             .and_then(|m| m.modified())
                             .ok();
@@ -152,14 +148,14 @@ fn main() -> Result<()> {
                             last_modified = modified;
                         }
                     }
-                    Ok(None) => {}
-                    Err(e) => error!("Error finding wallpaper: {}", e),
+                    None => {
+                        thread::sleep(Duration::from_secs(5));
+                    }
                 }
             }
         });
     }
 
-    // Iniciar renderer
     let renderer = WaylandRenderer::new(config, cava_reader, color_rx, running.clone());
     renderer.run()?;
 
