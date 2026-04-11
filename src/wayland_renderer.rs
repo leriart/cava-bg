@@ -32,7 +32,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use std::mem;
 
 use crate::app_config::{array_from_config_color, Config};
 
@@ -255,16 +254,21 @@ impl AppState {
         // Obtener punteros para crear la superficie WGPU
         let wl_display = self.conn.display().id().as_ptr();
         let wl_surface_ptr = surface.id().as_ptr();
-        let display_handle = WaylandDisplayHandle::new(NonNull::new(wl_display).unwrap());
-        let window_handle = WaylandWindowHandle::new(NonNull::new(wl_surface_ptr).unwrap());
+        
+        // Convertir los punteros a NonNull<c_void>
+        let display_ptr = NonNull::new(wl_display as *mut std::ffi::c_void).unwrap();
+        let surface_ptr = NonNull::new(wl_surface_ptr as *mut std::ffi::c_void).unwrap();
+        
+        let display_handle = WaylandDisplayHandle::new(display_ptr);
+        let window_handle = WaylandWindowHandle::new(surface_ptr);
         let raw_display = RawDisplayHandle::Wayland(display_handle);
         let raw_window = RawWindowHandle::Wayland(window_handle);
 
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
         let wgpu_surface = unsafe {
-            instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::Raw {
-                raw_display,
-                raw_window,
+            instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
+                raw_display_handle: raw_display,
+                raw_window_handle: raw_window,
             })
         }
         .context("Failed to create WGPU surface")?;
