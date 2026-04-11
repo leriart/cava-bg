@@ -18,6 +18,8 @@ use app_config::*;
 use wallpaper::WallpaperAnalyzer;
 use wayland_renderer::WaylandRenderer;
 
+const MAX_RETRIES: u32 = 5;
+
 fn main() -> Result<()> {
     env_logger::init();
 
@@ -137,7 +139,6 @@ fn main() -> Result<()> {
                         if path_changed || time_changed {
                             info!("Wallpaper changed: {:?}", current_path);
                             
-                            // Debounce
                             let now = SystemTime::now();
                             if now.duration_since(last_sent).unwrap_or(Duration::ZERO) < Duration::from_millis(500) {
                                 last_path = Some(current_path);
@@ -167,8 +168,24 @@ fn main() -> Result<()> {
         });
     }
 
-    let renderer = WaylandRenderer::new(config, cava_reader, color_rx, running.clone());
-    renderer.run()?;
+    // Reinicio automático del renderer
+    let mut retries = 0;
+    loop {
+        let renderer = WaylandRenderer::new(config.clone(), cava_reader.try_clone().expect("Failed to clone cava reader"), color_rx.try_recv().ok().unwrap_or_else(|| vec![]), running.clone());
+        match renderer.run() {
+            Ok(()) => break, // Salida normal
+            Err(e) => {
+                error!("Renderer failed: {}", e);
+                if retries >= MAX_RETRIES {
+                    error!("Max retries reached, giving up.");
+                    break;
+                }
+                retries += 1;
+                info!("Restarting renderer in 2 seconds (attempt {}/{})...", retries, MAX_RETRIES);
+                thread::sleep(Duration::from_secs(2));
+            }
+        }
+    }
 
     Ok(())
 }

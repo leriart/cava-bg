@@ -14,7 +14,7 @@ pub struct WallpaperAnalyzer;
 
 impl WallpaperAnalyzer {
     /// Detecta el wallpaper actual consultando diferentes backends y gestores.
-    /// Prioridad: mpvpaper (videos/GIFs) -> Waypaper (GUI) -> swaybg -> swww.
+    /// Prioridad: mpvpaper (videos/GIFs) -> Waypaper (imágenes estáticas) -> swaybg -> swww.
     pub fn find_wallpaper() -> Option<PathBuf> {
         // 1. mpvpaper (para videos y GIFs animados)
         if let Some(path) = Self::from_mpvpaper() {
@@ -22,7 +22,7 @@ impl WallpaperAnalyzer {
             return Some(path);
         }
 
-        // 2. Waypaper (lee su archivo de configuración para obtener el backend y la ruta)
+        // 2. Waypaper (lee su archivo de configuración)
         if let Some(path) = Self::from_waypaper() {
             log::debug!("Detected wallpaper via Waypaper: {:?}", path);
             return Some(path);
@@ -51,14 +51,11 @@ impl WallpaperAnalyzer {
 
     // --- Métodos de detección individuales ---
 
-    /// Detecta wallpapers gestionados por mpvpaper.
     fn from_mpvpaper() -> Option<PathBuf> {
         let output = Command::new("pgrep").arg("-a").arg("mpvpaper").output().ok()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
-            // La línea contiene algo como: "PID mpvpaper -o no-audio ... DP-3 /path/to/file.gif"
             let parts: Vec<&str> = line.split_whitespace().collect();
-            // El último argumento suele ser la ruta del archivo
             for part in parts.iter().rev() {
                 let path = PathBuf::from(part);
                 if path.exists() && path.is_file() {
@@ -69,7 +66,6 @@ impl WallpaperAnalyzer {
         None
     }
 
-    /// Detecta wallpapers gestionados por swaybg.
     fn from_swaybg() -> Option<PathBuf> {
         let output = Command::new("pgrep").arg("-a").arg("swaybg").output().ok()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -87,14 +83,12 @@ impl WallpaperAnalyzer {
         None
     }
 
-    /// Detecta wallpapers gestionados por swww o awww.
     fn from_swww_like(cmd: &str) -> Option<PathBuf> {
         let output = Command::new(cmd).arg("query").output().ok()?;
         if !output.status.success() {
             return None;
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
-        // La salida típica: "DP-3: /path/to/image.jpg"
         for line in stdout.lines() {
             if let Some((_monitor, path_str)) = line.split_once(':') {
                 let path = PathBuf::from(path_str.trim());
@@ -106,85 +100,63 @@ impl WallpaperAnalyzer {
         None
     }
 
-    /// Detecta wallpapers gestionados por Waypaper utilizando su CLI o su archivo de configuración.
+    /// Detecta wallpapers gestionados por Waypaper utilizando su archivo de configuración.
     fn from_waypaper() -> Option<PathBuf> {
-        // Método 1: Intentar usar el comando `waypaper --list` (más fiable)
-        if let Ok(output) = Command::new("waypaper").arg("--list").output() {
-            if output.status.success() {
-                if let Ok(json_str) = String::from_utf8(output.stdout) {
-                    if let Some(path) = Self::parse_waypaper_list_json(&json_str) {
-                        return Some(path);
-                    }
-                }
-            }
-        }
-
-        // Método 2: Leer directamente el archivo config.ini
         let config_path = dirs::config_dir()?.join("waypaper").join("config.ini");
+        log::debug!("Looking for Waypaper config at: {:?}", config_path);
         if !config_path.exists() {
+            log::debug!("Waypaper config file not found");
             return None;
         }
 
         let content = std::fs::read_to_string(config_path).ok()?;
-        let mut wallpaper_path: Option<String> = None;
+        log::debug!("Waypaper config content:\n{}", content);
 
-        // Parsear el archivo INI de Waypaper
+        let mut wallpaper_path: Option<String> = None;
+        let mut backend: Option<String> = None;
+
         for line in content.lines() {
             let line = line.trim();
-            if line.starts_with("wallpaper") {
+            if line.starts_with("backend") {
+                if let Some((_, value)) = line.split_once('=') {
+                    backend = Some(value.trim().to_string());
+                    log::debug!("Found backend: {}", backend.as_ref().unwrap());
+                }
+            } else if line.starts_with("wallpaper") {
                 if let Some((_, value)) = line.split_once('=') {
                     // La ruta puede estar entre comillas
                     wallpaper_path = Some(value.trim().trim_matches('"').to_string());
+                    log::debug!("Found wallpaper path: {}", wallpaper_path.as_ref().unwrap());
                     break;
                 }
             }
         }
 
-        // Si encontramos una ruta, verificamos que exista
+        // Si encontramos una ruta válida, la devolvemos
         if let Some(path_str) = wallpaper_path {
             let path = PathBuf::from(&path_str);
             if path.exists() {
                 return Some(path);
+            } else {
+                log::debug!("Wallpaper path from config does not exist: {:?}", path);
             }
         }
 
-        None
-    }
-
-    /// Parsea la salida JSON del comando `waypaper --list`.
-    fn parse_waypaper_list_json(json_str: &str) -> Option<PathBuf> {
-        // La salida JSON tiene el formato: {"monitor": "/path/to/image.jpg", ...}
-        // Usamos un análisis simple en lugar de una librería completa para mantenerlo ligero.
-        if let Some(start) = json_str.find('{') {
-            let json_part = &json_str[start..];
-            // Buscar el valor del primer monitor (no nos importa cuál, solo la ruta)
-            let mut in_value = false;
-            let mut path_start = 0;
-            let mut path_end = 0;
-
-            for (i, c) in json_part.char_indices() {
-                if c == '"' && !in_value {
-                    // Comienzo de una clave o valor
-                    in_value = true;
-                } else if c == '"' && in_value {
-                    // Fin de un valor
-                    let value = &json_part[path_start..i];
-                    if value.starts_with('/') && (value.ends_with(".jpg") || value.ends_with(".jpeg") || value.ends_with(".png") || value.ends_with(".gif") || value.ends_with(".webp") || value.ends_with(".bmp")) {
-                        let path = PathBuf::from(value);
-                        if path.exists() {
-                            return Some(path);
-                        }
-                    }
-                    in_value = false;
-                } else if in_value && path_start == 0 {
-                    path_start = i;
+        // Si no se encontró ruta, pero hay un backend, intentamos obtener la ruta de ese backend
+        if let Some(be) = backend {
+            match be.as_str() {
+                "swaybg" => {
+                    log::debug!("Waypaper uses swaybg backend, querying it...");
+                    return Self::from_swaybg();
                 }
-                // Resetear para el siguiente valor
-                if !in_value {
-                    path_start = 0;
+                "swww" => {
+                    log::debug!("Waypaper uses swww backend, querying it...");
+                    return Self::from_swww_like("swww");
                 }
+                _ => {}
             }
         }
+
         None
     }
 
@@ -260,11 +232,9 @@ impl WallpaperAnalyzer {
         let (width, height) = img.dimensions();
         log::debug!("Wallpaper dimensions: {}x{}", width, height);
 
-        // Convertir a RGB8 (color-thief espera un slice de bytes RGB)
         let rgb_img = img.to_rgb8();
         let pixels = rgb_img.as_raw();
 
-        // Obtener paleta de colores con color-thief (máximo 8 colores)
         let palette = get_palette(pixels, ColorFormat::Rgb, 10, num_colors as u8)
             .context("Failed to extract color palette")?;
 
@@ -273,14 +243,12 @@ impl WallpaperAnalyzer {
             .map(|c| [c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0, 1.0])
             .collect();
 
-        // Ordenar colores por luminosidad para un gradiente más natural
         new_colors.sort_by(|a, b| {
             let lum_a = 0.299 * a[0] + 0.587 * a[1] + 0.114 * a[2];
             let lum_b = 0.299 * b[0] + 0.587 * b[1] + 0.114 * b[2];
             lum_a.partial_cmp(&lum_b).unwrap()
         });
 
-        // Suavizar con colores anteriores
         let mut prev_guard = PREVIOUS_COLORS.lock().unwrap();
         if !prev_guard.is_empty() && prev_guard.len() == new_colors.len() {
             for i in 0..new_colors.len() {
