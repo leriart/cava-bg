@@ -13,80 +13,55 @@ const COLOR_SMOOTHING_FACTOR: f32 = 0.7;
 pub struct WallpaperAnalyzer;
 
 impl WallpaperAnalyzer {
-    /// Returns the path of the current wallpaper if a known manager is active.
+    /// Detecta el wallpaper actual consultando diferentes backends y gestores.
+    /// Prioridad: mpvpaper (videos/GIFs) -> Waypaper (GUI) -> swaybg -> swww.
     pub fn find_wallpaper() -> Option<PathBuf> {
-        // 1. mpvpaper (very common for GIFs/videos)
+        // 1. mpvpaper (para videos y GIFs animados)
         if let Some(path) = Self::from_mpvpaper() {
-            log::info!("Detected wallpaper via mpvpaper: {:?}", path);
+            log::debug!("Detected wallpaper via mpvpaper: {:?}", path);
             return Some(path);
         }
 
-        // 2. swww / awww (daemons with query command)
-        if let Some(path) = Self::from_swww_like("awww") {
-            log::info!("Detected wallpaper via awww: {:?}", path);
-            return Some(path);
-        }
-        if let Some(path) = Self::from_swww_like("swww") {
-            log::info!("Detected wallpaper via swww: {:?}", path);
-            return Some(path);
-        }
-
-        // 3. swaybg (classic Wayland wallpaper setter)
-        if let Some(path) = Self::from_swaybg() {
-            log::info!("Detected wallpaper via swaybg: {:?}", path);
-            return Some(path);
-        }
-
-        // 4. hyprpaper (via hyprctl)
-        if let Some(path) = Self::from_hyprctl_hyprpaper() {
-            log::info!("Detected wallpaper via hyprctl hyprpaper: {:?}", path);
-            return Some(path);
-        }
-
-        // 5. hyprpaper (via config file)
-        if let Some(path) = Self::from_hyprpaper_conf() {
-            log::info!("Detected wallpaper via hyprpaper.conf: {:?}", path);
-            return Some(path);
-        }
-
-        // 6. wpaperd (state file)
-        if let Some(path) = Self::from_wpaperd() {
-            log::info!("Detected wallpaper via wpaperd: {:?}", path);
-            return Some(path);
-        }
-
-        // 7. wbg
-        if let Some(path) = Self::from_wbg() {
-            log::info!("Detected wallpaper via wbg: {:?}", path);
-            return Some(path);
-        }
-
-        // 8. waypaper (frontend config)
+        // 2. Waypaper (lee su archivo de configuración para obtener el backend y la ruta)
         if let Some(path) = Self::from_waypaper() {
-            log::info!("Detected wallpaper via waypaper config: {:?}", path);
+            log::debug!("Detected wallpaper via Waypaper: {:?}", path);
             return Some(path);
         }
 
-        log::warn!("No active wallpaper manager detected");
+        // 3. swaybg (usado comúnmente por Waypaper y otros)
+        if let Some(path) = Self::from_swaybg() {
+            log::debug!("Detected wallpaper via swaybg: {:?}", path);
+            return Some(path);
+        }
+
+        // 4. swww (otro backend popular)
+        if let Some(path) = Self::from_swww_like("swww") {
+            log::debug!("Detected wallpaper via swww: {:?}", path);
+            return Some(path);
+        }
+
+        // 5. awww (sucesor de swww)
+        if let Some(path) = Self::from_swww_like("awww") {
+            log::debug!("Detected wallpaper via awww: {:?}", path);
+            return Some(path);
+        }
+
         None
     }
 
-    // --- Detection helpers ---
+    // --- Métodos de detección individuales ---
 
-    fn from_hyprctl_hyprpaper() -> Option<PathBuf> {
-        let output = Command::new("hyprctl")
-            .args(["hyprpaper", "listloaded"])
-            .output()
-            .ok()?;
-        if !output.status.success() {
-            return None;
-        }
+    /// Detecta wallpapers gestionados por mpvpaper.
+    fn from_mpvpaper() -> Option<PathBuf> {
+        let output = Command::new("pgrep").arg("-a").arg("mpvpaper").output().ok()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
-            if line.starts_with("wallpaper ") {
-                let path_str = line.trim_start_matches("wallpaper ").trim();
-                let path = PathBuf::from(path_str);
-                if path.exists() {
+            // La línea contiene algo como: "PID mpvpaper -o no-audio ... DP-3 /path/to/file.gif"
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            // El último argumento suele ser la ruta del archivo
+            for part in parts.iter().rev() {
+                let path = PathBuf::from(part);
+                if path.exists() && path.is_file() {
                     return Some(path);
                 }
             }
@@ -94,12 +69,32 @@ impl WallpaperAnalyzer {
         None
     }
 
+    /// Detecta wallpapers gestionados por swaybg.
+    fn from_swaybg() -> Option<PathBuf> {
+        let output = Command::new("pgrep").arg("-a").arg("swaybg").output().ok()?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if let Some(idx) = line.find("-i") {
+                let rest = &line[idx + 2..].trim();
+                if let Some(path_str) = rest.split_whitespace().next() {
+                    let path = PathBuf::from(path_str);
+                    if path.exists() {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    /// Detecta wallpapers gestionados por swww o awww.
     fn from_swww_like(cmd: &str) -> Option<PathBuf> {
         let output = Command::new(cmd).arg("query").output().ok()?;
         if !output.status.success() {
             return None;
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
+        // La salida típica: "DP-3: /path/to/image.jpg"
         for line in stdout.lines() {
             if let Some((_monitor, path_str)) = line.split_once(':') {
                 let path = PathBuf::from(path_str.trim());
@@ -111,124 +106,52 @@ impl WallpaperAnalyzer {
         None
     }
 
-    fn from_swaybg() -> Option<PathBuf> {
-        let output = Command::new("pgrep").arg("-a").arg("swaybg").output().ok()?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            if line.contains("swaybg") && line.contains(" -i ") {
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                if let Some(pos) = parts.iter().position(|&s| s == "-i") {
-                    if let Some(path_str) = parts.get(pos + 1) {
-                        let path = PathBuf::from(path_str);
-                        if path.exists() {
-                            return Some(path);
-                        }
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    fn from_hyprpaper_conf() -> Option<PathBuf> {
-        let conf = dirs::config_dir()?.join("hypr/hyprpaper.conf");
-        if !conf.exists() {
-            return None;
-        }
-        let content = std::fs::read_to_string(conf).ok()?;
-        for line in content.lines() {
-            if line.starts_with("wallpaper") || line.starts_with("preload") {
-                let parts: Vec<&str> = line.split('=').collect();
-                if parts.len() >= 2 {
-                    let right = parts[1].trim();
-                    if let Some((_, path_str)) = right.split_once(',') {
-                        let path = PathBuf::from(path_str);
-                        if path.exists() {
-                            return Some(path);
-                        }
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    fn from_mpvpaper() -> Option<PathBuf> {
-        // Use pgrep -a to get full command line of mpvpaper
-        let output = Command::new("pgrep").arg("-a").arg("mpvpaper").output().ok()?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            if line.contains("mpvpaper") {
-                // The last argument that looks like a file path is likely the wallpaper.
-                let parts: Vec<&str> = line.split_whitespace().collect();
-                for part in parts.iter().rev() {
-                    let path = PathBuf::from(part);
-                    if path.exists() {
-                        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                            let ext_lower = ext.to_lowercase();
-                            if matches!(ext_lower.as_str(),
-                                "jpg" | "jpeg" | "png" | "bmp" | "webp" | "gif" |
-                                "mp4" | "mkv" | "webm" | "avi" | "mov")
-                            {
-                                return Some(path);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    fn from_wpaperd() -> Option<PathBuf> {
-        let state_file = dirs::runtime_dir()?.join("wpaperd.state");
-        if state_file.exists() {
-            if let Ok(content) = std::fs::read_to_string(state_file) {
-                let path = PathBuf::from(content.trim());
-                if path.exists() {
-                    return Some(path);
-                }
-            }
-        }
-        None
-    }
-
-    fn from_wbg() -> Option<PathBuf> {
-        let output = Command::new("pgrep").arg("-a").arg("wbg").output().ok()?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 2 {
-                let path = PathBuf::from(parts[1]);
-                if path.exists() {
-                    return Some(path);
-                }
-            }
-        }
-        None
-    }
-
+    /// Detecta wallpapers gestionados por Waypaper leyendo su archivo de configuración.
     fn from_waypaper() -> Option<PathBuf> {
-        let conf = dirs::config_dir()?.join("waypaper/config.ini");
-        if !conf.exists() {
+        let config_path = dirs::config_dir()?.join("waypaper").join("config.ini");
+        if !config_path.exists() {
             return None;
         }
-        let content = std::fs::read_to_string(conf).ok()?;
+
+        let content = std::fs::read_to_string(config_path).ok()?;
+        let mut backend: Option<String> = None;
+        let mut wallpaper_path: Option<String> = None;
+
+        // Parsear el archivo INI de Waypaper
         for line in content.lines() {
-            if line.starts_with("wallpaper") {
-                if let Some((_, path_str)) = line.split_once('=') {
-                    let path = PathBuf::from(path_str.trim().trim_matches('"'));
-                    if path.exists() {
-                        return Some(path);
-                    }
+            let line = line.trim();
+            if line.starts_with("backend") {
+                if let Some((_, value)) = line.split_once('=') {
+                    backend = Some(value.trim().to_string());
+                }
+            } else if line.starts_with("wallpaper") {
+                if let Some((_, value)) = line.split_once('=') {
+                    wallpaper_path = Some(value.trim().trim_matches('"').to_string());
                 }
             }
         }
+
+        // Si tenemos una ruta de wallpaper, verificar si es válida
+        if let Some(path_str) = wallpaper_path {
+            let path = PathBuf::from(&path_str);
+            if path.exists() {
+                return Some(path);
+            }
+        }
+
+        // Si no se encontró una ruta válida, intentar consultar al backend configurado
+        if let Some(be) = backend {
+            match be.as_str() {
+                "swaybg" => return Self::from_swaybg(),
+                "swww" => return Self::from_swww_like("swww"),
+                _ => {}
+            }
+        }
+
         None
     }
 
-    // --- Image loading ---
-
+    // --- Carga de imagen (soporta GIF y video vía ffmpeg) ---
     fn load_image_from_path(path: &PathBuf) -> Result<image::DynamicImage> {
         let ext = path.extension()
             .and_then(|e| e.to_str())
@@ -254,6 +177,7 @@ impl WallpaperAnalyzer {
         image::open(path).context("Failed to open image")
     }
 
+    // --- Paleta de colores por defecto (Catppuccin) ---
     pub fn default_colors(num_colors: usize) -> Vec<[f32; 4]> {
         let catppuccin = [
             [0.580, 0.886, 0.835, 1.0],
@@ -276,12 +200,12 @@ impl WallpaperAnalyzer {
         }
     }
 
-    /// Generate a color palette from the current wallpaper using color-thief (Median Cut).
+    /// Genera una paleta de colores usando el algoritmo Median Cut (color-thief)
     pub fn generate_gradient_colors(num_colors: usize) -> Result<Vec<[f32; 4]>> {
         let wallpaper_path = match Self::find_wallpaper() {
             Some(path) => path,
             None => {
-                // Already logged, just return defaults.
+                log::warn!("No wallpaper found, using default colors");
                 return Ok(Self::default_colors(num_colors));
             }
         };
@@ -299,9 +223,11 @@ impl WallpaperAnalyzer {
         let (width, height) = img.dimensions();
         log::debug!("Wallpaper dimensions: {}x{}", width, height);
 
+        // Convertir a RGB8 (color-thief espera un slice de bytes RGB)
         let rgb_img = img.to_rgb8();
         let pixels = rgb_img.as_raw();
 
+        // Obtener paleta de colores con color-thief (máximo 8 colores)
         let palette = get_palette(pixels, ColorFormat::Rgb, 10, num_colors as u8)
             .context("Failed to extract color palette")?;
 
@@ -310,13 +236,14 @@ impl WallpaperAnalyzer {
             .map(|c| [c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0, 1.0])
             .collect();
 
-        // Sort by luminance for a smoother gradient
+        // Ordenar colores por luminosidad para un gradiente más natural
         new_colors.sort_by(|a, b| {
             let lum_a = 0.299 * a[0] + 0.587 * a[1] + 0.114 * a[2];
             let lum_b = 0.299 * b[0] + 0.587 * b[1] + 0.114 * b[2];
             lum_a.partial_cmp(&lum_b).unwrap()
         });
 
+        // Suavizar con colores anteriores
         let mut prev_guard = PREVIOUS_COLORS.lock().unwrap();
         if !prev_guard.is_empty() && prev_guard.len() == new_colors.len() {
             for i in 0..new_colors.len() {
