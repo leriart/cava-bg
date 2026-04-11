@@ -66,7 +66,7 @@ impl WaylandRenderer {
 
     pub fn run(self) -> Result<()> {
         info!("Starting Wayland renderer (exact wallpaper-cava core)");
-
+        std::env::set_var("EGL_PLATFORM", "wayland");
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
         let (globals, event_queue) = registry_queue_init(&conn).context("Failed to init registry")?;
         let qh = event_queue.handle();
@@ -442,34 +442,40 @@ impl OutputHandler for AppState {
             Some(i) => i,
             None => return,
         };
+        let name = info.name.clone().unwrap_or_else(|| "unknown".to_string());
+        info!("Output detected: {} ({:?})", name, info.logical_size);
+
         let mut need_configuration = false;
-        if let Some(output_name) = info.name {
-            if let Some(ref pref) = self.preferred_output_name {
-                if output_name == *pref {
-                    need_configuration = true;
-                }
+        if let Some(ref pref) = self.preferred_output_name {
+            if Some(&name) == Some(pref) {
+                need_configuration = true;
+                info!("Preferred output matched: {}", name);
             }
-        }
-        if self.preferred_output_name.is_none() {
+        } else if self.preferred_output_name.is_none() && self.width == 256 && self.height == 256 {
+            // Solo configurar automáticamente si aún no se ha configurado una salida
             need_configuration = true;
+            info!("No preferred output set, using first available: {}", name);
         }
+
         if need_configuration {
+            // Recrear superficie y capa para esta salida
             let old_surface = self.surface.clone();
             self.surface = self.compositor.create_surface(qh);
             self.layer_surface = self.layer_shell.create_layer_surface(
                 qh,
                 self.surface.clone(),
                 Layer::Bottom,
-                Some("wallpaper-cava"),
+                Some("cava-bg"),
                 Some(&output),
             );
-            let logical_size = info.logical_size.unwrap_or((256, 256));
+            let logical_size = info.logical_size.unwrap_or((1920, 1080)); // valor por defecto más razonable
             self.width = logical_size.0 as u32;
             self.height = logical_size.1 as u32;
             self.layer_surface.set_size(self.width, self.height);
-            self.layer_surface.set_anchor(Anchor::TOP);
+            self.layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
             self.surface.commit();
             old_surface.destroy();
+            info!("Configured for output {}: {}x{}", name, self.width, self.height);
         }
     }
     fn update_output(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
