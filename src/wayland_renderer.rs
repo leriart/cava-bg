@@ -143,10 +143,9 @@ impl WaylandRenderer {
             .make_current(egl_display, Some(egl_surface), Some(egl_surface), Some(egl_context))
             .context("Failed to make EGL context current")?;
 
-        // Carga de funciones OpenGL corregida
+        // Carga de funciones OpenGL corregida (pasar &str)
         gl::load_with(|name| {
-            let name_c = CString::new(name).unwrap();
-            match egl::API.get_proc_address(&name_c) {
+            match egl::API.get_proc_address(name) {
                 Some(proc) => proc as *const c_void,
                 None => ptr::null(),
             }

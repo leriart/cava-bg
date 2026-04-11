@@ -10,7 +10,7 @@ use std::io::{BufReader, Write};
 use std::process::{ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
@@ -120,6 +120,7 @@ fn main() -> Result<()> {
 
     // Canal para actualizaciones de color
     let (color_tx, color_rx) = mpsc::channel();
+    let shared_color_rx = Arc::new(Mutex::new(color_rx));
 
     // Hilo de vigilancia de wallpaper
     if auto_colors_enabled {
@@ -190,12 +191,16 @@ fn main() -> Result<()> {
             }
         };
 
-        // Clonar el receptor para esta iteración
-        let color_rx_clone = match color_rx.try_clone() {
-            Ok(clone) => clone,
-            Err(e) => {
-                error!("Failed to clone color channel: {}", e);
-                break;
+        // Obtener una copia del receiver desde el Mutex (sin consumir el original)
+        let color_rx_clone = {
+            let guard = shared_color_rx.lock().unwrap();
+            // Intentar clonar el Receiver (si no se puede, rompemos)
+            match guard.try_clone() {
+                Ok(clone) => clone,
+                Err(e) => {
+                    error!("Failed to clone color channel: {}", e);
+                    break;
+                }
             }
         };
 
