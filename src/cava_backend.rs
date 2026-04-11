@@ -45,6 +45,7 @@ impl CavaBackend {
                 match reader.read_exact(&mut buffer) {
                     Ok(_) => {
                         consecutive_errors = 0;
+                        debug!("Received audio data from cava ({} bytes)", bar_count * 2);
                         let mut unpacked = vec![0.0; bar_count];
                         for (i, chunk) in buffer.chunks_exact(2).enumerate() {
                             let num = u16::from_le_bytes([chunk[0], chunk[1]]);

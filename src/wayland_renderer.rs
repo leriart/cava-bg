@@ -177,6 +177,8 @@ impl WaylandRenderer {
             .map(|c| array_from_config_color(c.clone()))
             .collect();
 
+        let frame_duration = Duration::from_secs_f64(1.0 / self.config.general.framerate as f64);
+
         let mut app_state = AppState {
             registry_state: RegistryState::new(&globals),
             output_state: OutputState::new(&globals, &qh),
@@ -190,12 +192,11 @@ impl WaylandRenderer {
             color_rx,
             running,
             current_colors: initial_colors,
-            frame_duration: Duration::from_secs_f64(1.0 / self.config.general.framerate as f64),
+            frame_duration,
             conn: conn.clone(),
             qh,
         };
-        let frame_duration = Duration::from_secs_f64(1.0 / self.config.general.framerate as f64);
-        
+
         event_loop
             .run(Some(frame_duration), &mut app_state, |_| {})
             .context("Event loop failed")?;
@@ -449,6 +450,7 @@ impl AppState {
         let mut bar_heights = vec![0.0; self.bar_count];
         if let Ok(new_heights) = self.audio_rx.try_recv() {
             bar_heights = new_heights;
+            debug!("Usando datos reales de audio: {} barras", bar_heights.len());
         } else {
             // Modo de prueba: onda sinusoidal
             let phase = (std::time::SystemTime::now()

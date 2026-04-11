@@ -153,10 +153,12 @@ impl Config {
         if let Some(sensitivity) = self.general.sensitivity {
             config.push_str(&format!("sensitivity = {}\n", sensitivity));
         }
+        config.push_str("\n[input]\n");
+        config.push_str("method = pulse\n");
+        config.push_str("source = auto\n");
         config.push_str("\n[output]\n");
         config.push_str(&format!("bars = {}\n", self.bars.amount));
         config.push_str("method = raw\n");
-        // raw_target eliminado -> cava escribe a stdout por defecto
         config.push_str("bit_format = 16bit\n");
         config.push_str("\n[smoothing]\n");
         if let Some(monstercat) = self.smoothing.monstercat {
