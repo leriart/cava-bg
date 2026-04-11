@@ -10,7 +10,7 @@ use std::process::Command;
 use std::sync::mpsc;
 use std::thread;
 
-use notify::{watcher, RecursiveMode, Watcher};
+use notify::{recommended_watcher, RecursiveMode, Watcher};
 
 fn main() -> Result<()> {
     let cli = cli::Cli::parse();

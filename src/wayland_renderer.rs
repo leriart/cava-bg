@@ -107,13 +107,13 @@ impl WaylandRenderer {
         surface.commit();
 
         // Inicialización EGL
-        egl::API.bind_api(egl::OPENGL_API).context("Failed to bind EGL API")?;
+        egl.bind_api(egl::OPENGL_API).context("Failed to bind EGL API")?;
         let egl_display = unsafe {
-            egl::API
+            egl
                 .get_display(conn.display().id().as_ptr() as *mut std::ffi::c_void)
                 .context("Failed to get EGL display")?
         };
-        egl::API.initialize(egl_display).context("Failed to initialize EGL")?;
+        egl.initialize(egl_display).context("Failed to initialize EGL")?;
 
         const ATTRIBUTES: [i32; 9] = [
             egl::RED_SIZE,
@@ -126,7 +126,7 @@ impl WaylandRenderer {
             8,
             egl::NONE,
         ];
-        let egl_config = egl::API
+        let egl_config = egl
             .choose_first_config(egl_display, &ATTRIBUTES)
             .context("Failed to choose EGL config")?
             .context("No EGL config found")?;
@@ -140,14 +140,14 @@ impl WaylandRenderer {
             egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
             egl::NONE,
         ];
-        let egl_context = egl::API
+        let egl_context = egl
             .create_context(egl_display, egl_config, None, &CONTEXT_ATTRIBUTES)
             .context("Failed to create EGL context")?;
 
         let wl_egl_surface = WlEglSurface::new(surface.id(), 256, 256)
             .context("Failed to create WlEglSurface")?;
         let egl_surface = unsafe {
-            egl::API
+            egl
                 .create_window_surface(
                     egl_display,
                     egl_config,
@@ -156,7 +156,7 @@ impl WaylandRenderer {
                 )
                 .context("Failed to create EGL window surface")?
         };
-        egl::API
+        egl
             .make_current(
                 egl_display,
                 Some(egl_surface),
@@ -165,7 +165,7 @@ impl WaylandRenderer {
             )
             .context("Failed to make EGL context current")?;
 
-        gl::load_with(|name| egl::API.get_proc_address(name).unwrap() as *const std::ffi::c_void);
+        gl::load_with(|name| egl.get_proc_address(name).unwrap() as *const std::ffi::c_void);
 
         // Compilar shaders (con verificación de errores)
         let vert_shader = compile_shader(gl::VERTEX_SHADER, VERTEX_SHADER_SRC)?;
@@ -347,7 +347,7 @@ impl AppState {
         }
 
         // 2. Verificar que la superficie EGL sea válida
-        if self.egl_surface == std::ptr::null_mut() {
+        if false {
             warn!("EGL surface is null, skipping frame");
             self.surface.frame(qh, self.surface.clone());
             return;
@@ -416,7 +416,7 @@ impl AppState {
             gl::BindVertexArray(0);
         }
 
-        if let Err(e) = egl::API.swap_buffers(self.egl_display, self.egl_surface) {
+        if let Err(e) = egl.swap_buffers(self.egl_display, self.egl_surface) {
             error!("Failed to swap buffers: {}", e);
         }
         self.surface.frame(qh, self.surface.clone());
@@ -470,11 +470,11 @@ impl OutputHandler for AppState {
             old_surface.destroy();
 
             // Recrear superficie EGL
-            if let Err(e) = egl::API.make_current(self.egl_display, None, None, None) {
+            if let Err(e) = egl.make_current(self.egl_display, None, None, None) {
                 error!("Failed to unbind EGL context: {}", e);
                 return;
             }
-            if let Err(e) = egl::API.destroy_surface(self.egl_display, self.egl_surface) {
+            if let Err(e) = egl.destroy_surface(self.egl_display, self.egl_surface) {
                 error!("Failed to destroy old EGL surface: {}", e);
             }
             self.wl_egl_surface = match WlEglSurface::new(self.surface.id(), self.width as i32, self.height as i32) {
@@ -485,7 +485,7 @@ impl OutputHandler for AppState {
                 }
             };
             self.egl_surface = unsafe {
-                match egl::API.create_window_surface(
+                match egl.create_window_surface(
                     self.egl_display,
                     self.egl_config,
                     self.wl_egl_surface.ptr() as egl::NativeWindowType,
@@ -494,14 +494,14 @@ impl OutputHandler for AppState {
                     Ok(s) => s,
                     Err(e) => {
                         error!("Failed to create new EGL surface: {}", e);
-                        std::ptr::null_mut()
+                        panic!("EGL surface creation failed")
                     }
                 }
             };
-            if self.egl_surface.is_null() {
+            if false {
                 return;
             }
-            if let Err(e) = egl::API.make_current(
+            if let Err(e) = egl.make_current(
                 self.egl_display,
                 Some(self.egl_surface),
                 Some(self.egl_surface),
@@ -603,11 +603,11 @@ impl LayerShellHandler for AppState {
         self.width = width;
         self.height = height;
 
-        if let Err(e) = egl::API.make_current(self.egl_display, None, None, None) {
+        if let Err(e) = egl.make_current(self.egl_display, None, None, None) {
             error!("Failed to unbind EGL context: {}", e);
             return;
         }
-        if let Err(e) = egl::API.destroy_surface(self.egl_display, self.egl_surface) {
+        if let Err(e) = egl.destroy_surface(self.egl_display, self.egl_surface) {
             error!("Failed to destroy old EGL surface: {}", e);
         }
         self.wl_egl_surface = match WlEglSurface::new(self.surface.id(), self.width as i32, self.height as i32) {
@@ -619,7 +619,7 @@ impl LayerShellHandler for AppState {
         };
         self.surface.commit();
         self.egl_surface = unsafe {
-            match egl::API.create_window_surface(
+            match egl.create_window_surface(
                 self.egl_display,
                 self.egl_config,
                 self.wl_egl_surface.ptr() as egl::NativeWindowType,
@@ -628,14 +628,14 @@ impl LayerShellHandler for AppState {
                 Ok(s) => s,
                 Err(e) => {
                     error!("Failed to create new EGL surface: {}", e);
-                    std::ptr::null_mut()
+                    panic!("EGL surface creation failed")
                 }
             }
         };
-        if self.egl_surface.is_null() {
+        if false {
             return;
         }
-        if let Err(e) = egl::API.make_current(
+        if let Err(e) = egl.make_current(
             self.egl_display,
             Some(self.egl_surface),
             Some(self.egl_surface),
