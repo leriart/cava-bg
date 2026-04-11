@@ -1,5 +1,5 @@
 // src/wayland_renderer.rs
-// Versión corregida: recrea EGL en new_output, anclaje consistente, logs de depuración
+// Versión multi-monitor con layer Bottom y superficies independientes
 
 use anyhow::{anyhow, Context, Result};
 use gl::types::{GLsizei, GLsizeiptr};
@@ -28,6 +28,7 @@ use wayland_client::{
 };
 use wayland_egl::WlEglSurface;
 
+use std::collections::HashMap;
 use std::ffi::{c_void, CString};
 use std::io::{BufReader, Read};
 use std::process::ChildStdout;
@@ -65,7 +66,7 @@ impl WaylandRenderer {
     }
 
     pub fn run(self) -> Result<()> {
-        info!("Starting Wayland renderer (exact wallpaper-cava core)");
+        info!("Starting Wayland renderer (multi-monitor, Bottom layer)");
         std::env::set_var("EGL_PLATFORM", "wayland");
 
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
@@ -80,20 +81,9 @@ impl WaylandRenderer {
 
         let frame_duration = Duration::from_secs(1) / self.config.general.framerate;
         let compositor = CompositorState::bind(&globals, &qh).context("wl_compositor not available")?;
-        let surface = compositor.create_surface(&qh);
         let layer_shell = LayerShell::bind(&globals, &qh).context("layer shell not available")?;
-        let layer_surface = layer_shell.create_layer_surface(
-            &qh,
-            surface.clone(),
-            Layer::Bottom,
-            Some("cava-bg"),
-            None,
-        );
-        layer_surface.set_size(256, 256);
-        layer_surface.set_anchor(Anchor::TOP);
-        surface.commit();
 
-        // Inicialización EGL
+        // Inicialización EGL (una sola vez)
         egl::API
             .bind_api(egl::OPENGL_API)
             .context("Failed to bind EGL API")?;
@@ -128,21 +118,7 @@ impl WaylandRenderer {
             .create_context(egl_display, egl_config, None, &CONTEXT_ATTRIBUTES)
             .context("Failed to create EGL context")?;
 
-        let wl_egl_surface = WlEglSurface::new(surface.id(), 256, 256)
-            .context("Failed to create WlEglSurface")?;
-        let egl_surface = unsafe {
-            egl::API
-                .create_window_surface(
-                    egl_display,
-                    egl_config,
-                    wl_egl_surface.ptr() as egl::NativeWindowType,
-                    None,
-                )
-                .context("Failed to create EGL window surface")?
-        };
-        egl::API
-            .make_current(egl_display, Some(egl_surface), Some(egl_surface), Some(egl_context))
-            .context("Failed to make EGL context current")?;
+        // No creamos una surface inicial; se creará por cada output en new_output
 
         gl::load_with(|name| {
             let name_c = CString::new(name).unwrap();
@@ -217,17 +193,11 @@ impl WaylandRenderer {
         let mut app_state = AppState {
             registry_state: RegistryState::new(&globals),
             output_state: OutputState::new(&globals, &qh),
-            width: 256,
-            height: 256,
+            compositor,
             layer_shell,
-            layer_surface,
-            surface,
-            cava_reader: self.cava_reader,
-            wl_egl_surface,
-            egl_surface,
+            egl_display,
             egl_config,
             egl_context,
-            egl_display,
             shader_program,
             vao,
             vbo,
@@ -236,13 +206,13 @@ impl WaylandRenderer {
             bar_gap: self.config.bars.gap,
             background_color: array_from_config_color(self.config.general.background_color),
             preferred_output_name: self.config.general.preferred_output,
-            compositor,
+            cava_reader: self.cava_reader,
             color_rx: self.color_rx,
             gradient_colors_ssbo,
             gradient_colors: gradient_colors_rgba,
             running: self.running,
             updating_colors,
-            configured_output: None,
+            outputs: HashMap::new(),
         };
 
         event_loop
@@ -279,20 +249,24 @@ fn create_ssbo(colors: &[[f32; 4]]) -> (u32, Vec<[f32; 4]>) {
     (ssbo, colors.to_vec())
 }
 
+// Estructura para almacenar el estado de cada output
+struct OutputSurface {
+    surface: WlSurface,
+    layer_surface: LayerSurface,
+    wl_egl_surface: WlEglSurface,
+    egl_surface: egl::Surface,
+    width: u32,
+    height: u32,
+}
+
 struct AppState {
     registry_state: RegistryState,
     output_state: OutputState,
-    width: u32,
-    height: u32,
+    compositor: CompositorState,
     layer_shell: LayerShell,
-    layer_surface: LayerSurface,
-    surface: WlSurface,
-    cava_reader: BufReader<ChildStdout>,
-    wl_egl_surface: WlEglSurface,
-    egl_surface: egl::Surface,
+    egl_display: egl::Display,
     egl_config: egl::Config,
     egl_context: egl::Context,
-    egl_display: egl::Display,
     shader_program: u32,
     vao: u32,
     vbo: u32,
@@ -301,13 +275,13 @@ struct AppState {
     bar_gap: f32,
     background_color: [f32; 4],
     preferred_output_name: Option<String>,
-    compositor: CompositorState,
+    cava_reader: BufReader<ChildStdout>,
     color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
     gradient_colors_ssbo: u32,
     gradient_colors: Vec<[f32; 4]>,
     running: Arc<AtomicBool>,
     updating_colors: Arc<AtomicBool>,
-    configured_output: Option<String>,
+    outputs: HashMap<String, OutputSurface>,
 }
 
 impl AppState {
@@ -340,12 +314,14 @@ impl AppState {
         info!("Updated gradient colors from wallpaper change");
     }
 
-    pub fn draw(&mut self, _conn: &Connection, qh: &QueueHandle<Self>) {
+    pub fn draw(&mut self, conn: &Connection, qh: &QueueHandle<Self>) {
         if !self.running.load(Ordering::SeqCst) {
             info!("Shutting down gracefully...");
             unsafe {
                 egl::API.make_current(self.egl_display, None, None, None).ok();
-                egl::API.destroy_surface(self.egl_display, self.egl_surface).ok();
+                for (_, output) in self.outputs.iter() {
+                    egl::API.destroy_surface(self.egl_display, output.egl_surface).ok();
+                }
                 egl::API.destroy_context(self.egl_display, self.egl_context).ok();
                 egl::API.terminate(self.egl_display).ok();
             }
@@ -353,7 +329,10 @@ impl AppState {
         }
 
         if self.updating_colors.load(Ordering::SeqCst) {
-            self.surface.frame(qh, self.surface.clone());
+            // Aún así pedimos frame para cada output
+            for (_, output) in self.outputs.iter() {
+                output.surface.frame(qh, output.surface.clone());
+            }
             return;
         }
 
@@ -367,10 +346,13 @@ impl AppState {
             self.update_colors(&colors);
         }
 
+        // Leer datos de cava una vez por frame
         let mut cava_buffer: Vec<u8> = vec![0; self.bar_count as usize * 2];
         if let Err(e) = self.cava_reader.read_exact(&mut cava_buffer) {
             warn!("Failed to read from cava: {}", e);
-            self.surface.frame(qh, self.surface.clone());
+            for (_, output) in self.outputs.iter() {
+                output.surface.frame(qh, output.surface.clone());
+            }
             return;
         }
 
@@ -380,60 +362,77 @@ impl AppState {
             unpacked_data[i] = (num as f32) / 65530.0;
         }
 
-        let bar_width: f32 =
-            2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
-        let bar_gap_width: f32 = bar_width * self.bar_gap;
-        let mut vertices: Vec<f32> = vec![0.0; self.bar_count as usize * 8];
-        let fwidth: f32 = self.width as f32;
-        let fheight: f32 = self.height as f32;
+        // Dibujar en cada output
+        for (name, output) in self.outputs.iter_mut() {
+            let width = output.width;
+            let height = output.height;
 
-        for i in 0..self.bar_count as usize {
-            let bar_height: f32 = 2.0 * unpacked_data[i] - 1.0;
-            vertices[i * 8] = bar_gap_width * i as f32 + bar_width * i as f32 - 1.0;
-            vertices[i * 8 + 1] = bar_height;
-            vertices[i * 8 + 2] = bar_gap_width * i as f32 + bar_width * (i + 1) as f32 - 1.0;
-            vertices[i * 8 + 3] = bar_height;
-            vertices[i * 8 + 4] = bar_gap_width * i as f32 + bar_width * i as f32 - 1.0;
-            vertices[i * 8 + 5] = -1.0;
-            vertices[i * 8 + 6] = bar_gap_width * i as f32 + bar_width * (i + 1) as f32 - 1.0;
-            vertices[i * 8 + 7] = -1.0;
-        }
+            let bar_width: f32 =
+                2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
+            let bar_gap_width: f32 = bar_width * self.bar_gap;
+            let mut vertices: Vec<f32> = vec![0.0; self.bar_count as usize * 8];
+            let fwidth: f32 = width as f32;
+            let fheight: f32 = height as f32;
 
-        unsafe {
-            gl::BindVertexArray(self.vao);
-            gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo);
-            gl::BufferData(
-                gl::ARRAY_BUFFER,
-                (vertices.len() * mem::size_of::<f32>()) as GLsizeiptr,
-                vertices.as_ptr() as *const _,
-                gl::DYNAMIC_DRAW,
-            );
-            gl::Enable(gl::BLEND);
-            gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
-            gl::ClearColor(
-                self.background_color[0],
-                self.background_color[1],
-                self.background_color[2],
-                self.background_color[3],
-            );
-            gl::Clear(gl::COLOR_BUFFER_BIT);
-            gl::UseProgram(self.shader_program);
-            gl::Uniform2f(self.windows_size_location, fwidth, fheight);
-            gl::DrawElements(
-                gl::TRIANGLES,
-                (self.bar_count as usize * 3 * mem::size_of::<u16>()) as GLsizei,
-                gl::UNSIGNED_SHORT,
-                ptr::null(),
-            );
-            gl::BindVertexArray(0);
-        }
+            for i in 0..self.bar_count as usize {
+                let bar_height: f32 = 2.0 * unpacked_data[i] - 1.0;
+                vertices[i * 8] = bar_gap_width * i as f32 + bar_width * i as f32 - 1.0;
+                vertices[i * 8 + 1] = bar_height;
+                vertices[i * 8 + 2] = bar_gap_width * i as f32 + bar_width * (i + 1) as f32 - 1.0;
+                vertices[i * 8 + 3] = bar_height;
+                vertices[i * 8 + 4] = bar_gap_width * i as f32 + bar_width * i as f32 - 1.0;
+                vertices[i * 8 + 5] = -1.0;
+                vertices[i * 8 + 6] = bar_gap_width * i as f32 + bar_width * (i + 1) as f32 - 1.0;
+                vertices[i * 8 + 7] = -1.0;
+            }
 
-        if let Err(e) = egl::API.swap_buffers(self.egl_display, self.egl_surface) {
-            error!("Failed to swap buffers: {}", e);
-        } else {
-            debug!("Frame rendered successfully");
+            unsafe {
+                egl::API
+                    .make_current(
+                        self.egl_display,
+                        Some(output.egl_surface),
+                        Some(output.egl_surface),
+                        Some(self.egl_context),
+                    )
+                    .ok();
+                gl::Viewport(0, 0, width as GLsizei, height as GLsizei);
+
+                gl::BindVertexArray(self.vao);
+                gl::BindBuffer(gl::ARRAY_BUFFER, self.vbo);
+                gl::BufferData(
+                    gl::ARRAY_BUFFER,
+                    (vertices.len() * mem::size_of::<f32>()) as GLsizeiptr,
+                    vertices.as_ptr() as *const _,
+                    gl::DYNAMIC_DRAW,
+                );
+                gl::Enable(gl::BLEND);
+                gl::BlendFunc(gl::SRC_ALPHA, gl::ONE_MINUS_SRC_ALPHA);
+                gl::ClearColor(
+                    self.background_color[0],
+                    self.background_color[1],
+                    self.background_color[2],
+                    self.background_color[3],
+                );
+                gl::Clear(gl::COLOR_BUFFER_BIT);
+                gl::UseProgram(self.shader_program);
+                gl::Uniform2f(self.windows_size_location, fwidth, fheight);
+                gl::DrawElements(
+                    gl::TRIANGLES,
+                    (self.bar_count as usize * 3 * mem::size_of::<u16>()) as GLsizei,
+                    gl::UNSIGNED_SHORT,
+                    ptr::null(),
+                );
+                gl::BindVertexArray(0);
+
+                if let Err(e) = egl::API.swap_buffers(self.egl_display, output.egl_surface) {
+                    error!("Failed to swap buffers for {}: {}", name, e);
+                } else {
+                    debug!("Frame rendered on {}", name);
+                }
+            }
+
+            output.surface.frame(qh, output.surface.clone());
         }
-        self.surface.frame(qh, self.surface.clone());
     }
 }
 
@@ -450,85 +449,78 @@ impl OutputHandler for AppState {
         let name = info.name.clone().unwrap_or_else(|| "unknown".to_string());
         debug!("Output detected: {} ({:?})", name, info.logical_size);
 
-        // Evitar reconfiguraciones innecesarias
-        if let Some(ref configured) = self.configured_output {
-            if configured == &name {
-                debug!("Output {} already configured, skipping", name);
-                return;
-            }
+        // Verificar si ya tenemos este output
+        if self.outputs.contains_key(&name) {
+            debug!("Output {} already configured, skipping", name);
+            return;
         }
 
-        let mut need_configuration = false;
+        // Decidir si debemos crear superficie para este output
+        let mut create = false;
         if let Some(ref pref) = self.preferred_output_name {
             if &name == pref {
-                need_configuration = true;
+                create = true;
                 info!("Preferred output matched: {}", name);
             }
-        } else if self.preferred_output_name.is_none() && self.width == 256 && self.height == 256 {
-            need_configuration = true;
-            info!("No preferred output set, using first available: {}", name);
+        } else {
+            // Sin preferencia, crear para todos
+            create = true;
+            info!("Creating surface for output: {}", name);
         }
 
-        if need_configuration {
-            // Destruir superficie Wayland anterior
-            let old_surface = self.surface.clone();
-            self.surface = self.compositor.create_surface(qh);
-            self.layer_surface = self.layer_shell.create_layer_surface(
+        if create {
+            let surface = self.compositor.create_surface(qh);
+            let layer_surface = self.layer_shell.create_layer_surface(
                 qh,
-                self.surface.clone(),
-                Layer::Bottom,
+                surface.clone(),
+                Layer::Bottom, // Cambiado a Bottom para evitar conflicto con Background
                 Some("cava-bg"),
                 Some(&output),
             );
             let logical_size = info.logical_size.unwrap_or((1920, 1080));
-            self.width = logical_size.0 as u32;
-            self.height = logical_size.1 as u32;
-            self.layer_surface.set_size(self.width, self.height);
-            self.layer_surface.set_anchor(Anchor::TOP);
-            self.surface.commit();
-            old_surface.destroy();
+            let width = logical_size.0 as u32;
+            let height = logical_size.1 as u32;
+            layer_surface.set_size(width, height);
+            layer_surface.set_anchor(Anchor::TOP);
+            layer_surface.set_exclusive_zone(-1); // No reservar espacio
+            surface.commit();
 
-            // Recrear superficie EGL para la nueva wl_surface
-            unsafe {
-                egl::API.make_current(self.egl_display, None, None, None).ok();
-                egl::API.destroy_surface(self.egl_display, self.egl_surface).ok();
-            }
-            self.wl_egl_surface =
-                match WlEglSurface::new(self.surface.id(), self.width as i32, self.height as i32) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        error!("Failed to create WlEglSurface in new_output: {}", e);
-                        return;
-                    }
-                };
-            self.egl_surface = unsafe {
+            // Crear EGL surface para este output
+            let wl_egl_surface = match WlEglSurface::new(surface.id(), width as i32, height as i32) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!("Failed to create WlEglSurface for {}: {}", name, e);
+                    return;
+                }
+            };
+            let egl_surface = unsafe {
                 match egl::API.create_window_surface(
                     self.egl_display,
                     self.egl_config,
-                    self.wl_egl_surface.ptr() as egl::NativeWindowType,
+                    wl_egl_surface.ptr() as egl::NativeWindowType,
                     None,
                 ) {
                     Ok(s) => s,
                     Err(e) => {
-                        error!("Failed to create EGL surface in new_output: {}", e);
+                        error!("Failed to create EGL surface for {}: {}", name, e);
                         return;
                     }
                 }
             };
-            unsafe {
-                if let Err(e) = egl::API.make_current(
-                    self.egl_display,
-                    Some(self.egl_surface),
-                    Some(self.egl_surface),
-                    Some(self.egl_context),
-                ) {
-                    error!("Failed to make EGL context current in new_output: {}", e);
-                    return;
-                }
-                gl::Viewport(0, 0, self.width as GLsizei, self.height as GLsizei);
-            }
-            self.configured_output = Some(name.clone());
-            info!("Configured for output {}: {}x{}", name, self.width, self.height);
+
+            self.outputs.insert(
+                name.clone(),
+                OutputSurface {
+                    surface,
+                    layer_surface,
+                    wl_egl_surface,
+                    egl_surface,
+                    width,
+                    height,
+                },
+            );
+
+            info!("Configured output {}: {}x{}", name, width, height);
         }
     }
 
@@ -536,7 +528,20 @@ impl OutputHandler for AppState {
         self.new_output(_conn, qh, output);
     }
 
-    fn output_destroyed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _output: wl_output::WlOutput) {}
+    fn output_destroyed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
+        // Limpiar recursos de ese output
+        let info = self.output_state.info(&output);
+        if let Some(info) = info {
+            if let Some(name) = info.name {
+                if let Some(output_state) = self.outputs.remove(&name) {
+                    unsafe {
+                        egl::API.destroy_surface(self.egl_display, output_state.egl_surface).ok();
+                    }
+                    info!("Output {} removed", name);
+                }
+            }
+        }
+    }
 }
 
 delegate_compositor!(AppState);
@@ -567,59 +572,55 @@ impl LayerShellHandler for AppState {
     fn configure(
         &mut self,
         _conn: &Connection,
-        qh: &QueueHandle<Self>,
-        _layer: &LayerSurface,
+        _qh: &QueueHandle<Self>,
+        layer: &LayerSurface,
         configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
         let width = configure.new_size.0;
         let height = configure.new_size.1;
-        if width == self.width && height == self.height {
-            return;
-        }
-        self.width = width;
-        self.height = height;
 
-        unsafe {
-            egl::API.make_current(self.egl_display, None, None, None).ok();
-            egl::API.destroy_surface(self.egl_display, self.egl_surface).ok();
-        }
-        self.wl_egl_surface =
-            match WlEglSurface::new(self.surface.id(), self.width as i32, self.height as i32) {
-                Ok(s) => s,
-                Err(e) => {
-                    error!("Failed to create WlEglSurface after configure: {}", e);
+        // Buscar qué output corresponde a esta layer_surface
+        for (name, output) in self.outputs.iter_mut() {
+            if &output.layer_surface == layer {
+                if width == output.width && height == output.height {
                     return;
                 }
-            };
-        self.surface.commit();
-        self.egl_surface = unsafe {
-            match egl::API.create_window_surface(
-                self.egl_display,
-                self.egl_config,
-                self.wl_egl_surface.ptr() as egl::NativeWindowType,
-                None,
-            ) {
-                Ok(s) => s,
-                Err(e) => {
-                    error!("Failed to create EGL surface after configure: {}", e);
-                    return;
+                output.width = width;
+                output.height = height;
+
+                // Recrear EGL surface con nuevo tamaño
+                unsafe {
+                    egl::API.make_current(self.egl_display, None, None, None).ok();
+                    egl::API.destroy_surface(self.egl_display, output.egl_surface).ok();
                 }
+                output.wl_egl_surface =
+                    match WlEglSurface::new(output.surface.id(), width as i32, height as i32) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            error!("Failed to create WlEglSurface for {} after configure: {}", name, e);
+                            return;
+                        }
+                    };
+                output.surface.commit();
+                output.egl_surface = unsafe {
+                    match egl::API.create_window_surface(
+                        self.egl_display,
+                        self.egl_config,
+                        output.wl_egl_surface.ptr() as egl::NativeWindowType,
+                        None,
+                    ) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            error!("Failed to create EGL surface for {} after configure: {}", name, e);
+                            return;
+                        }
+                    }
+                };
+                info!("Output {} reconfigured: {}x{}", name, width, height);
+                break;
             }
-        };
-        unsafe {
-            if let Err(e) = egl::API.make_current(
-                self.egl_display,
-                Some(self.egl_surface),
-                Some(self.egl_surface),
-                Some(self.egl_context),
-            ) {
-                error!("Failed to make EGL context current: {}", e);
-                return;
-            }
-            gl::Viewport(0, 0, self.width as GLsizei, self.height as GLsizei);
         }
-        self.draw(_conn, qh);
     }
 }
 
