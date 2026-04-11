@@ -15,13 +15,19 @@ pub struct WallpaperAnalyzer;
 impl WallpaperAnalyzer {
     /// Encuentra el archivo de wallpaper actual. Devuelve Some si lo encuentra.
     pub fn find_wallpaper() -> Option<PathBuf> {
-        // 1. Preguntar a hyprpaper a través de hyprctl (muy fiable)
+        // 1. mpvpaper (muy común para GIFs/videos)
+        if let Some(path) = Self::from_mpvpaper() {
+            log::info!("Detected wallpaper via mpvpaper: {:?}", path);
+            return Some(path);
+        }
+
+        // 2. Preguntar a hyprpaper a través de hyprctl
         if let Some(path) = Self::from_hyprctl_hyprpaper() {
             log::info!("Detected wallpaper via hyprctl hyprpaper: {:?}", path);
             return Some(path);
         }
 
-        // 2. awww / swww (consulta vía línea de comandos)
+        // 3. awww / swww
         if let Some(path) = Self::from_swww_like("awww") {
             log::info!("Detected wallpaper via awww: {:?}", path);
             return Some(path);
@@ -31,21 +37,15 @@ impl WallpaperAnalyzer {
             return Some(path);
         }
 
-        // 3. swaybg (búsqueda exhaustiva en procesos)
+        // 4. swaybg
         if let Some(path) = Self::from_swaybg() {
             log::info!("Detected wallpaper via swaybg: {:?}", path);
             return Some(path);
         }
 
-        // 4. hyprpaper (archivo de configuración)
+        // 5. hyprpaper (archivo de configuración)
         if let Some(path) = Self::from_hyprpaper_conf() {
             log::info!("Detected wallpaper via hyprpaper.conf: {:?}", path);
-            return Some(path);
-        }
-
-        // 5. mpvpaper
-        if let Some(path) = Self::from_mpvpaper() {
-            log::info!("Detected wallpaper via mpvpaper: {:?}", path);
             return Some(path);
         }
 
@@ -160,14 +160,29 @@ impl WallpaperAnalyzer {
     }
 
     fn from_mpvpaper() -> Option<PathBuf> {
-        let output = Command::new("pgrep").arg("-a").arg("mpvpaper").output().ok()?;
+        // Usamos ps aux para obtener la línea completa
+        let output = Command::new("ps").arg("aux").output().ok()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 3 {
-                let path = PathBuf::from(parts[2]);
-                if path.exists() {
-                    return Some(path);
+            if line.contains("mpvpaper") && !line.contains("grep") {
+                log::debug!("Found mpvpaper process: {}", line);
+                // Dividir por espacios y buscar el último argumento que sea una ruta de archivo válida
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                // mpvpaper suele tener la ruta del archivo al final de la línea
+                for part in parts.iter().rev() {
+                    let path = PathBuf::from(part);
+                    // Verificar si el archivo existe y tiene extensión de imagen/video
+                    if path.exists() {
+                        if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                            let ext_lower = ext.to_lowercase();
+                            if matches!(ext_lower.as_str(),
+                                "jpg" | "jpeg" | "png" | "bmp" | "webp" | "gif" |
+                                "mp4" | "mkv" | "webm" | "avi" | "mov")
+                            {
+                                return Some(path);
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -224,7 +239,11 @@ impl WallpaperAnalyzer {
     fn fallback_most_recent() -> Option<PathBuf> {
         let mut candidates = Vec::new();
         let dirs_to_check = vec![
+            dirs::picture_dir(),
             dirs::picture_dir().map(|p| p.join("Wallpapers")),
+            dirs::picture_dir().map(|p| p.join("Wallpaper")),
+            dirs::home_dir().map(|p| p.join("Imágenes").join("Wallpapers-Axenide")), // añadido para el usuario
+            dirs::home_dir().map(|p| p.join("Imágenes")),
             dirs::config_dir().map(|p| p.join("hypr")),
         ];
         for dir in dirs_to_check.into_iter().flatten() {
