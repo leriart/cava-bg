@@ -194,9 +194,10 @@ impl WaylandRenderer {
             conn: conn.clone(),
             qh,
         };
-
+        let frame_duration = Duration::from_secs_f64(1.0 / self.config.general.framerate as f64);
+        
         event_loop
-            .run(None, &mut app_state, |_| {})
+            .run(Some(frame_duration), &mut app_state, |_| {})
             .context("Event loop failed")?;
 
         Ok(())
