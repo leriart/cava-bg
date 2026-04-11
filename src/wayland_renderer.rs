@@ -1,6 +1,3 @@
-// src/wayland_renderer.rs
-// Adaptación directa del main.rs de wallpaper-cava
-
 use anyhow::{Context, Result};
 use gl::types::{GLsizei, GLsizeiptr};
 use khronos_egl as egl;
@@ -31,14 +28,14 @@ use wayland_egl::WlEglSurface;
 use std::ffi::{c_void, CString};
 use std::io::{BufReader, Read};
 use std::process::ChildStdout;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
+use std::sync::Arc;
 use std::time::Duration;
 use std::{mem, ptr};
 
 use crate::config::Config;
-
-// Re-exportar API estática de EGL (igual que wallpaper-cava)
-use egl::API as egl_api;
+use egl::API as Egl;
 
 const VERTEX_SHADER_SRC: &str = include_str!("shaders/vertex_shader.glsl");
 const FRAGMENT_SHADER_SRC: &str = include_str!("shaders/fragment_shader.glsl");
@@ -47,6 +44,7 @@ pub struct WaylandRenderer {
     config: Config,
     cava_reader: BufReader<ChildStdout>,
     color_rx: Receiver<Vec<[f32; 4]>>,
+    running: Arc<AtomicBool>,
 }
 
 impl WaylandRenderer {
@@ -54,11 +52,13 @@ impl WaylandRenderer {
         config: Config,
         cava_reader: BufReader<ChildStdout>,
         color_rx: Receiver<Vec<[f32; 4]>>,
+        running: Arc<AtomicBool>,
     ) -> Self {
         Self {
             config,
             cava_reader,
             color_rx,
+            running,
         }
     }
 
@@ -104,14 +104,12 @@ impl WaylandRenderer {
         layer_surface.set_anchor(Anchor::TOP);
         surface.commit();
 
-        // --- EGL initialization (exactamente igual que wallpaper-cava) ---
-        egl_api.bind_api(egl::OPENGL_API).context("Failed to bind EGL API")?;
+        Egl.bind_api(egl::OPENGL_API).context("Failed to bind EGL API")?;
         let egl_display = unsafe {
-            egl_api
-                .get_display(conn.display().id().as_ptr() as *mut c_void)
+            Egl.get_display(conn.display().id().as_ptr() as *mut c_void)
                 .context("Failed to get EGL display")?
         };
-        egl_api.initialize(egl_display).context("Failed to initialize EGL")?;
+        Egl.initialize(egl_display).context("Failed to initialize EGL")?;
 
         const ATTRIBUTES: [i32; 9] = [
             egl::RED_SIZE, 8,
@@ -120,8 +118,7 @@ impl WaylandRenderer {
             egl::ALPHA_SIZE, 8,
             egl::NONE,
         ];
-        let egl_config = egl_api
-            .choose_first_config(egl_display, &ATTRIBUTES)
+        let egl_config = Egl.choose_first_config(egl_display, &ATTRIBUTES)
             .context("Failed to choose EGL config")?
             .context("No EGL config found")?;
 
@@ -131,34 +128,30 @@ impl WaylandRenderer {
             egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
             egl::NONE,
         ];
-        let egl_context = egl_api
-            .create_context(egl_display, egl_config, None, &CONTEXT_ATTRIBUTES)
+        let egl_context = Egl.create_context(egl_display, egl_config, None, &CONTEXT_ATTRIBUTES)
             .context("Failed to create EGL context")?;
 
         let wl_egl_surface = WlEglSurface::new(surface.id(), 256, 256)
             .context("Failed to create WlEglSurface")?;
         let egl_surface = unsafe {
-            egl_api
-                .create_window_surface(
-                    egl_display,
-                    egl_config,
-                    wl_egl_surface.ptr() as egl::NativeWindowType,
-                    None,
-                )
-                .context("Failed to create EGL window surface")?
-        };
-        egl_api
-            .make_current(
+            Egl.create_window_surface(
                 egl_display,
-                Some(egl_surface),
-                Some(egl_surface),
-                Some(egl_context),
+                egl_config,
+                wl_egl_surface.ptr() as egl::NativeWindowType,
+                None,
             )
-            .context("Failed to make EGL context current")?;
+            .context("Failed to create EGL window surface")?
+        };
+        Egl.make_current(
+            egl_display,
+            Some(egl_surface),
+            Some(egl_surface),
+            Some(egl_context),
+        )
+        .context("Failed to make EGL context current")?;
 
-        gl::load_with(|name| egl_api.get_proc_address(name).unwrap() as *const c_void);
+        gl::load_with(|name| Egl.get_proc_address(name).unwrap() as *const c_void);
 
-        // Compilar shaders
         let vert_shader = compile_shader(gl::VERTEX_SHADER, VERTEX_SHADER_SRC)?;
         let frag_shader = compile_shader(gl::FRAGMENT_SHADER, FRAGMENT_SHADER_SRC)?;
         let shader_program = link_program(vert_shader, frag_shader)?;
@@ -238,6 +231,7 @@ impl WaylandRenderer {
             color_rx: self.color_rx,
             gradient_colors_ssbo,
             gradient_colors,
+            running: self.running,
         };
 
         info!("Entering event loop with frame duration {:?}", frame_duration);
@@ -249,7 +243,6 @@ impl WaylandRenderer {
     }
 }
 
-// --- Funciones auxiliares idénticas al original ---
 fn create_ssbo(colors: &[[f32; 4]]) -> (u32, Vec<[f32; 4]>) {
     let gradient_colors_len = colors.len() as i32;
     let mut buffer_data: Vec<u8> = gradient_colors_len.to_le_bytes().to_vec();
@@ -276,7 +269,6 @@ fn create_ssbo(colors: &[[f32; 4]]) -> (u32, Vec<[f32; 4]>) {
     (ssbo, colors.to_vec())
 }
 
-// --- AppState (copia exacta del original, con adiciones) ---
 struct AppState {
     registry_state: RegistryState,
     output_state: OutputState,
@@ -303,6 +295,7 @@ struct AppState {
     color_rx: Receiver<Vec<[f32; 4]>>,
     gradient_colors_ssbo: u32,
     gradient_colors: Vec<[f32; 4]>,
+    running: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -330,6 +323,17 @@ impl AppState {
     }
 
     fn draw(&mut self, _conn: &Connection, qh: &QueueHandle<Self>) {
+        if !self.running.load(Ordering::SeqCst) {
+            info!("Shutting down gracefully...");
+            unsafe {
+                Egl.make_current(self.egl_display, None, None, None).ok();
+                Egl.destroy_surface(self.egl_display, self.egl_surface).ok();
+                Egl.destroy_context(self.egl_display, self.egl_context).ok();
+                Egl.terminate(self.egl_display).ok();
+            }
+            std::process::exit(0);
+        }
+
         if let Ok(new_colors) = self.color_rx.try_recv() {
             self.update_colors(&new_colors);
         }
@@ -395,14 +399,13 @@ impl AppState {
             gl::BindVertexArray(0);
         }
 
-        if let Err(e) = egl_api.swap_buffers(self.egl_display, self.egl_surface) {
+        if let Err(e) = Egl.swap_buffers(self.egl_display, self.egl_surface) {
             error!("Failed to swap buffers: {}", e);
         }
         self.surface.frame(qh, self.surface.clone());
     }
 }
 
-// --- Handlers (idénticos al original) ---
 impl OutputHandler for AppState {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
@@ -447,32 +450,7 @@ impl OutputHandler for AppState {
             self.layer_surface.set_anchor(Anchor::TOP);
             self.surface.commit();
             old_surface.destroy();
-
-            // Recrear superficie EGL (usando egl_api)
-            egl_api.make_current(self.egl_display, None, None, None).ok();
-            egl_api.destroy_surface(self.egl_display, self.egl_surface).ok();
-            self.wl_egl_surface = WlEglSurface::new(self.surface.id(), self.width as i32, self.height as i32)
-                .expect("Failed to create new WlEglSurface");
-            self.egl_surface = unsafe {
-                egl_api.create_window_surface(
-                    self.egl_display,
-                    self.egl_config,
-                    self.wl_egl_surface.ptr() as egl::NativeWindowType,
-                    None,
-                )
-                .expect("Failed to create new EGL surface")
-            };
-            egl_api.make_current(
-                self.egl_display,
-                Some(self.egl_surface),
-                Some(self.egl_surface),
-                Some(self.egl_context),
-            )
-            .expect("Failed to make EGL context current");
-            unsafe {
-                gl::Viewport(0, 0, self.width as GLsizei, self.height as GLsizei);
-            }
-            info!("Output changed: {}x{}", self.width, self.height);
+            // No se recrea EGL aquí – se maneja en configure
         }
     }
 
@@ -562,28 +540,26 @@ impl LayerShellHandler for AppState {
         self.width = width;
         self.height = height;
 
-        egl_api.make_current(self.egl_display, None, None, None).ok();
-        egl_api.destroy_surface(self.egl_display, self.egl_surface).ok();
-        self.wl_egl_surface = WlEglSurface::new(self.surface.id(), self.width as i32, self.height as i32)
-            .expect("Failed to create new WlEglSurface");
-        self.surface.commit();
-        self.egl_surface = unsafe {
-            egl_api.create_window_surface(
+        unsafe {
+            Egl.make_current(self.egl_display, None, None, None).ok();
+            Egl.destroy_surface(self.egl_display, self.egl_surface).ok();
+            self.wl_egl_surface = WlEglSurface::new(self.surface.id(), self.width as i32, self.height as i32)
+                .expect("Failed to create new WlEglSurface");
+            self.surface.commit();
+            self.egl_surface = Egl.create_window_surface(
                 self.egl_display,
                 self.egl_config,
                 self.wl_egl_surface.ptr() as egl::NativeWindowType,
                 None,
             )
-            .expect("Failed to create new EGL surface")
-        };
-        egl_api.make_current(
-            self.egl_display,
-            Some(self.egl_surface),
-            Some(self.egl_surface),
-            Some(self.egl_context),
-        )
-        .expect("Failed to make EGL context current");
-        unsafe {
+            .expect("Failed to create new EGL surface");
+            Egl.make_current(
+                self.egl_display,
+                Some(self.egl_surface),
+                Some(self.egl_surface),
+                Some(self.egl_context),
+            )
+            .expect("Failed to make EGL context current");
             gl::Viewport(0, 0, self.width as GLsizei, self.height as GLsizei);
         }
         self.draw(_conn, qh);

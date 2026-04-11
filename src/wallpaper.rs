@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use once_cell::sync::Lazy;
 
 static PREVIOUS_COLORS: Lazy<Mutex<Vec<[f32; 4]>>> = Lazy::new(|| Mutex::new(Vec::new()));
-const COLOR_SMOOTHING_FACTOR: f32 = 0.5; // 0.5 = mezcla equitativa entre nuevo y anterior
+const COLOR_SMOOTHING_FACTOR: f32 = 0.5;
 
 pub struct WallpaperAnalyzer;
 
@@ -82,6 +82,16 @@ impl WallpaperAnalyzer {
                 return Ok(Self::default_colors(num_colors));
             }
         };
+
+        // Si no es una imagen estática soportada, usar colores por defecto
+        if let Some(ext) = wallpaper_path.extension() {
+            let ext = ext.to_string_lossy().to_lowercase();
+            if !matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "bmp" | "tiff" | "webp") {
+                log::info!("Wallpaper is not a static image ({}), using default colors", ext);
+                return Ok(Self::default_colors(num_colors));
+            }
+        }
+
         log::info!("Analyzing wallpaper: {:?}", wallpaper_path);
         let img = image::open(&wallpaper_path)
             .context(format!("Failed to open wallpaper: {:?}", wallpaper_path))?;
@@ -89,7 +99,6 @@ impl WallpaperAnalyzer {
         log::info!("Wallpaper dimensions: {}x{}", width, height);
         let mut new_colors = Self::extract_and_generate_gradient(&img, num_colors);
 
-        // Suavizar colores con respecto a los anteriores
         let mut prev_guard = PREVIOUS_COLORS.lock().unwrap();
         if !prev_guard.is_empty() && prev_guard.len() == new_colors.len() {
             for i in 0..new_colors.len() {

@@ -7,7 +7,9 @@ mod wayland_renderer;
 use anyhow::{Context, Result};
 use log::{error, info};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
 
 use notify::{RecursiveMode, Watcher};
@@ -92,8 +94,10 @@ fn main() -> Result<()> {
         .take_reader()
         .context("Failed to get cava reader")?;
 
-    ctrlc::set_handler(|| {
-        std::process::exit(0);
+    let running = Arc::new(AtomicBool::new(true));
+    let r = running.clone();
+    ctrlc::set_handler(move || {
+        r.store(false, Ordering::SeqCst);
     })
     .expect("Failed to set Ctrl+C handler");
 
@@ -129,7 +133,7 @@ fn main() -> Result<()> {
     }
 
     let wayland_renderer =
-        wayland_renderer::WaylandRenderer::new(config.clone(), cava_reader, color_rx);
+        wayland_renderer::WaylandRenderer::new(config.clone(), cava_reader, color_rx, running);
     if let Err(e) = wayland_renderer.run() {
         error!("Wayland renderer failed: {}", e);
         return Err(e);
