@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use bytemuck::{Pod, Zeroable};
 use bytemuck_derive::{Pod, Zeroable};
 use log::info;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -7,7 +6,7 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use winit::dpi::PhysicalSize;
 use winit::event::{Event, WindowEvent};
-use winit::event_loop::{ControlFlow, EventLoop};
+use winit::event_loop::EventLoop;
 use winit::window::WindowBuilder;
 use wgpu::util::DeviceExt;
 
@@ -211,7 +210,6 @@ impl WgpuRenderer {
         let color_rx = self.color_rx;
         let bar_gap = self.config.bars.gap;
 
-        // Bucle de eventos corregido para winit 0.29
         event_loop.run(move |event, control_flow| {
             if !running.load(Ordering::SeqCst) {
                 control_flow.exit();
@@ -219,7 +217,6 @@ impl WgpuRenderer {
             }
 
             match event {
-                // Eventos de ventana
                 Event::WindowEvent { event, .. } => match event {
                     WindowEvent::CloseRequested => control_flow.exit(),
                     WindowEvent::Resized(new_size) => {
@@ -233,7 +230,6 @@ impl WgpuRenderer {
                     }
                     _ => {}
                 },
-                // Se solicita un redibujado de la ventana (antes era Event::RedrawRequested)
                 Event::WindowEvent { event: WindowEvent::RedrawRequested, .. } => {
                     if let Ok(guard) = color_rx.lock() {
                         if let Ok(new_colors) = guard.try_recv() {

@@ -2,7 +2,7 @@ mod app_config;
 mod wallpaper;
 mod cava_backend;
 mod wgpu_renderer;
-mod sdl2_renderer;   // opcional, puedes eliminar si no quieres fallback
+mod sdl2_renderer;
 
 use anyhow::{Context, Result};
 use log::{error, info, warn};
@@ -128,20 +128,20 @@ fn main() -> Result<()> {
     let (_cava_backend, audio_rx) = CavaBackend::new(bar_count, &config)
         .context("Failed to start cava backend")?;
 
-    // Intentar wgpu (no clonamos audio_rx, lo movemos)
+    // Intentar wgpu
     info!("Starting Wgpu universal renderer");
-    let wgpu_result = WgpuRenderer::new(
+    let wgpu_renderer = WgpuRenderer::new(
         config.clone(),
         audio_rx,
         shared_color_rx.clone(),
         running.clone(),
-    )
-    .run();
-
-    if let Err(e) = wgpu_result {
+    );
+    
+    // wgpu_renderer.run() nunca retorna (el event loop corre para siempre)
+    // Si falla durante la inicialización, lanzará un error y caeremos al fallback.
+    if let Err(e) = wgpu_renderer.run() {
         warn!("Wgpu renderer failed: {}. Falling back to SDL2 renderer.", e);
         info!("Starting SDL2 fallback renderer...");
-        // Para el fallback necesitamos un nuevo receiver de audio
         let (_cava_backend2, audio_rx2) = CavaBackend::new(bar_count, &config)
             .context("Failed to start cava backend for fallback")?;
         let colors: Vec<[f32; 4]> = config
@@ -163,7 +163,6 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-// Funciones auxiliares (igual que antes)
 fn get_config_path(args: &[String]) -> PathBuf {
     if args.len() == 3 && args[1] == "--config" {
         return PathBuf::from(&args[2]);
