@@ -7,9 +7,9 @@ use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
 use winit::dpi::PhysicalSize;
 use winit::event::{Event, WindowEvent};
-use winit::event_loop::{ControlFlow, EventLoop};
+use winit::event_loop::EventLoop;
 use winit::window::WindowBuilder;
-use wgpu::util::DeviceExt; // necesario para create_buffer_init
+use wgpu::util::DeviceExt;
 
 use crate::app_config::Config;
 
@@ -210,9 +210,7 @@ impl WgpuRenderer {
         let audio_rx = self.audio_rx;
         let color_rx = self.color_rx;
         let bar_gap = self.config.bars.gap;
-        let bar_count = self.config.bars.amount as usize;
 
-        // winit 0.29: run recibe un closure con (event, event_loop)
         event_loop.run(move |event, event_loop| {
             if !running.load(Ordering::SeqCst) {
                 event_loop.exit();
@@ -233,9 +231,6 @@ impl WgpuRenderer {
                     }
                     _ => {}
                 },
-                Event::AboutToWait => {
-                    window.request_redraw();
-                }
                 Event::RedrawRequested(_) => {
                     if let Ok(guard) = color_rx.lock() {
                         if let Ok(new_colors) = guard.try_recv() {
@@ -301,8 +296,13 @@ impl WgpuRenderer {
                     queue.submit(std::iter::once(encoder.finish()));
                     frame.present();
                 }
+                Event::AboutToWait => {
+                    window.request_redraw();
+                }
                 _ => {}
             }
         });
+
+        Ok(())
     }
 }
