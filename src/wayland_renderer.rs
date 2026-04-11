@@ -204,10 +204,8 @@ impl WaylandRenderer {
         loop_handle
             .insert_source(
                 timer,
-                move |_event: Instant, _metadata: &mut smithay_client_toolkit::reexports::calloop::timer::TimerHandle<()>, state: &mut AppState| {
-                    // Renderizar un frame
+                move |_event: Instant, _: &mut (), state: &mut AppState| {
                     state.draw();
-                    // Devolver TimeoutAction para reprogramar el temporizador
                     TimeoutAction::ToDuration(state.frame_duration)
                 },
             )
