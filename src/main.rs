@@ -5,7 +5,7 @@ mod cava_backend;
 mod sdl2_renderer;
 
 use anyhow::{Context, Result};
-use log::{error, info};
+use log::{error, info, warn};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -27,7 +27,7 @@ fn main() -> Result<()> {
     env_logger::init();
 
     let args: Vec<String> = env::args().collect();
-    
+
     // Comando "kill": terminar cualquier instancia existente de cava-bg
     if args.len() >= 2 && args[1] == "kill" {
         return kill_existing_instance();
@@ -35,7 +35,7 @@ fn main() -> Result<()> {
 
     // Determinar la ruta del archivo de configuración
     let config_path = get_config_path(&args);
-    
+
     // Crear directorio de configuración si no existe
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent)?;
@@ -43,7 +43,7 @@ fn main() -> Result<()> {
 
     // Cargar o crear configuración por defecto
     let config = load_or_create_config(&config_path)?;
-    
+
     // Detección automática de colores del wallpaper
     let mut config = config;
     if config.general.auto_colors {
@@ -74,32 +74,33 @@ fn main() -> Result<()> {
         }
     }
 
-    // Iniciar el backend de Cava en un hilo separado
+    // Iniciar el backend de Cava (proporciona un canal de datos de audio)
     let bar_count = config.bars.amount as usize;
-    let (_cava_backend, audio_rx) = CavaBackend::new(bar_count)
+    let (_cava_backend, audio_rx) = CavaBackend::new(bar_count, &config)
         .context("Failed to start cava backend")?;
 
-    // Bandera para controlar la ejecución
+    // Bandera para controlar la ejecución (Ctrl+C)
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
     }).expect("Error setting Ctrl-C handler");
 
-    // Intentar primero el renderizador nativo Wayland
-    info!("Starting Wayland renderer...");
+    // Intentar primero el renderizador nativo Wayland (usa OpenGL)
+    info!("Attempting to start Wayland renderer (OpenGL)...");
     let wayland_result = WaylandRenderer::new(config.clone(), audio_rx.clone(), running.clone()).run();
-    
+
     if let Err(e) = wayland_result {
-        error!("Wayland renderer failed: {}. Falling back to SDL2 renderer.", e);
+        warn!("Wayland/OpenGL renderer failed: {}. Falling back to SDL2 renderer.", e);
         info!("Starting SDL2 fallback renderer...");
-        
+
         // Obtener dimensiones de pantalla (por defecto 1920x1080)
-        let (width, height) = (1920, 1080); // Se podría mejorar detectando el monitor
+        // En un caso real se podrían obtener del monitor actual, pero para simplificar usamos 1920x1080.
+        let (width, height) = (1920, 1080);
         let colors: Vec<[f32; 4]> = config.colors.values()
             .map(|c| app_config::array_from_config_color(c.clone()))
             .collect();
-        
+
         let mut sdl2_renderer = Sdl2Renderer::new(
             width, height,
             bar_count,
@@ -117,12 +118,9 @@ fn main() -> Result<()> {
 /// Obtiene la ruta del archivo de configuración según los argumentos de línea de comandos
 /// o la ruta por defecto en ~/.config/cava-bg/config.toml
 fn get_config_path(args: &[String]) -> PathBuf {
-    // Si se proporciona --config <archivo>, usar ese
     if args.len() == 3 && args[1] == "--config" {
         return PathBuf::from(&args[2]);
     }
-    
-    // Sino, usar ~/.config/cava-bg/config.toml
     let home = dirs::home_dir().expect("Could not determine home directory");
     home.join(".config").join(CONFIG_DIR).join(CONFIG_FILE)
 }
@@ -151,7 +149,7 @@ fn kill_existing_instance() -> Result<()> {
         .arg("cava-bg")
         .output()
         .context("Failed to execute pgrep")?;
-    
+
     if output.status.success() {
         let pids = String::from_utf8_lossy(&output.stdout);
         for pid in pids.lines() {
