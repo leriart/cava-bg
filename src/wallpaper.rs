@@ -14,23 +14,23 @@ pub struct WallpaperAnalyzer;
 
 impl WallpaperAnalyzer {
     /// Detecta el wallpaper actual consultando diferentes backends y gestores.
-    /// Prioridad: mpvpaper (videos/GIFs) -> Waypaper (imágenes estáticas) -> swaybg -> swww.
+    /// Prioridad: Waypaper (imágenes estáticas) -> swaybg -> mpvpaper (GIFs/videos).
     pub fn find_wallpaper() -> Option<PathBuf> {
-        // 1. mpvpaper (para videos y GIFs animados)
-        if let Some(path) = Self::from_mpvpaper() {
-            log::debug!("Detected wallpaper via mpvpaper: {:?}", path);
-            return Some(path);
-        }
-
-        // 2. Waypaper (lee su archivo de configuración)
+        // 1. Waypaper (lee su archivo de configuración)
         if let Some(path) = Self::from_waypaper() {
             log::debug!("Detected wallpaper via Waypaper: {:?}", path);
             return Some(path);
         }
 
-        // 3. swaybg (usado comúnmente por Waypaper y otros)
+        // 2. swaybg (usado comúnmente por Waypaper y otros)
         if let Some(path) = Self::from_swaybg() {
             log::debug!("Detected wallpaper via swaybg: {:?}", path);
+            return Some(path);
+        }
+
+        // 3. mpvpaper (para videos y GIFs animados)
+        if let Some(path) = Self::from_mpvpaper() {
+            log::debug!("Detected wallpaper via mpvpaper: {:?}", path);
             return Some(path);
         }
 
@@ -112,48 +112,41 @@ impl WallpaperAnalyzer {
         let content = std::fs::read_to_string(config_path).ok()?;
         log::debug!("Waypaper config content:\n{}", content);
 
-        let mut wallpaper_path: Option<String> = None;
-        let mut backend: Option<String> = None;
-
         for line in content.lines() {
             let line = line.trim();
-            if line.starts_with("backend") {
-                if let Some((_, value)) = line.split_once('=') {
-                    backend = Some(value.trim().to_string());
-                    log::debug!("Found backend: {}", backend.as_ref().unwrap());
-                }
-            } else if line.starts_with("wallpaper") {
-                if let Some((_, value)) = line.split_once('=') {
-                    // La ruta puede estar entre comillas
-                    wallpaper_path = Some(value.trim().trim_matches('"').to_string());
-                    log::debug!("Found wallpaper path: {}", wallpaper_path.as_ref().unwrap());
-                    break;
+            // Ignorar comentarios y líneas vacías
+            if line.starts_with('#') || line.is_empty() {
+                continue;
+            }
+            // Buscar línea que comience con "wallpaper"
+            if line.starts_with("wallpaper") {
+                // Dividir por el primer '='
+                if let Some((_key, value)) = line.split_once('=') {
+                    // Limpiar el valor: eliminar comillas (simples o dobles) y espacios
+                    let path_str = value.trim().trim_matches(|c| c == '"' || c == '\'').to_string();
+                    log::debug!("Found wallpaper path in config: '{}'", path_str);
+                    let path = PathBuf::from(&path_str);
+                    if path.exists() {
+                        return Some(path);
+                    } else {
+                        log::debug!("Wallpaper path from config does not exist: {:?}", path);
+                    }
                 }
             }
         }
 
-        // Si encontramos una ruta válida, la devolvemos
-        if let Some(path_str) = wallpaper_path {
-            let path = PathBuf::from(&path_str);
-            if path.exists() {
-                return Some(path);
-            } else {
-                log::debug!("Wallpaper path from config does not exist: {:?}", path);
-            }
-        }
-
-        // Si no se encontró ruta, pero hay un backend, intentamos obtener la ruta de ese backend
-        if let Some(be) = backend {
-            match be.as_str() {
-                "swaybg" => {
-                    log::debug!("Waypaper uses swaybg backend, querying it...");
-                    return Self::from_swaybg();
+        // Si no se encontró ruta, intentar con el backend configurado
+        for line in content.lines() {
+            if line.trim().starts_with("backend") {
+                if let Some((_, backend)) = line.split_once('=') {
+                    let backend = backend.trim().trim_matches(|c| c == '"' || c == '\'');
+                    log::debug!("Waypaper backend configured: {}", backend);
+                    match backend {
+                        "swaybg" => return Self::from_swaybg(),
+                        "swww" => return Self::from_swww_like("swww"),
+                        _ => {}
+                    }
                 }
-                "swww" => {
-                    log::debug!("Waypaper uses swww backend, querying it...");
-                    return Self::from_swww_like("swww");
-                }
-                _ => {}
             }
         }
 
