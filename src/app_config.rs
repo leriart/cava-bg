@@ -156,7 +156,7 @@ impl Config {
         config.push_str("\n[output]\n");
         config.push_str(&format!("bars = {}\n", self.bars.amount));
         config.push_str("method = raw\n");
-        config.push_str("raw_target = /dev/stdout\n");
+        // raw_target eliminado -> cava escribe a stdout por defecto
         config.push_str("bit_format = 16bit\n");
         config.push_str("\n[smoothing]\n");
         if let Some(monstercat) = self.smoothing.monstercat {
