@@ -4,10 +4,8 @@ mod wayland_renderer;
 
 use anyhow::{Context, Result};
 use log::{error, info};
-use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::io::{BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -19,6 +17,8 @@ use std::time::Duration;
 use app_config::*;
 use wallpaper::WallpaperAnalyzer;
 use wayland_renderer::WaylandRenderer;
+
+use notify::{RecursiveMode, Watcher};
 
 fn main() -> Result<()> {
     env_logger::init();
@@ -42,8 +42,10 @@ fn main() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("Error parsing config: {}", e))?;
 
     let auto_colors_enabled = config.general.auto_colors;
+
+    // Auto-colors inicial
     if auto_colors_enabled {
-        match WallpaperAnalyzer::capture_and_extract_colors(8) {
+        match WallpaperAnalyzer::generate_gradient_colors(8) {
             Ok(generated) => {
                 info!("Auto-colors: replacing config colors with wallpaper palette");
                 config.colors.clear();
@@ -117,37 +119,38 @@ fn main() -> Result<()> {
     // Canal para actualizaciones de color
     let (color_tx, color_rx) = mpsc::channel();
 
-    // Iniciar watcher de captura si auto_colors está activado
+    // Watcher de wallpaper (solo si auto_colors está activado)
     if auto_colors_enabled {
         let tx = color_tx.clone();
         thread::spawn(move || {
-            let mut last_hash = 0u64;
-            loop {
-                thread::sleep(Duration::from_secs(3));
-                match WallpaperAnalyzer::capture_and_extract_colors(8) {
-                    Ok(colors) => {
-                        // Calcular hash de los colores de forma manual
-                        let mut hasher = DefaultHasher::new();
-                        for color in &colors {
-                            for &component in color {
-                                // Convertir f32 a bytes para hashear
-                                let bytes = component.to_le_bytes();
-                                bytes.hash(&mut hasher);
+            // Esperar un poco antes de iniciar el watcher
+            thread::sleep(Duration::from_secs(2));
+            if let Ok(Some(wallpaper_path)) = WallpaperAnalyzer::find_wallpaper() {
+                let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                    if let Ok(event) = res {
+                        if event.kind.is_modify() || event.kind.is_create() {
+                            info!("Wallpaper file changed, regenerating colors...");
+                            if let Ok(colors) = WallpaperAnalyzer::generate_gradient_colors(8) {
+                                let _ = tx.send(colors);
                             }
-                        }
-                        let new_hash = hasher.finish();
-
-                        if new_hash != last_hash {
-                            info!("Wallpaper colors changed, sending new palette...");
-                            if tx.send(colors).is_err() {
-                                error!("Failed to send new colors, stopping watcher.");
-                                break;
-                            }
-                            last_hash = new_hash;
                         }
                     }
-                    Err(e) => error!("Failed to capture colors: {}", e),
+                })
+                .expect("Failed to create watcher");
+
+                if watcher
+                    .watch(&wallpaper_path, RecursiveMode::NonRecursive)
+                    .is_ok()
+                {
+                    info!("Watching wallpaper for changes: {:?}", wallpaper_path);
+                    loop {
+                        thread::park();
+                    }
+                } else {
+                    error!("Failed to watch wallpaper file");
                 }
+            } else {
+                error!("Could not find wallpaper to watch");
             }
         });
     }

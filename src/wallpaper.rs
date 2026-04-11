@@ -1,9 +1,11 @@
 use anyhow::{Context, Result};
-use gazo;
-use image::RgbaImage;
+use image::{GenericImageView, Pixel};
 use log;
 use once_cell::sync::Lazy;
+use std::path::PathBuf;
+use std::process::Command;
 use std::sync::Mutex;
+use walkdir::WalkDir;
 
 static PREVIOUS_COLORS: Lazy<Mutex<Vec<[f32; 4]>>> = Lazy::new(|| Mutex::new(Vec::new()));
 const COLOR_SMOOTHING_FACTOR: f32 = 0.5;
@@ -11,50 +13,131 @@ const COLOR_SMOOTHING_FACTOR: f32 = 0.5;
 pub struct WallpaperAnalyzer;
 
 impl WallpaperAnalyzer {
-    /// Captura la pantalla actual y extrae una paleta de colores.
-    pub fn capture_and_extract_colors(num_colors: usize) -> Result<Vec<[f32; 4]>> {
-        // Capturar todas las salidas sin cursor
-        let capture = gazo::capture_all_outputs(false)
-            .context("Failed to capture screen with gazo")?;
+    /// Encuentra el archivo de wallpaper actual explorando procesos y ubicaciones comunes.
+    pub fn find_wallpaper() -> Result<Option<PathBuf>> {
+        // Intentar obtener de swaybg
+        if let Some(path) = Self::from_swaybg() {
+            return Ok(Some(path));
+        }
+        // Intentar obtener de hyprpaper
+        if let Some(path) = Self::from_hyprpaper() {
+            return Ok(Some(path));
+        }
+        // Intentar obtener de mpvpaper
+        if let Some(path) = Self::from_mpvpaper() {
+            return Ok(Some(path));
+        }
+        // Buscar en ubicaciones fijas
+        let possible_paths = [
+            dirs::config_dir().map(|mut p| { p.push("hypr"); p.push("wallpaper.jpg"); p }),
+            dirs::config_dir().map(|mut p| { p.push("hypr"); p.push("wallpaper.png"); p }),
+            dirs::config_dir().map(|mut p| { p.push("sway"); p.push("wallpaper"); p }),
+            dirs::picture_dir().map(|mut p| { p.push("wallpaper"); p }),
+            dirs::picture_dir().map(|mut p| { p.push("wallpaper.jpg"); p }),
+            dirs::picture_dir().map(|mut p| { p.push("wallpaper.png"); p }),
+            dirs::home_dir().map(|mut p| { p.push(".wallpaper"); p }),
+        ];
+        for path in possible_paths.iter().flatten() {
+            if path.exists() {
+                return Ok(Some(path.clone()));
+            }
+        }
+        // Búsqueda heurística en Pictures/
+        if let Some(pictures) = dirs::picture_dir() {
+            for entry in WalkDir::new(pictures).max_depth(2).into_iter().filter_map(|e| e.ok()) {
+                let path = entry.path();
+                if path.is_file() {
+                    if let Some(ext) = path.extension() {
+                        let ext_str = ext.to_string_lossy().to_lowercase();
+                        if matches!(ext_str.as_str(), "jpg" | "jpeg" | "png" | "bmp" | "webp" | "gif" | "mp4" | "mkv" | "webm") {
+                            let filename = path.file_stem().unwrap_or_default().to_string_lossy().to_lowercase();
+                            if filename.contains("wallpaper") || filename.contains("background") || filename.contains("bg") {
+                                return Ok(Some(path.to_path_buf()));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(None)
+    }
 
-        log::debug!("Captured image: {}x{}", capture.width, capture.height);
+    fn from_swaybg() -> Option<PathBuf> {
+        let output = Command::new("pgrep").arg("-a").arg("swaybg").output().ok()?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if let Some(idx) = line.find(" -i ") {
+                let path = line[idx + 4..].split_whitespace().next()?;
+                let path = PathBuf::from(path);
+                if path.exists() {
+                    return Some(path);
+                }
+            }
+        }
+        None
+    }
 
-        // Convertir Vec<Rgba<u8>> a Vec<u8>
-        let pixel_bytes: Vec<u8> = capture.pixel_data
-            .iter()
-            .flat_map(|p| [p.r, p.g, p.b, p.a])
-            .collect();
+    fn from_hyprpaper() -> Option<PathBuf> {
+        let conf = dirs::config_dir()?.join("hypr/hyprpaper.conf");
+        if conf.exists() {
+            let content = std::fs::read_to_string(conf).ok()?;
+            for line in content.lines() {
+                if line.starts_with("wallpaper") || line.starts_with("preload") {
+                    if let Some(path_str) = line.split_whitespace().nth(2) {
+                        let path = PathBuf::from(path_str);
+                        if path.exists() {
+                            return Some(path);
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
 
-        let img = RgbaImage::from_raw(
-            capture.width as u32,
-            capture.height as u32,
-            pixel_bytes,
-        ).context("Failed to create image from capture data")?;
+    fn from_mpvpaper() -> Option<PathBuf> {
+        let output = Command::new("pgrep").arg("-a").arg("mpvpaper").output().ok()?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 3 {
+                let path = PathBuf::from(parts[2]);
+                if path.exists() {
+                    return Some(path);
+                }
+            }
+        }
+        None
+    }
 
-        let new_colors = Self::extract_and_generate_gradient(&img, num_colors);
+    /// Intenta cargar una imagen desde una ruta. Si es un GIF, toma el primer fotograma.
+    /// Si es un video, usa ffmpeg para extraer un fotograma (requiere ffmpeg instalado).
+    fn load_image_from_path(path: &PathBuf) -> Result<image::DynamicImage> {
+        let ext = path.extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
 
-        // Suavizar con colores anteriores
-        let mut prev_guard = PREVIOUS_COLORS.lock().unwrap();
-        let smoothed = if !prev_guard.is_empty() && prev_guard.len() == new_colors.len() {
-            new_colors
-                .iter()
-                .enumerate()
-                .map(|(i, &color)| {
-                    let prev = prev_guard[i];
-                    [
-                        COLOR_SMOOTHING_FACTOR * color[0] + (1.0 - COLOR_SMOOTHING_FACTOR) * prev[0],
-                        COLOR_SMOOTHING_FACTOR * color[1] + (1.0 - COLOR_SMOOTHING_FACTOR) * prev[1],
-                        COLOR_SMOOTHING_FACTOR * color[2] + (1.0 - COLOR_SMOOTHING_FACTOR) * prev[2],
-                        COLOR_SMOOTHING_FACTOR * color[3] + (1.0 - COLOR_SMOOTHING_FACTOR) * prev[3],
-                    ]
-                })
-                .collect()
-        } else {
-            new_colors
-        };
+        // Si es un video, extraer un fotograma
+        if matches!(ext.as_str(), "mp4" | "mkv" | "webm" | "avi" | "mov") {
+            let temp_frame = std::env::temp_dir().join("cava_bg_temp_frame.png");
+            let status = Command::new("ffmpeg")
+                .args(["-i", path.to_str().unwrap(), "-vframes", "1", "-q:v", "2", temp_frame.to_str().unwrap(), "-y"])
+                .status();
+            if let Ok(status) = status {
+                if status.success() {
+                    let img = image::open(&temp_frame)
+                        .context("Failed to open video frame")?;
+                    let _ = std::fs::remove_file(temp_frame);
+                    return Ok(img);
+                }
+            }
+            // Si falla ffmpeg, devolver error para usar colores por defecto
+            anyhow::bail!("Could not extract frame from video");
+        }
 
-        *prev_guard = smoothed.clone();
-        Ok(smoothed)
+        // Si es GIF, image::open ya toma el primer frame
+        image::open(path).context("Failed to open image")
     }
 
     pub fn default_colors(num_colors: usize) -> Vec<[f32; 4]> {
@@ -79,48 +162,82 @@ impl WallpaperAnalyzer {
         }
     }
 
-    fn extract_and_generate_gradient(img: &RgbaImage, num_colors: usize) -> Vec<[f32; 4]> {
+    /// Genera una paleta de colores a partir del archivo de wallpaper actual.
+    pub fn generate_gradient_colors(num_colors: usize) -> Result<Vec<[f32; 4]>> {
+        let wallpaper_path = match Self::find_wallpaper()? {
+            Some(path) => path,
+            None => {
+                log::warn!("No wallpaper found, using default colors");
+                return Ok(Self::default_colors(num_colors));
+            }
+        };
+
+        log::info!("Analyzing wallpaper: {:?}", wallpaper_path);
+
+        let img = match Self::load_image_from_path(&wallpaper_path) {
+            Ok(img) => img,
+            Err(e) => {
+                log::warn!("Could not load wallpaper image: {}, using default colors", e);
+                return Ok(Self::default_colors(num_colors));
+            }
+        };
+
+        let (width, height) = img.dimensions();
+        log::debug!("Wallpaper dimensions: {}x{}", width, height);
+        let mut new_colors = Self::extract_and_generate_gradient(&img, num_colors);
+
+        // Suavizar con colores anteriores
+        let mut prev_guard = PREVIOUS_COLORS.lock().unwrap();
+        if !prev_guard.is_empty() && prev_guard.len() == new_colors.len() {
+            for i in 0..new_colors.len() {
+                for c in 0..4 {
+                    new_colors[i][c] = COLOR_SMOOTHING_FACTOR * new_colors[i][c]
+                        + (1.0 - COLOR_SMOOTHING_FACTOR) * prev_guard[i][c];
+                }
+            }
+        }
+        *prev_guard = new_colors.clone();
+        Ok(new_colors)
+    }
+
+    fn extract_and_generate_gradient(img: &image::DynamicImage, num_colors: usize) -> Vec<[f32; 4]> {
         let (width, height) = img.dimensions();
         let mut samples = Vec::new();
-
-        let step = (width * height / 10000).max(1);
+        let step = (width * height / 10000).max(1) as u32;
         for y in (0..height).step_by(step as usize) {
             for x in (0..width).step_by(step as usize) {
                 let pixel = img.get_pixel(x, y);
-                let r = pixel[0] as f32;
-                let g = pixel[1] as f32;
-                let b = pixel[2] as f32;
-                let brightness = (r + g + b) / 3.0;
-                let max_ch = r.max(g).max(b);
-                let min_ch = r.min(g).min(b);
+                let rgb = pixel.to_rgb();
+                let channels = rgb.channels();
+                let brightness = (channels[0] as f32 + channels[1] as f32 + channels[2] as f32) / 3.0;
+                let max_ch = channels[0].max(channels[1]).max(channels[2]) as f32;
+                let min_ch = channels[0].min(channels[1]).min(channels[2]) as f32;
                 let saturation = if max_ch > 0.0 { (max_ch - min_ch) / max_ch } else { 0.0 };
                 let is_bw = saturation < 0.1;
-
                 if is_bw {
                     if brightness > 20.0 && brightness < 230.0 {
-                        samples.push([r, g, b]);
+                        samples.push([channels[0] as f32, channels[1] as f32, channels[2] as f32]);
                     }
                 } else {
                     if brightness > 50.0 && saturation > 0.2 {
-                        samples.push([r, g, b]);
+                        samples.push([channels[0] as f32, channels[1] as f32, channels[2] as f32]);
                     }
                 }
             }
         }
-
         if samples.is_empty() {
             for y in (0..height).step_by((step * 2) as usize) {
                 for x in (0..width).step_by((step * 2) as usize) {
                     let pixel = img.get_pixel(x, y);
-                    samples.push([pixel[0] as f32, pixel[1] as f32, pixel[2] as f32]);
+                    let rgb = pixel.to_rgb();
+                    let channels = rgb.channels();
+                    samples.push([channels[0] as f32, channels[1] as f32, channels[2] as f32]);
                 }
             }
         }
-
         if samples.is_empty() {
             return Self::default_colors(num_colors);
         }
-
         let dominant = Self::find_dominant_colors(&samples, 4.min(samples.len()));
         Self::generate_gradient_palette(&dominant, num_colors)
     }
