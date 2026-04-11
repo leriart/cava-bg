@@ -1,20 +1,21 @@
-use anyhow::Result;
-use log::info;
+use anyhow::{Context, Result};
+use log::{info, debug};
 use sdl2::event::Event;
 use sdl2::pixels::Color;
 use sdl2::rect::Rect;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 pub struct Sdl2Renderer {
     canvas: sdl2::render::Canvas<sdl2::video::Window>,
-    sdl_context: sdl2::Sdl,  // Guardamos el contexto SDL original
+    sdl_context: sdl2::Sdl,
     bar_count: usize,
     bar_gap: f32,
     colors: Vec<[f32; 4]>,
     audio_rx: Receiver<Vec<f32>>,
+    color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
     running: Arc<AtomicBool>,
 }
 
@@ -22,22 +23,26 @@ impl Sdl2Renderer {
     pub fn new(
         bar_count: usize,
         bar_gap: f32,
-        colors: Vec<[f32; 4]>,
+        initial_colors: Vec<[f32; 4]>,
         audio_rx: Receiver<Vec<f32>>,
+        color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
         running: Arc<AtomicBool>,
     ) -> Result<Self> {
         let sdl_context = sdl2::init().map_err(|e| anyhow::anyhow!("SDL2 init failed: {}", e))?;
         let video_subsystem = sdl_context.video().map_err(|e| anyhow::anyhow!("SDL2 video: {}", e))?;
 
+        // Obtener resolución del monitor principal
         let display_mode = video_subsystem.current_display_mode(0)
             .map_err(|e| anyhow::anyhow!("Failed to get display mode: {}", e))?;
         let width = display_mode.w as u32;
         let height = display_mode.h as u32;
 
+        // Crear ventana sin bordes, siempre encima (overlay)
         let window = video_subsystem
             .window("cava-bg", width, height)
             .position_centered()
             .borderless()
+            .always_on_top()
             .build()
             .map_err(|e| anyhow::anyhow!("Failed to create window: {}", e))?;
 
@@ -50,8 +55,9 @@ impl Sdl2Renderer {
             sdl_context,
             bar_count,
             bar_gap,
-            colors,
+            colors: initial_colors,
             audio_rx,
+            color_rx,
             running,
         })
     }
@@ -63,6 +69,7 @@ impl Sdl2Renderer {
         let mut event_pump = self.sdl_context.event_pump()
             .map_err(|e| anyhow::anyhow!("Failed to get event pump: {}", e))?;
 
+        // Fondo transparente
         self.canvas.set_draw_color(Color::RGBA(0, 0, 0, 0));
         self.canvas.clear();
         self.canvas.present();
@@ -70,12 +77,22 @@ impl Sdl2Renderer {
         info!("SDL2 renderer entering main loop");
 
         while self.running.load(Ordering::SeqCst) {
+            // Procesar eventos (por si el usuario cierra la ventana)
             for event in event_pump.poll_iter() {
                 if let Event::Quit { .. } = event {
                     return Ok(());
                 }
             }
 
+            // Actualizar colores si llegaron nuevos del hilo de wallpaper
+            if let Ok(guard) = self.color_rx.lock() {
+                if let Ok(new_colors) = guard.try_recv() {
+                    self.colors = new_colors;
+                    info!("Gradient colors updated from wallpaper");
+                }
+            }
+
+            // Recibir nuevos datos de audio (no bloqueante)
             if let Ok(audio_data) = self.audio_rx.try_recv() {
                 self.canvas.set_draw_color(Color::RGBA(0, 0, 0, 0));
                 self.canvas.clear();
@@ -101,6 +118,7 @@ impl Sdl2Renderer {
                 self.canvas.present();
             }
 
+            // Control de framerate (~60 fps)
             std::thread::sleep(Duration::from_millis(16));
         }
 

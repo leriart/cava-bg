@@ -1,7 +1,9 @@
 // src/main.rs
+// Visualizador de audio estilo CAVA como fondo de pantalla (SDL2)
+// Soporta comando "kill", auto‑colores y detección de cambios de wallpaper.
+
 mod app_config;
 mod wallpaper;
-mod wayland_renderer;
 mod cava_backend;
 mod sdl2_renderer;
 
@@ -12,11 +14,13 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, exit};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, SystemTime};
 
 use app_config::Config;
 use cava_backend::CavaBackend;
-use wayland_renderer::WaylandRenderer;
 use sdl2_renderer::Sdl2Renderer;
 
 const CONFIG_DIR: &str = "cava-bg";
@@ -27,23 +31,22 @@ fn main() -> Result<()> {
 
     let args: Vec<String> = env::args().collect();
 
-    // Comando "kill": terminar cualquier instancia existente de cava-bg
+    // Comando "kill"
     if args.len() >= 2 && args[1] == "kill" {
         return kill_existing_instance();
     }
 
-    // Determinar la ruta del archivo de configuración
+    // Ruta de configuración
     let config_path = get_config_path(&args);
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    // Cargar o crear configuración por defecto
-    let config = load_or_create_config(&config_path)?;
+    let mut config = load_or_create_config(&config_path)?;
+    let auto_colors_enabled = config.general.auto_colors;
 
-    // Detección automática de colores del wallpaper
-    let mut config = config;
-    if config.general.auto_colors {
+    // Detección inicial de colores del wallpaper
+    if auto_colors_enabled {
         info!("Initial wallpaper detection...");
         match wallpaper::WallpaperAnalyzer::generate_gradient_colors(8) {
             Ok(generated) => {
@@ -65,56 +68,98 @@ fn main() -> Result<()> {
                     );
                 }
             }
-            Err(e) => {
-                error!("Failed to generate auto colors: {}", e);
-            }
+            Err(e) => error!("Failed to generate auto colors: {}", e),
         }
     }
 
-    // Bandera para controlar la ejecución (Ctrl+C)
+    // Bandera de ejecución (Ctrl+C)
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
     }).expect("Error setting Ctrl-C handler");
 
-    // Iniciar el backend de Cava
+    // Canal para actualizaciones de color (desde el hilo de wallpaper)
+    let (color_tx, color_rx) = mpsc::channel();
+    let shared_color_rx = Arc::new(Mutex::new(color_rx));
+
+    // Hilo de vigilancia de cambios de wallpaper (si auto_colors está activado)
+    if auto_colors_enabled {
+        let tx = color_tx.clone();
+        thread::spawn(move || {
+            let mut last_path: Option<PathBuf> = None;
+            let mut last_modified: Option<SystemTime> = None;
+            let mut last_sent = SystemTime::now();
+
+            loop {
+                thread::sleep(Duration::from_millis(1500));
+                match wallpaper::WallpaperAnalyzer::find_wallpaper() {
+                    Some(current_path) => {
+                        let modified = fs::metadata(&current_path)
+                            .and_then(|m| m.modified())
+                            .ok();
+                        let path_changed = last_path.as_ref() != Some(&current_path);
+                        let time_changed = match (&last_modified, &modified) {
+                            (Some(l), Some(m)) => l != m,
+                            _ => true,
+                        };
+
+                        if path_changed || time_changed {
+                            info!("Wallpaper changed: {:?}", current_path);
+                            let now = SystemTime::now();
+                            if now.duration_since(last_sent).unwrap_or(Duration::ZERO) < Duration::from_millis(500) {
+                                last_path = Some(current_path);
+                                last_modified = modified;
+                                continue;
+                            }
+                            match wallpaper::WallpaperAnalyzer::generate_gradient_colors(8) {
+                                Ok(colors) => {
+                                    if tx.send(colors).is_err() {
+                                        error!("Failed to send new colors, stopping watcher.");
+                                        break;
+                                    }
+                                    last_sent = SystemTime::now();
+                                }
+                                Err(e) => error!("Failed to generate colors: {}", e),
+                            }
+                            last_path = Some(current_path);
+                            last_modified = modified;
+                        }
+                    }
+                    None => thread::sleep(Duration::from_secs(3)),
+                }
+            }
+        });
+    }
+
+    // Iniciar backend de CAVA
     let bar_count = config.bars.amount as usize;
     let (_cava_backend, audio_rx) = CavaBackend::new(bar_count, &config)
         .context("Failed to start cava backend")?;
 
-    // Colores del degradado
-    let colors: Vec<[f32; 4]> = config.colors.values()
+    // Colores iniciales
+    let mut colors: Vec<[f32; 4]> = config.colors.values()
         .map(|c| app_config::array_from_config_color(c.clone()))
         .collect();
 
-    // Intentar primero el renderizador Wayland (se lleva el audio_rx)
-    info!("Starting Wayland renderer (OpenGL 3.0)");
-    let wayland_result = WaylandRenderer::new(config.clone(), audio_rx, running.clone()).run();
+    // Lanzar renderizador SDL2
+    info!("Starting SDL2 renderer (universal)");
+    let mut renderer = Sdl2Renderer::new(
+        bar_count,
+        config.bars.gap,
+        colors.clone(),
+        audio_rx,
+        shared_color_rx.clone(),
+        running,
+    )?;
 
-    if let Err(e) = wayland_result {
-        warn!("Wayland/OpenGL renderer failed: {}. Falling back to SDL2 renderer.", e);
-        info!("Starting SDL2 fallback renderer...");
-
-        // Crear un NUEVO backend de Cava para SDL2
-        let (_cava_backend2, audio_rx2) = CavaBackend::new(bar_count, &config)
-            .context("Failed to start cava backend for SDL2")?;
-
-        let mut sdl2_renderer = Sdl2Renderer::new(
-            bar_count,
-            config.bars.gap,
-            colors,
-            audio_rx2,
-            running,
-        )?;
-        sdl2_renderer.run()?;
-    }
+    // Ejecutar el bucle principal (bloqueante)
+    renderer.run()?;
 
     Ok(())
 }
 
-// El resto de funciones auxiliares (get_config_path, load_or_create_config, kill_existing_instance)
-// son iguales al código anterior y no se muestran aquí por brevedad. Puedes copiarlas de tu versión anterior.
+// Funciones auxiliares (configuración y kill)
 fn get_config_path(args: &[String]) -> PathBuf {
     if args.len() == 3 && args[1] == "--config" {
         return PathBuf::from(&args[2]);
