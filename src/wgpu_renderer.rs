@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
 use bytemuck_derive::{Pod, Zeroable};
-use log::{info, warn};
+use log::info;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
@@ -9,6 +9,7 @@ use winit::dpi::PhysicalSize;
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
 use winit::window::WindowBuilder;
+use wgpu::util::DeviceExt; // necesario para create_buffer_init
 
 use crate::app_config::Config;
 
@@ -205,17 +206,22 @@ impl WgpuRenderer {
         let mut bar_heights = vec![0.0; bar_count];
         let mut current_colors = initial_colors;
         let mut uniforms_data = uniforms;
+        let running = self.running.clone();
+        let audio_rx = self.audio_rx;
+        let color_rx = self.color_rx;
+        let bar_gap = self.config.bars.gap;
+        let bar_count = self.config.bars.amount as usize;
 
-        event_loop.run(move |event, _, control_flow| {
-            *control_flow = ControlFlow::Poll;
-            if !self.running.load(Ordering::SeqCst) {
-                *control_flow = ControlFlow::Exit;
+        // winit 0.29: run recibe un closure con (event, event_loop)
+        event_loop.run(move |event, event_loop| {
+            if !running.load(Ordering::SeqCst) {
+                event_loop.exit();
                 return;
             }
 
             match event {
                 Event::WindowEvent { event, .. } => match event {
-                    WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
+                    WindowEvent::CloseRequested => event_loop.exit(),
                     WindowEvent::Resized(new_size) => {
                         if new_size.width > 0 && new_size.height > 0 {
                             surface_config.width = new_size.width;
@@ -231,7 +237,7 @@ impl WgpuRenderer {
                     window.request_redraw();
                 }
                 Event::RedrawRequested(_) => {
-                    if let Ok(guard) = self.color_rx.lock() {
+                    if let Ok(guard) = color_rx.lock() {
                         if let Ok(new_colors) = guard.try_recv() {
                             current_colors = new_colors;
                             uniforms_data = Uniforms::new(
@@ -243,13 +249,12 @@ impl WgpuRenderer {
                         }
                     }
 
-                    if let Ok(new_heights) = self.audio_rx.try_recv() {
+                    if let Ok(new_heights) = audio_rx.try_recv() {
                         bar_heights = new_heights;
                     }
 
-                    let bar_width =
-                        2.0 / (bar_count as f32 + (bar_count as f32 - 1.0) * self.config.bars.gap);
-                    let bar_gap_width = bar_width * self.config.bars.gap;
+                    let bar_width = 2.0 / (bar_count as f32 + (bar_count as f32 - 1.0) * bar_gap);
+                    let bar_gap_width = bar_width * bar_gap;
                     let mut vertices = vec![0.0f32; bar_count * 8];
                     for i in 0..bar_count {
                         let h = 2.0 * bar_heights[i] - 1.0;
