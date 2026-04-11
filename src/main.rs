@@ -122,14 +122,14 @@ fn main() -> Result<()> {
     if auto_colors_enabled {
         let tx = color_tx.clone();
         thread::spawn(move || {
-            // Esperar un poco para que el wallpaper inicial esté listo
             thread::sleep(Duration::from_secs(1));
             if let Ok(Some(wallpaper_path)) = WallpaperAnalyzer::find_wallpaper() {
                 let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
                     if let Ok(event) = res {
                         if event.kind.is_modify() || event.kind.is_create() {
-                            info!("Wallpaper changed, regenerating colors...");
-                            if let Ok(colors) = WallpaperAnalyzer::generate_gradient_colors(8) {
+                            info!("Wallpaper changed, capturing screen to extract colors...");
+                            // Ahora capturamos la pantalla en lugar de leer el archivo
+                            if let Ok(colors) = WallpaperAnalyzer::capture_and_extract_colors(8) {
                                 let _ = tx.send(colors);
                             }
                         }
@@ -142,12 +142,9 @@ fn main() -> Result<()> {
                     .is_ok()
                 {
                     info!("Watching wallpaper for changes: {:?}", wallpaper_path);
-                    // Mantener el hilo vivo
                     loop {
                         thread::park();
                     }
-                } else {
-                    error!("Failed to watch wallpaper file");
                 }
             }
         });

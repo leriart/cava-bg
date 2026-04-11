@@ -8,6 +8,7 @@ license = "MIT"
 repository = "https://github.com/leriart/cava-bg"
 
 [dependencies]
+gazo = "0.0.3"
 anyhow = "1.0"
 log = "0.4"
 env_logger = "0.11"

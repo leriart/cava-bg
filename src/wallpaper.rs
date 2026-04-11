@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use gazo::{Capture, Output};
 use image::{GenericImageView, Pixel};
 use log;
 use std::path::PathBuf;
@@ -52,7 +53,7 @@ impl WallpaperAnalyzer {
                 if path.is_file() {
                     if let Some(ext) = path.extension() {
                         let ext_str = ext.to_string_lossy().to_lowercase();
-                        if matches!(ext_str.as_str(), "jpg" | "jpeg" | "png" | "bmp" | "webp") {
+                        if matches!(ext_str.as_str(), "jpg" | "jpeg" | "png" | "bmp" | "webp" | "gif") {
                             let filename = path.file_stem().unwrap_or_default().to_string_lossy().to_lowercase();
                             if filename.contains("wallpaper") || filename.contains("background") || filename.contains("bg") {
                                 return Ok(Some(path.to_path_buf()));
@@ -81,7 +82,6 @@ impl WallpaperAnalyzer {
     }
 
     fn from_hyprpaper() -> Option<PathBuf> {
-        // hyprpaper guarda el wallpaper en ~/.config/hypr/hyprpaper.conf o se pasa por CLI
         let conf = dirs::config_dir()?.join("hypr/hyprpaper.conf");
         if conf.exists() {
             let content = std::fs::read_to_string(conf).ok()?;
@@ -119,7 +119,6 @@ impl WallpaperAnalyzer {
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
             if line.contains("azote") {
-                // Azote suele guardar el último wallpaper en ~/.azote/current
                 let current = dirs::home_dir()?.join(".azote/current");
                 if current.exists() {
                     let link = std::fs::read_link(current).ok()?;
@@ -152,35 +151,34 @@ impl WallpaperAnalyzer {
         }
     }
 
-    /// Genera una paleta de colores a partir del wallpaper actual.
-    pub fn generate_gradient_colors(num_colors: usize) -> Result<Vec<[f32; 4]>> {
-        // Intentar obtener colores desde ambxst (si está disponible)
-        if let Ok(colors) = Self::from_ambxst(num_colors) {
-            return Ok(colors);
+    /// Captura la pantalla actual y extrae colores dominantes.
+    /// Esto funciona para cualquier tipo de fondo (imagen, video, GIF).
+    pub fn capture_and_extract_colors(num_colors: usize) -> Result<Vec<[f32; 4]>> {
+        // Obtener todas las salidas
+        let outputs = Output::all().context("Failed to get outputs")?;
+        if outputs.is_empty() {
+            anyhow::bail!("No outputs found");
         }
 
-        let wallpaper_path = match Self::find_wallpaper()? {
-            Some(path) => path,
-            None => {
-                log::warn!("No wallpaper found, using default colors");
-                return Ok(Self::default_colors(num_colors));
-            }
-        };
+        // Usar la primera salida (o podríamos buscar la preferida)
+        let output = &outputs[0];
+        log::info!("Capturing output: {}", output.name().unwrap_or("unknown"));
 
-        // Si es un archivo de video/gif, usar colores por defecto
-        if let Some(ext) = wallpaper_path.extension() {
-            let ext = ext.to_string_lossy().to_lowercase();
-            if !matches!(ext.as_str(), "jpg" | "jpeg" | "png" | "bmp" | "tiff" | "webp") {
-                log::info!("Wallpaper is not a static image ({}), using default colors", ext);
-                return Ok(Self::default_colors(num_colors));
-            }
-        }
+        // Capturar la pantalla
+        let capture = Capture::new(output).context("Failed to create capture")?;
+        let image = capture.capture().context("Failed to capture screen")?;
 
-        log::info!("Analyzing wallpaper: {:?}", wallpaper_path);
-        let img = image::open(&wallpaper_path)
-            .with_context(|| format!("Failed to open wallpaper: {:?}", wallpaper_path))?;
-        let (width, height) = img.dimensions();
-        log::debug!("Wallpaper dimensions: {}x{}", width, height);
+        // Convertir a DynamicImage para usar el mismo pipeline de extracción
+        let (width, height) = (image.width(), image.height());
+        let data = image.data();
+        
+        // gazo puede devolver en formato BGRA o RGBA dependiendo del compositor.
+        // Normalmente es BGRA en la mayoría de Wayland compositors.
+        let img = image::ImageBuffer::from_raw(width, height, data.to_vec())
+            .map(image::DynamicImage::ImageRgba8)
+            .context("Failed to create image buffer from captured data")?;
+
+        log::info!("Captured screen: {}x{}", width, height);
         let mut new_colors = Self::extract_and_generate_gradient(&img, num_colors);
 
         // Suavizar con colores anteriores
@@ -197,18 +195,9 @@ impl WallpaperAnalyzer {
         Ok(new_colors)
     }
 
-    fn from_ambxst(num_colors: usize) -> Result<Vec<[f32; 4]>> {
-        // Ambxst expone colores vía socket Unix o pipe; aquí un ejemplo simple.
-        // Si no existe, se ignora.
-        let socket_path = dirs::runtime_dir()
-            .unwrap_or_else(|| PathBuf::from("/tmp"))
-            .join("ambxst.sock");
-        if !socket_path.exists() {
-            anyhow::bail!("ambxst socket not found");
-        }
-        // Conectar y leer colores (implementación omitida por brevedad)
-        // En su lugar, devolvemos colores predeterminados por ahora.
-        anyhow::bail!("ambxst support not fully implemented");
+    /// Función de compatibilidad para el resto del código.
+    pub fn generate_gradient_colors(num_colors: usize) -> Result<Vec<[f32; 4]>> {
+        Self::capture_and_extract_colors(num_colors)
     }
 
     fn extract_and_generate_gradient(img: &image::DynamicImage, num_colors: usize) -> Vec<[f32; 4]> {
