@@ -167,7 +167,8 @@ const SHADER_FALLBACKS: [ShaderConfig; 3] = [
             egl::CONTEXT_MAJOR_VERSION, 2,
             egl::CONTEXT_MINOR_VERSION, 0,
             egl::NONE,
-            egl::NONE,  // padding para igualar tamaño de array
+            egl::NONE,
+            egl::NONE,
             egl::NONE,
         ],
         use_uniforms: true,
@@ -272,11 +273,12 @@ impl WaylandRenderer {
                 .create_context(egl_display, egl_config, None, &config.context_attribs)
                 .context("Failed to create EGL context")?;
             
-            // Hacer el contexto current temporalmente (usamos pbuffer)
-            let pbuffer_attribs = [egl::WIDTH, 1, egl::HEIGHT, 1, egl::NONE];
-            let dummy_surface = egl::API
-                .create_pbuffer_surface(egl_display, egl_config, &pbuffer_attribs)
-                .context("Failed to create pbuffer surface")?;
+            // Hacer el contexto current temporalmente (necesitamos una superficie dummy)
+            let dummy_surface = unsafe {
+                egl::API
+                    .create_pbuffer_surface(egl_display, egl_config, &[egl::WIDTH, 1, egl::HEIGHT, 1, egl::NONE])
+                    .context("Failed to create pbuffer surface")?
+            };
             egl::API
                 .make_current(egl_display, Some(dummy_surface), Some(dummy_surface), Some(context))
                 .context("Failed to make context current")?;
@@ -306,7 +308,7 @@ impl WaylandRenderer {
                     use_uniforms = config.use_uniforms;
                     egl_context = Some(context);
                     info!("Successfully compiled shaders with fallback #{}", i + 1);
-                    egl::API.destroy_surface(egl_display, dummy_surface).ok();
+                    unsafe { egl::API.destroy_surface(egl_display, dummy_surface).ok(); }
                     break;
                 } else {
                     last_error = format!("Program linking failed for fallback #{}", i + 1);
@@ -316,8 +318,10 @@ impl WaylandRenderer {
             }
             
             // Limpiar antes de probar el siguiente
-            egl::API.destroy_surface(egl_display, dummy_surface).ok();
-            egl::API.destroy_context(egl_display, context).ok();
+            unsafe {
+                egl::API.destroy_surface(egl_display, dummy_surface).ok();
+                egl::API.destroy_context(egl_display, context).ok();
+            }
         }
 
         let egl_context = egl_context.ok_or_else(|| anyhow!("All shader fallbacks failed. Last error: {}", last_error))?;
@@ -331,18 +335,10 @@ impl WaylandRenderer {
             .map(|(_, color)| array_from_config_color(color.clone()))
             .collect();
 
-        // Crear SSBO o preparar Uniforms
-        let (gradient_colors_ssbo, gradient_colors_uniform_locs, gradient_colors_size_loc) = if use_uniforms {
-            let mut locs = Vec::new();
-            let size_loc = unsafe { gl::GetUniformLocation(shader_program, CString::new("gradient_colors_size").unwrap().as_ptr()) };
-            for i in 0..8 {
-                let name = format!("gradient_colors[{}]", i);
-                let loc = unsafe { gl::GetUniformLocation(shader_program, CString::new(name).unwrap().as_ptr()) };
-                locs.push(loc);
-            }
-            (0, locs, size_loc)
+        let (gradient_colors_ssbo, gradient_colors_uniform_loc) = if use_uniforms {
+            (0, unsafe { gl::GetUniformLocation(shader_program, CString::new("gradient_colors").unwrap().as_ptr()) })
         } else {
-            (create_ssbo(&gradient_colors_rgba).0, Vec::new(), 0)
+            (create_ssbo(&gradient_colors_rgba).0, 0)
         };
 
         let bar_count = self.config.bars.amount as usize;
@@ -410,8 +406,7 @@ impl WaylandRenderer {
             cava_reader: self.cava_reader,
             color_rx: self.color_rx,
             gradient_colors_ssbo,
-            gradient_colors_uniform_locs,
-            gradient_colors_size_loc,
+            gradient_colors_uniform_loc,
             gradient_colors: gradient_colors_rgba,
             running: self.running,
             updating_colors,
@@ -472,8 +467,7 @@ struct AppState {
     cava_reader: BufReader<ChildStdout>,
     color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
     gradient_colors_ssbo: u32,
-    gradient_colors_uniform_locs: Vec<i32>,
-    gradient_colors_size_loc: i32,
+    gradient_colors_uniform_loc: i32,
     gradient_colors: Vec<[f32; 4]>,
     running: Arc<AtomicBool>,
     updating_colors: Arc<AtomicBool>,
@@ -485,9 +479,7 @@ impl AppState {
         self.updating_colors.store(true, Ordering::SeqCst);
         self.gradient_colors = new_colors.to_vec();
 
-        if self.use_uniforms {
-            // Solo actualizar la copia local, se enviará en draw
-        } else {
+        if !self.use_uniforms {
             let gradient_colors_len = self.gradient_colors.len() as i32;
             let mut buffer_data = gradient_colors_len.to_le_bytes().to_vec();
             buffer_data.extend([0, 0, 0, 0].repeat(3));
@@ -653,17 +645,15 @@ impl AppState {
             gl::Uniform2f(self.windows_size_location, fwidth, fheight);
 
             if self.use_uniforms {
-                // Subir colores como Uniform array
-                let count = self.gradient_colors.len() as i32;
-                gl::Uniform1i(self.gradient_colors_size_loc, count);
-                let flat_colors: Vec<f32> = self.gradient_colors.iter().flat_map(|c| c.to_vec()).collect();
-                // Usar glUniform4fv para subir todo el array de una vez
-                // Nota: asumimos que el layout es vec4[]
-                gl::Uniform4fv(
-                    self.gradient_colors_uniform_locs[0], // la ubicación base
-                    count,
-                    flat_colors.as_ptr() as *const _,
-                );
+                let colors_count = self.gradient_colors.len() as i32;
+                let colors_loc = CString::new("gradient_colors_size").unwrap();
+                let size_loc = gl::GetUniformLocation(self.shader_program, colors_loc.as_ptr());
+                gl::Uniform1i(size_loc, colors_count);
+                for (i, color) in self.gradient_colors.iter().enumerate() {
+                    let name = format!("gradient_colors[{}]", i);
+                    let loc = gl::GetUniformLocation(self.shader_program, CString::new(name).unwrap().as_ptr());
+                    gl::Uniform4f(loc, color[0], color[1], color[2], color[3]);
+                }
             }
 
             gl::DrawElements(
@@ -743,7 +733,9 @@ impl OutputHandler for AppState {
         };
         let name = info.name.unwrap_or_else(|| "unknown".to_string());
         if let Some(state) = self.per_output.remove(&name) {
-            egl::API.destroy_surface(self.egl_display, state.egl_surface).ok();
+            unsafe {
+                egl::API.destroy_surface(self.egl_display, state.egl_surface).ok();
+            }
             info!("Output {} removed", name);
         }
     }
@@ -793,8 +785,10 @@ impl LayerShellHandler for AppState {
                 state.width = width;
                 state.height = height;
 
-                egl::API.make_current(self.egl_display, None, None, None).ok();
-                egl::API.destroy_surface(self.egl_display, state.egl_surface).ok();
+                unsafe {
+                    egl::API.make_current(self.egl_display, None, None, None).ok();
+                    egl::API.destroy_surface(self.egl_display, state.egl_surface).ok();
+                }
                 state.wl_egl_surface =
                     match WlEglSurface::new(state.surface.id(), state.width as i32, state.height as i32) {
                         Ok(s) => s,
@@ -804,12 +798,14 @@ impl LayerShellHandler for AppState {
                         }
                     };
                 state.surface.commit();
-                state.egl_surface = egl::API.create_window_surface(
-                    self.egl_display,
-                    self.egl_config,
-                    state.wl_egl_surface.ptr() as egl::NativeWindowType,
-                    None,
-                ).unwrap();
+                state.egl_surface = unsafe {
+                    egl::API.create_window_surface(
+                        self.egl_display,
+                        self.egl_config,
+                        state.wl_egl_surface.ptr() as egl::NativeWindowType,
+                        None,
+                    ).unwrap()
+                };
                 state.configured = true;
                 target_name = Some(name.clone());
                 info!("Configured output {}: {}x{}", name, state.width, state.height);
