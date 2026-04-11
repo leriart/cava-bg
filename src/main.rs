@@ -7,10 +7,10 @@ use log::{error, info};
 use std::collections::HashMap;
 use std::fs;
 use std::io::{BufReader, Write};
-use std::process::{Command, Stdio};
+use std::process::{ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread;
 use std::time::{Duration, SystemTime};
 
@@ -43,7 +43,6 @@ fn main() -> Result<()> {
 
     let auto_colors_enabled = config.general.auto_colors;
 
-    // Auto-colors inicial
     if auto_colors_enabled {
         match WallpaperAnalyzer::generate_gradient_colors(8) {
             Ok(generated) => {
@@ -71,7 +70,7 @@ fn main() -> Result<()> {
         }
     }
 
-    // Configurar cava (esto se ejecutará cada vez que reiniciemos el renderer)
+    // Función para spawnear cava
     let spawn_cava = || -> Result<BufReader<ChildStdout>> {
         let cava_output_config: HashMap<String, String> = HashMap::from([
             ("method".into(), "raw".into()),
@@ -110,7 +109,6 @@ fn main() -> Result<()> {
         Ok(BufReader::new(cava_stdout))
     };
 
-    // Control de ejecución
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     ctrlc::set_handler(move || {
@@ -118,11 +116,8 @@ fn main() -> Result<()> {
     })
     .expect("Error setting Ctrl-C handler");
 
-    // Canal para actualizaciones de color
+    // Hilo de vigilancia de wallpaper (único)
     let (color_tx, color_rx) = mpsc::channel();
-    let shared_color_rx = Arc::new(Mutex::new(color_rx));
-
-    // Hilo de vigilancia de wallpaper (único, no se reinicia)
     if auto_colors_enabled {
         let tx = color_tx.clone();
         thread::spawn(move || {
@@ -178,7 +173,6 @@ fn main() -> Result<()> {
     // Reinicio automático del renderer
     let mut retries = 0;
     loop {
-        // Iniciar cava (nuevo proceso)
         let cava_reader = match spawn_cava() {
             Ok(r) => r,
             Err(e) => {
@@ -192,14 +186,20 @@ fn main() -> Result<()> {
             }
         };
 
+        // Creamos un nuevo canal para este intento? No, usamos el mismo color_rx
+        // Pero necesitamos un Receiver para pasar al renderer. Podemos clonar el color_rx? No, mpsc::Receiver no es clonable.
+        // En lugar de eso, simplemente movemos el color_rx al renderer. Como el renderer se ejecuta en el hilo principal,
+        // y el hilo de vigilancia ya tiene su propio tx, podemos pasar el color_rx por valor.
+        // Sin embargo, el color_rx ya fue movido al hilo de vigilancia? No, el tx se clonó, el rx se queda en main.
+        // Entonces podemos mover el rx al renderer.
         let renderer = WaylandRenderer::new(
             config.clone(),
             cava_reader,
-            shared_color_rx.clone(),
+            color_rx, // Aquí movemos el rx
             running.clone(),
         );
         match renderer.run() {
-            Ok(()) => break, // Salida limpia
+            Ok(()) => break,
             Err(e) => {
                 error!("Renderer failed: {}", e);
                 if retries >= MAX_RETRIES {
