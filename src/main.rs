@@ -136,9 +136,9 @@ fn main() -> Result<()> {
         shared_color_rx.clone(),
         running.clone(),
     );
-    
-    // wgpu_renderer.run() nunca retorna (el event loop corre para siempre)
-    // Si falla durante la inicialización, lanzará un error y caeremos al fallback.
+
+    // Si la inicialización de wgpu falla (por ejemplo, error al crear el dispositivo),
+    // se captura el error y se usa el fallback SDL2.
     if let Err(e) = wgpu_renderer.run() {
         warn!("Wgpu renderer failed: {}. Falling back to SDL2 renderer.", e);
         info!("Starting SDL2 fallback renderer...");
@@ -160,6 +160,8 @@ fn main() -> Result<()> {
         sdl2_renderer.run()?;
     }
 
+    // Si wgpu funciona correctamente, el programa nunca llegará aquí porque run() no retorna.
+    // Esta línea es solo para satisfacer el tipo de retorno.
     Ok(())
 }
 

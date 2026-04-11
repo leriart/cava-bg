@@ -301,5 +301,9 @@ impl WgpuRenderer {
                 _ => {}
             }
         });
+
+        // Esta línea nunca se ejecutará porque event_loop.run no retorna,
+        // pero es necesaria para que la función tenga el tipo de retorno correcto.
+        Ok(())
     }
 }
