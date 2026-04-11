@@ -10,7 +10,7 @@ use std::process::Command;
 use std::sync::mpsc;
 use std::thread;
 
-use notify::{recommended_watcher, RecursiveMode, Watcher};
+use notify::{RecursiveMode, Watcher};
 
 fn main() -> Result<()> {
     let cli = cli::Cli::parse();
@@ -112,30 +112,22 @@ fn main() -> Result<()> {
             // Esperar un poco para que el sistema de archivos esté listo
             std::thread::sleep(std::time::Duration::from_secs(1));
             if let Ok(Some(wallpaper_path)) = wallpaper::WallpaperAnalyzer::find_wallpaper() {
-                let (mut watcher, _) = watcher().unwrap();
+                let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+                    if let Ok(_event) = res {
+                        info!("Wallpaper changed, regenerating colors...");
+                        if let Ok(colors) = wallpaper::WallpaperAnalyzer::generate_gradient_colors(8) {
+                            tx.send(colors).ok();
+                        }
+                    }
+                }).expect("Failed to create watcher");
+                
                 if watcher
                     .watch(&wallpaper_path, RecursiveMode::NonRecursive)
                     .is_ok()
                 {
                     info!("Watching wallpaper for changes: {:?}", wallpaper_path);
-                    for res in watcher.iter() {
-                        match res {
-                            Ok(_event) => {
-                                // El wallpaper cambió, regenerar colores
-                                info!("Wallpaper changed, regenerating colors...");
-                                if let Ok(colors) =
-                                    wallpaper::WallpaperAnalyzer::generate_gradient_colors(8)
-                                {
-                                    if tx.send(colors).is_err() {
-                                        break; // El receptor se cerró, salir del hilo
-                                    }
-                                }
-                            }
-                            Err(e) => {
-                                error!("Watch error: {}", e);
-                                break;
-                            }
-                        }
+                    loop {
+                        std::thread::park();
                     }
                 } else {
                     error!("Failed to watch wallpaper file");
@@ -149,7 +141,6 @@ fn main() -> Result<()> {
         wayland_renderer::WaylandRenderer::new(config.clone(), cava_reader, color_rx);
     if let Err(e) = wayland_renderer.run() {
         error!("Wayland renderer failed: {}", e);
-        // No hay fallback a terminal, simplemente termina
         return Err(e);
     }
 
