@@ -478,30 +478,43 @@ impl AppState {
         self.updating_colors.store(true, Ordering::SeqCst);
         self.gradient_colors = new_colors.to_vec();
 
-        if self.use_uniforms {
-            // Para uniformes, simplemente actualizamos la copia local (se enviará en cada draw)
-        } else {
-            let gradient_colors_len = self.gradient_colors.len() as i32;
-            let mut buffer_data = gradient_colors_len.to_le_bytes().to_vec();
-            buffer_data.extend([0, 0, 0, 0].repeat(3));
-            for color in &self.gradient_colors {
-                for &value in color {
-                    buffer_data.extend_from_slice(&value.to_le_bytes());
+            if self.use_uniforms {
+                // --- NUEVO CÓDIGO CORREGIDO ---
+                let colors_count = self.gradient_colors.len() as i32;
+                
+                // 1. Establecer la cantidad de colores
+                let size_loc = unsafe {
+                    let name = CString::new("gradient_colors_size").unwrap();
+                    gl::GetUniformLocation(self.shader_program, name.as_ptr())
+                };
+                if size_loc != -1 {
+                    unsafe { gl::Uniform1i(size_loc, colors_count); }
+                    eprintln!("DEBUG: Uniform 'gradient_colors_size' set to {}", colors_count);
+                } else {
+                    eprintln!("ERROR: Uniform 'gradient_colors_size' not found!");
+                }
+                
+                // 2. Establecer cada color del gradiente
+                for (i, color) in self.gradient_colors.iter().enumerate() {
+                    let name = format!("gradient_colors[{}]", i);
+                    let loc = unsafe {
+                        let cname = CString::new(name.clone()).unwrap();
+                        gl::GetUniformLocation(self.shader_program, cname.as_ptr())
+                    };
+                    if loc != -1 {
+                        unsafe { gl::Uniform4f(loc, color[0], color[1], color[2], color[3]); }
+                    } else {
+                        eprintln!("ERROR: Uniform '{}' not found!", name);
+                    }
+                }
+                
+                // 3. Mostrar el primer color para confirmar
+                if !self.gradient_colors.is_empty() {
+                    let c = self.gradient_colors[0];
+                    eprintln!("DEBUG: Primer color enviado: #{:02x}{:02x}{:02x}", 
+                        (c[0]*255.0) as u8, (c[1]*255.0) as u8, (c[2]*255.0) as u8);
                 }
             }
-            unsafe {
-                gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, self.gradient_colors_ssbo);
-                gl::BufferSubData(
-                    gl::SHADER_STORAGE_BUFFER,
-                    0,
-                    buffer_data.len() as GLsizeiptr,
-                    buffer_data.as_ptr() as *const _,
-                );
-                gl::BindBufferBase(gl::SHADER_STORAGE_BUFFER, 0, self.gradient_colors_ssbo);
-                gl::MemoryBarrier(gl::SHADER_STORAGE_BARRIER_BIT);
-                gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
-            }
-        }
 
         self.updating_colors.store(false, Ordering::SeqCst);
         info!("Updated gradient colors from wallpaper change");
