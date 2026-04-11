@@ -122,7 +122,7 @@ void main() {
 struct ShaderConfig {
     vertex_src: &'static str,
     fragment_src: &'static str,
-    context_attribs: [i32; 7],
+    context_attribs: [i32; 9],
     use_uniforms: bool,
 }
 
