@@ -13,25 +13,42 @@ const COLOR_SMOOTHING_FACTOR: f32 = 0.5;
 pub struct WallpaperAnalyzer;
 
 impl WallpaperAnalyzer {
-    /// Encuentra el archivo de wallpaper actual explorando procesos y ubicaciones comunes.
+    /// Encuentra el archivo de wallpaper actual explorando múltiples gestores y ubicaciones comunes.
     pub fn find_wallpaper() -> Result<Option<PathBuf>> {
-        // Intentar con awww
+        // 1. awww (sucesor moderno de swww)
+        if let Some(path) = Self::from_awww() {
+            return Ok(Some(path));
+        }
+        // 2. swww (por compatibilidad)
         if let Some(path) = Self::from_swww() {
             return Ok(Some(path));
         }
-        // Intentar con swaybg
+        // 3. swaybg
         if let Some(path) = Self::from_swaybg() {
             return Ok(Some(path));
         }
-        // Intentar con hyprpaper
+        // 4. hyprpaper
         if let Some(path) = Self::from_hyprpaper() {
             return Ok(Some(path));
         }
-        // Intentar con mpvpaper
+        // 5. mpvpaper
         if let Some(path) = Self::from_mpvpaper() {
             return Ok(Some(path));
         }
-        // Buscar en ubicaciones fijas
+        // 6. wpaperd (vía IPC)
+        if let Some(path) = Self::from_wpaperd() {
+            return Ok(Some(path));
+        }
+        // 7. wbg (vía línea de comandos)
+        if let Some(path) = Self::from_wbg() {
+            return Ok(Some(path));
+        }
+        // 8. waypaper (respaldo leyendo su archivo de configuración)
+        if let Some(path) = Self::from_waypaper() {
+            return Ok(Some(path));
+        }
+
+        // 9. Búsqueda en ubicaciones fijas
         let possible_paths = [
             dirs::config_dir().map(|mut p| { p.push("hypr"); p.push("wallpaper.jpg"); p }),
             dirs::config_dir().map(|mut p| { p.push("hypr"); p.push("wallpaper.png"); p }),
@@ -46,7 +63,8 @@ impl WallpaperAnalyzer {
                 return Ok(Some(path.clone()));
             }
         }
-        // Búsqueda heurística en Pictures/
+
+        // 10. Búsqueda heurística en Pictures/
         if let Some(pictures) = dirs::picture_dir() {
             for entry in WalkDir::new(pictures).max_depth(2).into_iter().filter_map(|e| e.ok()) {
                 let path = entry.path();
@@ -63,7 +81,27 @@ impl WallpaperAnalyzer {
                 }
             }
         }
+
         Ok(None)
+    }
+
+    // --- Métodos de detección por gestor ---
+
+    fn from_awww() -> Option<PathBuf> {
+        let output = Command::new("awww").arg("query").output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            if let Some((_monitor, path_str)) = line.split_once(':') {
+                let path = PathBuf::from(path_str.trim());
+                if path.exists() {
+                    return Some(path);
+                }
+            }
+        }
+        None
     }
 
     fn from_swww() -> Option<PathBuf> {
@@ -72,7 +110,6 @@ impl WallpaperAnalyzer {
             return None;
         }
         let stdout = String::from_utf8_lossy(&output.stdout);
-        // La salida típica: "DP-1: /ruta/a/imagen.jpg"
         for line in stdout.lines() {
             if let Some((_monitor, path_str)) = line.split_once(':') {
                 let path = PathBuf::from(path_str.trim());
@@ -132,15 +169,64 @@ impl WallpaperAnalyzer {
         None
     }
 
-    /// Intenta cargar una imagen desde una ruta. Si es un GIF, toma el primer fotograma.
-    /// Si es un video, usa ffmpeg para extraer un fotograma (requiere ffmpeg instalado).
+    fn from_wpaperd() -> Option<PathBuf> {
+        // wpaperd expone un socket en /tmp/wpaperd.sock
+        // Como alternativa sencilla, leemos el archivo de estado si existe
+        let state_file = dirs::runtime_dir()?.join("wpaperd.state");
+        if state_file.exists() {
+            if let Ok(content) = std::fs::read_to_string(state_file) {
+                let path = PathBuf::from(content.trim());
+                if path.exists() {
+                    return Some(path);
+                }
+            }
+        }
+        None
+    }
+
+    fn from_wbg() -> Option<PathBuf> {
+        let output = Command::new("pgrep").arg("-a").arg("wbg").output().ok()?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            // wbg se invoca como "wbg /ruta/imagen.jpg"
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 {
+                let path = PathBuf::from(parts[1]);
+                if path.exists() {
+                    return Some(path);
+                }
+            }
+        }
+        None
+    }
+
+    fn from_waypaper() -> Option<PathBuf> {
+        // Waypaper guarda la configuración en ~/.config/waypaper/config.ini
+        let conf = dirs::config_dir()?.join("waypaper/config.ini");
+        if conf.exists() {
+            if let Ok(content) = std::fs::read_to_string(conf) {
+                for line in content.lines() {
+                    if line.starts_with("wallpaper") {
+                        if let Some((_, path_str)) = line.split_once('=') {
+                            let path = PathBuf::from(path_str.trim().trim_matches('"'));
+                            if path.exists() {
+                                return Some(path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    // --- Carga de imagen (soporta GIF y video vía ffmpeg) ---
     fn load_image_from_path(path: &PathBuf) -> Result<image::DynamicImage> {
         let ext = path.extension()
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_lowercase();
 
-        // Si es un video, extraer un fotograma
         if matches!(ext.as_str(), "mp4" | "mkv" | "webm" | "avi" | "mov") {
             let temp_frame = std::env::temp_dir().join("cava_bg_temp_frame.png");
             let status = Command::new("ffmpeg")
@@ -157,10 +243,10 @@ impl WallpaperAnalyzer {
             anyhow::bail!("Could not extract frame from video");
         }
 
-        // Si es GIF, image::open ya toma el primer frame
         image::open(path).context("Failed to open image")
     }
 
+    // --- Paleta de colores por defecto (Catppuccin) ---
     pub fn default_colors(num_colors: usize) -> Vec<[f32; 4]> {
         let catppuccin = [
             [0.580, 0.886, 0.835, 1.0],
@@ -207,7 +293,6 @@ impl WallpaperAnalyzer {
         log::debug!("Wallpaper dimensions: {}x{}", width, height);
         let mut new_colors = Self::extract_and_generate_gradient(&img, num_colors);
 
-        // Suavizar con colores anteriores
         let mut prev_guard = PREVIOUS_COLORS.lock().unwrap();
         if !prev_guard.is_empty() && prev_guard.len() == new_colors.len() {
             for i in 0..new_colors.len() {

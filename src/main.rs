@@ -127,7 +127,6 @@ fn main() -> Result<()> {
                 thread::sleep(Duration::from_secs(2));
                 match WallpaperAnalyzer::find_wallpaper() {
                     Ok(Some(current_path)) => {
-                        // Obtener fecha de modificación
                         let modified = std::fs::metadata(&current_path)
                             .and_then(|m| m.modified())
                             .ok();
@@ -153,9 +152,7 @@ fn main() -> Result<()> {
                             last_modified = modified;
                         }
                     }
-                    Ok(None) => {
-                        // Si no se encuentra wallpaper, no hacemos nada
-                    }
+                    Ok(None) => {}
                     Err(e) => error!("Error finding wallpaper: {}", e),
                 }
             }
