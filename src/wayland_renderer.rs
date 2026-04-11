@@ -1,9 +1,5 @@
-// src/wayland_renderer.rs
-// Compatibilidad con OpenGL 3.0 / GLSL 1.30
-// Corregido: macro info!, unsafe anidados, drawElements count.
-
 use anyhow::{anyhow, Context, Result};
-use gl::types::{GLsizei, GLsizeiptr};
+use gl::types::{GLsizei, GLsizeiptr, GLint};
 use khronos_egl as egl;
 use log::{debug, error, info, warn};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
@@ -42,7 +38,7 @@ use std::{mem, ptr};
 use crate::app_config::{array_from_config_color, Config};
 
 // Shaders compatibles con OpenGL 3.0 (GLSL 1.30)
-const VERTEX_SHADER_130: &str = r#"
+const VERTEX_SHADER_SRC: &str = r#"
 #version 130
 in vec2 position;
 void main() {
@@ -50,12 +46,13 @@ void main() {
 }
 "#;
 
-const FRAGMENT_SHADER_130: &str = r#"
+const FRAGMENT_SHADER_SRC: &str = r#"
 #version 130
 uniform vec2 WindowSize;
-uniform vec4 gradient_colors[8];
+uniform vec4 gradient_colors[32];
 uniform int gradient_colors_size;
 out vec4 fragColor;
+
 void main() {
     if (gradient_colors_size == 1) {
         fragColor = gradient_colors[0];
@@ -70,27 +67,6 @@ void main() {
     }
 }
 "#;
-
-struct ShaderConfig {
-    vertex_src: &'static str,
-    fragment_src: &'static str,
-    context_attribs: Vec<i32>,
-}
-
-impl ShaderConfig {
-    fn legacy() -> Self {
-        Self {
-            vertex_src: VERTEX_SHADER_130,
-            fragment_src: FRAGMENT_SHADER_130,
-            context_attribs: vec![
-                egl::CONTEXT_MAJOR_VERSION, 3,
-                egl::CONTEXT_MINOR_VERSION, 0,
-                egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
-                egl::NONE,
-            ],
-        }
-    }
-}
 
 struct PerOutputState {
     surface: WlSurface,
@@ -142,7 +118,6 @@ impl WaylandRenderer {
         let compositor = CompositorState::bind(&globals, &qh).context("wl_compositor not available")?;
         let layer_shell = LayerShell::bind(&globals, &qh).context("layer shell not available")?;
 
-        // Inicializar EGL
         egl::API
             .bind_api(egl::OPENGL_API)
             .context("Failed to bind EGL API")?;
@@ -167,12 +142,16 @@ impl WaylandRenderer {
             .context("Failed to choose EGL config")?
             .context("No EGL config found")?;
 
-        let shader_cfg = ShaderConfig::legacy();
+        let context_attribs = [
+            egl::CONTEXT_MAJOR_VERSION, 3,
+            egl::CONTEXT_MINOR_VERSION, 0,
+            egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT,
+            egl::NONE,
+        ];
         let egl_context = egl::API
-            .create_context(egl_display, egl_config, None, &shader_cfg.context_attribs)
+            .create_context(egl_display, egl_config, None, &context_attribs)
             .context("Failed to create EGL context")?;
 
-        // Superficie temporal para inicializar GL
         let dummy_surface = egl::API
             .create_pbuffer_surface(egl_display, egl_config, &[egl::WIDTH, 1, egl::HEIGHT, 1, egl::NONE])
             .context("Failed to create pbuffer surface")?;
@@ -180,7 +159,6 @@ impl WaylandRenderer {
             .make_current(egl_display, Some(dummy_surface), Some(dummy_surface), Some(egl_context))
             .context("Failed to make context current")?;
 
-        // Cargar funciones OpenGL
         gl::load_with(|name| {
             let name_c = CString::new(name).unwrap();
             match egl::API.get_proc_address(name_c.to_str().unwrap()) {
@@ -189,17 +167,14 @@ impl WaylandRenderer {
             }
         });
 
-        // Compilar shaders
-        let vert_shader = compile_shader(gl::VERTEX_SHADER, shader_cfg.vertex_src)?;
-        let frag_shader = compile_shader(gl::FRAGMENT_SHADER, shader_cfg.fragment_src)?;
+        let vert_shader = compile_shader(gl::VERTEX_SHADER, VERTEX_SHADER_SRC)?;
+        let frag_shader = compile_shader(gl::FRAGMENT_SHADER, FRAGMENT_SHADER_SRC)?;
         let shader_program = link_program(vert_shader, frag_shader)?;
         unsafe {
             gl::DeleteShader(vert_shader);
             gl::DeleteShader(frag_shader);
         }
-        // Liberar dummy surface
         egl::API.destroy_surface(egl_display, dummy_surface).ok();
-
         info!("OpenGL context inicializado (legacy 3.0)");
 
         let gradient_colors_rgba: Vec<[f32; 4]> = self
@@ -249,9 +224,14 @@ impl WaylandRenderer {
             gl::BindVertexArray(0);
         }
 
-        let window_size_string = CString::new("WindowSize").unwrap();
-        let windows_size_location =
-            unsafe { gl::GetUniformLocation(shader_program, window_size_string.as_ptr()) };
+        let window_size_loc = unsafe { gl::GetUniformLocation(shader_program, b"WindowSize\0".as_ptr() as *const _) };
+        let colors_count_loc = unsafe { gl::GetUniformLocation(shader_program, b"gradient_colors_size\0".as_ptr() as *const _) };
+        let mut color_locs = [-1; 32];
+        for i in 0..32 {
+            let name = format!("gradient_colors[{}]", i);
+            let cname = CString::new(name).unwrap();
+            color_locs[i] = unsafe { gl::GetUniformLocation(shader_program, cname.as_ptr()) };
+        }
 
         let updating_colors = Arc::new(AtomicBool::new(false));
 
@@ -267,7 +247,9 @@ impl WaylandRenderer {
             shader_program,
             vao,
             vbo,
-            windows_size_location,
+            window_size_loc,
+            colors_count_loc,
+            color_locs,
             bar_count: self.config.bars.amount,
             bar_gap: self.config.bars.gap,
             background_color: [0.0, 0.0, 0.0, 0.0],
@@ -301,7 +283,9 @@ struct AppState {
     shader_program: u32,
     vao: u32,
     vbo: u32,
-    windows_size_location: i32,
+    window_size_loc: GLint,
+    colors_count_loc: GLint,
+    color_locs: [GLint; 32],
     bar_count: u32,
     bar_gap: f32,
     background_color: [f32; 4],
@@ -381,22 +365,23 @@ impl AppState {
 
     fn draw_output(&mut self, name: &str, qh: &QueueHandle<Self>) {
         let state = match self.per_output.get_mut(name) {
-            Some(s) => s,
-            None => return,
+            Some(s) if s.configured => s,
+            _ => return,
         };
-        if !state.configured {
-            return;
-        }
 
         unsafe {
-            egl::API
+            if egl::API
                 .make_current(
                     self.egl_display,
                     Some(state.egl_surface),
                     Some(state.egl_surface),
                     Some(self.egl_context),
                 )
-                .ok();
+                .is_err()
+            {
+                error!("make_current fallo para {}", name);
+                return;
+            }
             gl::Viewport(0, 0, state.width as GLsizei, state.height as GLsizei);
         }
 
@@ -430,8 +415,6 @@ impl AppState {
             2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
         let bar_gap_width: f32 = bar_width * self.bar_gap;
         let mut vertices: Vec<f32> = vec![0.0; self.bar_count as usize * 8];
-        let fwidth: f32 = state.width as f32;
-        let fheight: f32 = state.height as f32;
 
         for i in 0..self.bar_count as usize {
             let bar_height: f32 = 2.0 * unpacked_data[i] - 1.0;
@@ -466,29 +449,15 @@ impl AppState {
             );
             gl::Clear(gl::COLOR_BUFFER_BIT);
             gl::UseProgram(self.shader_program);
-            gl::Uniform2f(self.windows_size_location, fwidth, fheight);
-
-            let colors_count = self.gradient_colors.len() as i32;
-            let size_loc = gl::GetUniformLocation(self.shader_program, b"gradient_colors_size\0".as_ptr() as *const _);
-            if size_loc != -1 {
-                gl::Uniform1i(size_loc, colors_count);
-            }
+            gl::Uniform2f(self.window_size_loc, state.width as f32, state.height as f32);
+            gl::Uniform1i(self.colors_count_loc, self.gradient_colors.len() as i32);
             for (i, color) in self.gradient_colors.iter().enumerate() {
-                let name = format!("gradient_colors[{}]", i);
-                let cname = CString::new(name).unwrap();
-                let loc = gl::GetUniformLocation(self.shader_program, cname.as_ptr());
-                if loc != -1 {
-                    gl::Uniform4f(loc, color[0], color[1], color[2], color[3]);
+                if i < 32 && self.color_locs[i] != -1 {
+                    gl::Uniform4f(self.color_locs[i], color[0], color[1], color[2], color[3]);
                 }
             }
-
             let index_count = (self.bar_count as usize * 6) as GLsizei;
-            gl::DrawElements(
-                gl::TRIANGLES,
-                index_count,
-                gl::UNSIGNED_SHORT,
-                ptr::null(),
-            );
+            gl::DrawElements(gl::TRIANGLES, index_count, gl::UNSIGNED_SHORT, ptr::null());
             gl::BindVertexArray(0);
         }
 
@@ -538,7 +507,9 @@ impl AppState {
 }
 
 impl OutputHandler for AppState {
-    fn output_state(&mut self) -> &mut OutputState { &mut self.output_state }
+    fn output_state(&mut self) -> &mut OutputState {
+        &mut self.output_state
+    }
     fn new_output(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
         if let Err(e) = self.ensure_output(qh, &output) {
             error!("Fallo al crear output: {}", e);
@@ -566,18 +537,48 @@ delegate_registry!(AppState);
 delegate_layer!(AppState);
 
 impl ProvidesRegistryState for AppState {
-    fn registry(&mut self) -> &mut RegistryState { &mut self.registry_state }
+    fn registry(&mut self) -> &mut RegistryState {
+        &mut self.registry_state
+    }
     registry_handlers![];
 }
 
 impl CompositorHandler for AppState {
-    fn scale_factor_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_factor: i32) {}
-    fn transform_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_transform: wl_output::Transform) {}
+    fn scale_factor_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _new_factor: i32,
+    ) {
+    }
+    fn transform_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _new_transform: wl_output::Transform,
+    ) {
+    }
     fn frame(&mut self, conn: &Connection, qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {
         self.draw(conn, qh);
     }
-    fn surface_enter(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
-    fn surface_leave(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
+    fn surface_enter(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _output: &wl_output::WlOutput,
+    ) {
+    }
+    fn surface_leave(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _output: &wl_output::WlOutput,
+    ) {
+    }
 }
 
 impl LayerShellHandler for AppState {
@@ -604,14 +605,17 @@ impl LayerShellHandler for AppState {
                     egl::API.make_current(self.egl_display, None, None, None).ok();
                     egl::API.destroy_surface(self.egl_display, state.egl_surface).ok();
                 }
-                state.wl_egl_surface =
-                    match WlEglSurface::new(state.surface.id(), state.width as i32, state.height as i32) {
-                        Ok(s) => s,
-                        Err(e) => {
-                            error!("Fallo crear WlEglSurface tras configure: {}", e);
-                            return;
-                        }
-                    };
+                state.wl_egl_surface = match WlEglSurface::new(
+                    state.surface.id(),
+                    state.width as i32,
+                    state.height as i32,
+                ) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        error!("Fallo crear WlEglSurface tras configure: {}", e);
+                        return;
+                    }
+                };
                 state.surface.commit();
                 state.egl_surface = unsafe {
                     match egl::API.create_window_surface(
