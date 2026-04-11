@@ -3,9 +3,11 @@ mod wallpaper;
 mod wayland_renderer;
 
 use anyhow::{Context, Result};
-use log::{error, info, warn};
+use log::{error, info};
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::io::{BufReader, Write};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -44,7 +46,7 @@ fn main() -> Result<()> {
     if auto_colors_enabled {
         match WallpaperAnalyzer::capture_and_extract_colors(8) {
             Ok(generated) => {
-                info!("Auto-colors: replacing config colors with captured palette");
+                info!("Auto-colors: replacing config colors with wallpaper palette");
                 config.colors.clear();
                 for (i, &color) in generated.iter().enumerate() {
                     let hex = format!(
@@ -63,7 +65,7 @@ fn main() -> Result<()> {
                 }
             }
             Err(e) => {
-                error!("Failed to capture colors: {}", e);
+                error!("Failed to generate auto colors: {}", e);
             }
         }
     }
@@ -116,36 +118,29 @@ fn main() -> Result<()> {
     // Canal para actualizaciones de color
     let (color_tx, color_rx) = mpsc::channel();
 
-    // Hilo que periódicamente captura la pantalla y envía nuevos colores si cambian
+    // Hilo que captura periódicamente la pantalla y envía nuevos colores
     if auto_colors_enabled {
         let tx = color_tx.clone();
         thread::spawn(move || {
-            let mut last_hash = 0u64;
+            let mut last_hash = 0;
             loop {
-                thread::sleep(Duration::from_secs(3)); // cada 3 segundos
+                thread::sleep(Duration::from_secs(3));
                 match WallpaperAnalyzer::capture_and_extract_colors(8) {
                     Ok(colors) => {
-                        // Calcular un hash simple de los colores para evitar actualizaciones innecesarias
-                        use std::collections::hash_map::DefaultHasher;
-                        use std::hash::{Hash, Hasher};
                         let mut hasher = DefaultHasher::new();
-                        for c in &colors {
-                            for v in c {
-                                v.to_bits().hash(&mut hasher);
-                            }
-                        }
+                        colors.hash(&mut hasher);
                         let new_hash = hasher.finish();
+
                         if new_hash != last_hash {
-                            last_hash = new_hash;
-                            info!("Detected screen change, sending new palette");
+                            info!("Wallpaper colors changed, sending new palette...");
                             if tx.send(colors).is_err() {
-                                break; // El receptor se cerró
+                                error!("Failed to send new colors, stopping watcher.");
+                                break;
                             }
+                            last_hash = new_hash;
                         }
                     }
-                    Err(e) => {
-                        warn!("Failed to capture screen: {}", e);
-                    }
+                    Err(e) => error!("Failed to capture colors: {}", e),
                 }
             }
         });
