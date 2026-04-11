@@ -5,7 +5,6 @@
 use anyhow::{Context, Result};
 use gl::types::{GLsizei, GLsizeiptr, GLuint};
 use khronos_egl as egl;
-use log::{debug, error, info, warn};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::ProvidesRegistryState;
@@ -234,7 +233,7 @@ impl WaylandRenderer {
         let window_size_location =
             unsafe { gl::GetUniformLocation(shader_program, window_size_string.as_ptr()) };
 
-        let app_state = AppState {
+        let mut app_state = AppState {
             registry_state: RegistryState::new(&globals),
             output_state: OutputState::new(&globals, &qh),
             width: 256,
