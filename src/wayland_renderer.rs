@@ -1,7 +1,11 @@
+// src/wayland_renderer.rs
+// Renderizador nativo Wayland con OpenGL 3.0 (compatible con hardware Intel antiguo)
+// Corregido: transparencia, blending, geometría y manejo de audio.
+
 use anyhow::{anyhow, Context, Result};
 use gl::types::{GLsizei, GLsizeiptr, GLint};
 use khronos_egl as egl;
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::ProvidesRegistryState;
@@ -141,19 +145,8 @@ impl WaylandRenderer {
             .create_context(egl_display, egl_config, None, &context_attribs)
             .context("Failed to create EGL context")?;
 
-        // CORRECCIÓN CLAVE: Forzar la opacidad del framebuffer con EGL_EXT_present_opaque
-        // Esto evita que Wayland interprete el canal alpha como transparencia.
-        // Se intenta cargar la extensión; si no está disponible, se ignora y se continúa.
-        let present_opaque_ptr = egl::API.get_proc_address("eglCreateWaylandBufferFromImageWL");
-        if present_opaque_ptr.is_some() {
-            info!("EGL_EXT_present_opaque extension found, forcing opaque presentation.");
-            // Nota: En la práctica, la simple presencia de la extensión suele ser suficiente para que
-            // el compositor trate la superficie como opaca. Si no, se podría hacer una llamada a
-            // eglSurfaceAttrib con EGL_SWAP_BEHAVIOR_PRESERVE, pero la implementación de khronos-egl
-            // puede no tenerla disponible.
-        } else {
-            warn!("EGL_EXT_present_opaque extension not found. Transparency issues may occur.");
-        }
+        // Definir la constante para la extensión EGL_EXT_present_opaque
+        const EGL_PRESENT_OPAQUE_EXT: i32 = 0x31DF;
 
         // Superficie temporal para inicializar GL
         let dummy_surface = egl::API
@@ -264,6 +257,7 @@ impl WaylandRenderer {
             gradient_colors: gradient_colors_rgba,
             running: self.running,
             frame_count: 0,
+            egl_present_opaque_ext: EGL_PRESENT_OPAQUE_EXT,
         };
 
         event_loop
@@ -297,6 +291,7 @@ struct AppState {
     gradient_colors: Vec<[f32; 4]>,
     running: Arc<AtomicBool>,
     frame_count: u64,
+    egl_present_opaque_ext: i32, // Almacenar la constante
 }
 
 impl AppState {
@@ -317,7 +312,7 @@ impl AppState {
         let layer_surface = self.layer_shell.create_layer_surface(
             qh,
             surface.clone(),
-            Layer::Background, // Usar Layer::Background para estar detrás de todo
+            Layer::Background,
             Some("cava-bg"),
             Some(output),
         );
@@ -325,22 +320,25 @@ impl AppState {
         let width = logical_size.0 as u32;
         let height = logical_size.1 as u32;
         layer_surface.set_size(width, height);
-        // Anclar a todos los bordes para que ocupe toda la pantalla
         layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
-        layer_surface.set_exclusive_zone(-1); // No reservar espacio
+        layer_surface.set_exclusive_zone(-1);
         surface.commit();
         let wl_egl_surface = WlEglSurface::new(surface.id(), width as i32, height as i32)
             .context("Failed to create WlEglSurface")?;
+        
+        // Atributos de superficie: forzar presentación opaca
+        let surface_attributes = [self.egl_present_opaque_ext, 1, egl::NONE];
         let egl_surface = unsafe {
             egl::API
                 .create_window_surface(
                     self.egl_display,
                     self.egl_config,
                     wl_egl_surface.ptr() as egl::NativeWindowType,
-                    None,
+                    Some(&surface_attributes),
                 )
                 .context("Failed to create EGL window surface")?
         };
+        
         self.per_output.insert(
             name.clone(),
             PerOutputState {
@@ -428,7 +426,7 @@ impl AppState {
                     gl::Uniform4f(self.color_locs[i], color[0], color[1], color[2], color[3]);
                 }
             }
-            // Número correcto de índices: bar_count * 6
+            // Número correcto de índices: bar_count * 6 (¡Corregido!)
             let index_count = (self.bar_count as usize * 6) as GLsizei;
             gl::DrawElements(gl::TRIANGLES, index_count, gl::UNSIGNED_SHORT, ptr::null());
             gl::BindVertexArray(0);
@@ -538,12 +536,14 @@ impl LayerShellHandler for AppState {
                     }
                 };
                 state.surface.commit();
+                // Volver a crear la superficie con la extensión opaca
+                let surface_attributes = [self.egl_present_opaque_ext, 1, egl::NONE];
                 state.egl_surface = unsafe {
                     match egl::API.create_window_surface(
                         self.egl_display,
                         self.egl_config,
                         state.wl_egl_surface.ptr() as egl::NativeWindowType,
-                        None,
+                        Some(&surface_attributes),
                     ) {
                         Ok(s) => s,
                         Err(e) => {

@@ -1,7 +1,11 @@
+// src/main.rs
+// Punto de entrada principal con soporte para comando "kill", configuración en ~/.config/cava-bg/
+// y renderizador Wayland nativo (compatible con hardware antiguo).
+
 mod app_config;
 mod wallpaper;
+mod wayland_renderer;
 mod cava_backend;
-mod sdl2_renderer;
 
 use anyhow::{Context, Result};
 use log::{error, info};
@@ -10,14 +14,11 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::{Command, exit};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::{Duration, SystemTime};
+use std::sync::Arc;
 
 use app_config::Config;
 use cava_backend::CavaBackend;
-use sdl2_renderer::Sdl2Renderer;
+use wayland_renderer::WaylandRenderer;
 
 const CONFIG_DIR: &str = "cava-bg";
 const CONFIG_FILE: &str = "config.toml";
@@ -27,19 +28,25 @@ fn main() -> Result<()> {
 
     let args: Vec<String> = env::args().collect();
 
+    // Comando "kill": terminar cualquier instancia existente de cava-bg
     if args.len() >= 2 && args[1] == "kill" {
         return kill_existing_instance();
     }
 
+    // Determinar la ruta del archivo de configuración
     let config_path = get_config_path(&args);
+
+    // Crear directorio de configuración si no existe
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    let mut config = load_or_create_config(&config_path)?;
-    let auto_colors_enabled = config.general.auto_colors;
+    // Cargar o crear configuración por defecto
+    let config = load_or_create_config(&config_path)?;
 
-    if auto_colors_enabled {
+    // Detección automática de colores del wallpaper
+    let mut config = config;
+    if config.general.auto_colors {
         info!("Initial wallpaper detection...");
         match wallpaper::WallpaperAnalyzer::generate_gradient_colors(8) {
             Ok(generated) => {
@@ -61,90 +68,34 @@ fn main() -> Result<()> {
                     );
                 }
             }
-            Err(e) => error!("Failed to generate auto colors: {}", e),
+            Err(e) => {
+                error!("Failed to generate auto colors: {}", e);
+            }
         }
     }
 
+    // Bandera para controlar la ejecución (Ctrl+C)
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
     }).expect("Error setting Ctrl-C handler");
 
-    let (color_tx, color_rx) = mpsc::channel();
-    let shared_color_rx = Arc::new(Mutex::new(color_rx));
-
-    if auto_colors_enabled {
-        let tx = color_tx.clone();
-        thread::spawn(move || {
-            let mut last_path: Option<PathBuf> = None;
-            let mut last_modified: Option<SystemTime> = None;
-            let mut last_sent = SystemTime::now();
-
-            loop {
-                thread::sleep(Duration::from_millis(1500));
-                match wallpaper::WallpaperAnalyzer::find_wallpaper() {
-                    Some(current_path) => {
-                        let modified = fs::metadata(&current_path)
-                            .and_then(|m| m.modified())
-                            .ok();
-                        let path_changed = last_path.as_ref() != Some(&current_path);
-                        let time_changed = match (&last_modified, &modified) {
-                            (Some(l), Some(m)) => l != m,
-                            _ => true,
-                        };
-
-                        if path_changed || time_changed {
-                            info!("Wallpaper changed: {:?}", current_path);
-                            let now = SystemTime::now();
-                            if now.duration_since(last_sent).unwrap_or(Duration::ZERO) < Duration::from_millis(500) {
-                                last_path = Some(current_path);
-                                last_modified = modified;
-                                continue;
-                            }
-                            match wallpaper::WallpaperAnalyzer::generate_gradient_colors(8) {
-                                Ok(colors) => {
-                                    if tx.send(colors).is_err() {
-                                        error!("Failed to send new colors, stopping watcher.");
-                                        break;
-                                    }
-                                    last_sent = SystemTime::now();
-                                }
-                                Err(e) => error!("Failed to generate colors: {}", e),
-                            }
-                            last_path = Some(current_path);
-                            last_modified = modified;
-                        }
-                    }
-                    None => thread::sleep(Duration::from_secs(3)),
-                }
-            }
-        });
-    }
-
+    // Iniciar el backend de Cava
     let bar_count = config.bars.amount as usize;
     let (_cava_backend, audio_rx) = CavaBackend::new(bar_count, &config)
         .context("Failed to start cava backend")?;
 
-    let colors: Vec<[f32; 4]> = config.colors.values()
-        .map(|c| app_config::array_from_config_color(c.clone()))
-        .collect();
-
-    info!("Starting SDL2 renderer (universal)");
-    let mut renderer = Sdl2Renderer::new(
-        bar_count,
-        config.bars.gap,
-        colors,
-        audio_rx,
-        shared_color_rx,
-        running,
-    )?;
-
+    // Lanzar el renderizador Wayland nativo
+    info!("Starting Wayland renderer (OpenGL 3.0)");
+    let renderer = WaylandRenderer::new(config, audio_rx, running);
     renderer.run()?;
 
     Ok(())
 }
 
+/// Obtiene la ruta del archivo de configuración según los argumentos de línea de comandos
+/// o la ruta por defecto en ~/.config/cava-bg/config.toml
 fn get_config_path(args: &[String]) -> PathBuf {
     if args.len() == 3 && args[1] == "--config" {
         return PathBuf::from(&args[2]);
@@ -153,6 +104,7 @@ fn get_config_path(args: &[String]) -> PathBuf {
     home.join(".config").join(CONFIG_DIR).join(CONFIG_FILE)
 }
 
+/// Carga la configuración desde un archivo TOML; si no existe, crea una por defecto.
 fn load_or_create_config(path: &PathBuf) -> Result<Config> {
     if path.exists() {
         let content = fs::read_to_string(path)
@@ -169,6 +121,7 @@ fn load_or_create_config(path: &PathBuf) -> Result<Config> {
     }
 }
 
+/// Mata cualquier proceso existente de cava-bg usando `pkill`.
 fn kill_existing_instance() -> Result<()> {
     let output = Command::new("pgrep")
         .arg("-f")
