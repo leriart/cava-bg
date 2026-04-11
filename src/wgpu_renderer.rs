@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
 use bytemuck::{Pod, Zeroable};
+use bytemuck_derive::{Pod, Zeroable};
 use log::{info, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
@@ -7,23 +8,22 @@ use std::sync::{Arc, Mutex};
 use winit::dpi::PhysicalSize;
 use winit::event::{Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop};
-use winit::window::{Window, WindowBuilder};
+use winit::window::WindowBuilder;
 
 use crate::app_config::Config;
 
-// Estructura para los uniforms (debe ser Pod y Zeroable)
 #[repr(C)]
 #[derive(Debug, Copy, Clone, Zeroable, Pod)]
 struct Uniforms {
     gradient_colors: [[f32; 4]; 32],
     colors_count: i32,
-    _padding: [i32; 3], // para alineación a 16 bytes
+    _padding: [i32; 3],
     window_size: [f32; 2],
     _pad2: [f32; 2],
 }
 
 impl Uniforms {
-    fn new(colors: &[[f32; 4]], window_width: f32, window_height: f32) -> Self {
+    fn new(colors: &[[f32; 4]], width: f32, height: f32) -> Self {
         let mut grad = [[0.0; 4]; 32];
         for (i, c) in colors.iter().enumerate().take(32) {
             grad[i] = *c;
@@ -32,7 +32,7 @@ impl Uniforms {
             gradient_colors: grad,
             colors_count: colors.len() as i32,
             _padding: [0, 0, 0],
-            window_size: [window_width, window_height],
+            window_size: [width, height],
             _pad2: [0.0, 0.0],
         }
     }
@@ -74,8 +74,7 @@ impl WgpuRenderer {
                 .context("Failed to create window")?
         };
 
-        // ---- Inicialización wgpu ----
-        let instance = wgpu::Instance::new(wgpu::Backends::all());
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
         let surface = unsafe { instance.create_surface(&window) }
             .context("Failed to create surface")?;
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -87,8 +86,8 @@ impl WgpuRenderer {
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: None,
-                features: wgpu::Features::empty(),
-                limits: wgpu::Limits::default(),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::default(),
             },
             None,
         ))
@@ -108,13 +107,11 @@ impl WgpuRenderer {
             .unwrap_or(wgpu::CompositeAlphaMode::Auto);
         surface.configure(&device, &surface_config);
 
-        // ---- Shader ----
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
         });
 
-        // ---- Buffers de vértices e índices ----
         let bar_count = self.config.bars.amount as usize;
         let mut indices = Vec::with_capacity(bar_count * 6);
         for i in 0..bar_count {
@@ -134,21 +131,19 @@ impl WgpuRenderer {
             mapped_at_creation: false,
         });
 
-        // ---- Uniform buffer ----
         let initial_colors: Vec<[f32; 4]> = self
             .config
             .colors
             .values()
             .map(|c| crate::app_config::array_from_config_color(c.clone()))
             .collect();
-        let mut uniforms = Uniforms::new(&initial_colors, size.width as f32, size.height as f32);
+        let uniforms = Uniforms::new(&initial_colors, size.width as f32, size.height as f32);
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Uniform Buffer"),
             contents: bytemuck::cast_slice(&[uniforms]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        // ---- Bind group layout y bind group ----
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Bind Group Layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -171,7 +166,6 @@ impl WgpuRenderer {
             }],
         });
 
-        // ---- Pipeline layout y pipeline ----
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Pipeline Layout"),
             bind_group_layouts: &[&bind_group_layout],
@@ -208,9 +202,9 @@ impl WgpuRenderer {
             multiview: None,
         });
 
-        // ---- Datos de audio y bucle principal ----
         let mut bar_heights = vec![0.0; bar_count];
         let mut current_colors = initial_colors;
+        let mut uniforms_data = uniforms;
 
         event_loop.run(move |event, _, control_flow| {
             *control_flow = ControlFlow::Poll;
@@ -227,33 +221,32 @@ impl WgpuRenderer {
                             surface_config.width = new_size.width;
                             surface_config.height = new_size.height;
                             surface.configure(&device, &surface_config);
-                            // Actualizar uniforme de tamaño
-                            uniforms.window_size = [new_size.width as f32, new_size.height as f32];
-                            queue.write_buffer(&uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
+                            uniforms_data.window_size = [new_size.width as f32, new_size.height as f32];
+                            queue.write_buffer(&uniform_buffer, 0, bytemuck::cast_slice(&[uniforms_data]));
                         }
                     }
                     _ => {}
                 },
+                Event::AboutToWait => {
+                    window.request_redraw();
+                }
                 Event::RedrawRequested(_) => {
-                    // 1. Actualizar colores del degradado si llegaron nuevos
                     if let Ok(guard) = self.color_rx.lock() {
                         if let Ok(new_colors) = guard.try_recv() {
                             current_colors = new_colors;
-                            uniforms = Uniforms::new(
+                            uniforms_data = Uniforms::new(
                                 &current_colors,
-                                uniforms.window_size[0],
-                                uniforms.window_size[1],
+                                uniforms_data.window_size[0],
+                                uniforms_data.window_size[1],
                             );
-                            queue.write_buffer(&uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
+                            queue.write_buffer(&uniform_buffer, 0, bytemuck::cast_slice(&[uniforms_data]));
                         }
                     }
 
-                    // 2. Leer nuevos datos de audio
                     if let Ok(new_heights) = self.audio_rx.try_recv() {
                         bar_heights = new_heights;
                     }
 
-                    // 3. Calcular vértices
                     let bar_width =
                         2.0 / (bar_count as f32 + (bar_count as f32 - 1.0) * self.config.bars.gap);
                     let bar_gap_width = bar_width * self.config.bars.gap;
@@ -273,7 +266,6 @@ impl WgpuRenderer {
                     }
                     queue.write_buffer(&vertex_buffer, 0, bytemuck::cast_slice(&vertices));
 
-                    // 4. Renderizar
                     let frame = match surface.get_current_texture() {
                         Ok(frame) => frame,
                         Err(_) => return,
@@ -288,10 +280,12 @@ impl WgpuRenderer {
                                 resolve_target: None,
                                 ops: wgpu::Operations {
                                     load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
-                                    store: true,
+                                    store: wgpu::StoreOp::Store,
                                 },
                             })],
                             depth_stencil_attachment: None,
+                            occlusion_query_set: None,
+                            timestamp_writes: None,
                         });
                         render_pass.set_pipeline(&render_pipeline);
                         render_pass.set_bind_group(0, &bind_group, &[]);
@@ -304,7 +298,6 @@ impl WgpuRenderer {
                 }
                 _ => {}
             }
-            window.request_redraw();
         });
     }
 }

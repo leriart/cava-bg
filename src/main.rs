@@ -2,7 +2,7 @@ mod app_config;
 mod wallpaper;
 mod cava_backend;
 mod wgpu_renderer;
-mod sdl2_renderer;   // elimina esta línea si no quieres fallback
+mod sdl2_renderer;   // opcional, puedes eliminar si no quieres fallback
 
 use anyhow::{Context, Result};
 use log::{error, info, warn};
@@ -40,7 +40,6 @@ fn main() -> Result<()> {
     let mut config = load_or_create_config(&config_path)?;
     let auto_colors_enabled = config.general.auto_colors;
 
-    // Colores iniciales desde wallpaper
     if auto_colors_enabled {
         info!("Initial wallpaper detection...");
         match wallpaper::WallpaperAnalyzer::generate_gradient_colors(8) {
@@ -74,11 +73,9 @@ fn main() -> Result<()> {
     })
     .expect("Error setting Ctrl-C handler");
 
-    // Canal para actualizaciones de colores (desde el hilo de wallpaper)
     let (color_tx, color_rx) = mpsc::channel();
     let shared_color_rx = Arc::new(Mutex::new(color_rx));
 
-    // Hilo de vigilancia de cambios de wallpaper
     if auto_colors_enabled {
         let tx = color_tx.clone();
         thread::spawn(move || {
@@ -131,11 +128,11 @@ fn main() -> Result<()> {
     let (_cava_backend, audio_rx) = CavaBackend::new(bar_count, &config)
         .context("Failed to start cava backend")?;
 
-    // Intentar primero con wgpu
+    // Intentar wgpu (no clonamos audio_rx, lo movemos)
     info!("Starting Wgpu universal renderer");
     let wgpu_result = WgpuRenderer::new(
         config.clone(),
-        audio_rx.clone(),
+        audio_rx,
         shared_color_rx.clone(),
         running.clone(),
     )
@@ -144,6 +141,9 @@ fn main() -> Result<()> {
     if let Err(e) = wgpu_result {
         warn!("Wgpu renderer failed: {}. Falling back to SDL2 renderer.", e);
         info!("Starting SDL2 fallback renderer...");
+        // Para el fallback necesitamos un nuevo receiver de audio
+        let (_cava_backend2, audio_rx2) = CavaBackend::new(bar_count, &config)
+            .context("Failed to start cava backend for fallback")?;
         let colors: Vec<[f32; 4]> = config
             .colors
             .values()
@@ -153,7 +153,7 @@ fn main() -> Result<()> {
             bar_count,
             config.bars.gap,
             colors,
-            audio_rx,
+            audio_rx2,
             shared_color_rx,
             running,
         )?;
@@ -163,7 +163,7 @@ fn main() -> Result<()> {
     Ok(())
 }
 
-// Funciones auxiliares (sin cambios respecto a tu código original)
+// Funciones auxiliares (igual que antes)
 fn get_config_path(args: &[String]) -> PathBuf {
     if args.len() == 3 && args[1] == "--config" {
         return PathBuf::from(&args[2]);
