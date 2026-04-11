@@ -123,7 +123,7 @@ struct PerOutputState {
     width: u32,
     height: u32,
     configured: bool,
-    frame_count: u64,  // contador de frames para este output
+    frame_count: u64,
 }
 
 pub struct WaylandRenderer {
@@ -162,7 +162,6 @@ impl WaylandRenderer {
             .insert(loop_handle)
             .map_err(|e| anyhow::anyhow!("Wayland source error: {:?}", e))?;
 
-        let frame_duration = Duration::from_secs(1) / self.config.general.framerate;
         let compositor = CompositorState::bind(&globals, &qh).context("wl_compositor not available")?;
         let layer_shell = LayerShell::bind(&globals, &qh).context("layer shell not available")?;
 
@@ -186,18 +185,18 @@ impl WaylandRenderer {
             per_output: HashMap::new(),
             bar_count,
             bar_gap,
-            preferred_output_name: self.config.general.preferred_output,
+            preferred_output_name: self.config.general.preferred_output.clone(),
             audio_rx,
             color_rx,
             running,
-            initial_colors,
-            frame_duration,
+            current_colors: initial_colors,
+            frame_duration: Duration::from_secs_f64(1.0 / self.config.general.framerate as f64),
             conn: conn.clone(),
             qh,
         };
 
         event_loop
-            .run(frame_duration, &mut app_state, |_| {})
+            .run(None, &mut app_state, |_| {})
             .context("Event loop failed")?;
 
         Ok(())
@@ -214,9 +213,9 @@ struct AppState {
     bar_gap: f32,
     preferred_output_name: Option<String>,
     audio_rx: Receiver<Vec<f32>>,
-    color_rx: Arc<Mutex<Receiver<Vec<f32; 4]>>>>,
+    color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
     running: Arc<AtomicBool>,
-    initial_colors: Vec<[f32; 4]>,
+    current_colors: Vec<[f32; 4]>,
     frame_duration: Duration,
     conn: Connection,
     qh: QueueHandle<Self>,
@@ -226,16 +225,20 @@ impl AppState {
     fn ensure_output(&mut self, output: &wl_output::WlOutput) -> Result<()> {
         let info = self.output_state.info(output).context("Failed to get output info")?;
         let name = info.name.clone().unwrap_or_else(|| "unknown".to_string());
+
         if self.per_output.contains_key(&name) {
             return Ok(());
         }
+
         if let Some(ref pref) = self.preferred_output_name {
             if &name != pref {
                 debug!("Omitiendo output {} (preferido es {})", name, pref);
                 return Ok(());
             }
         }
+
         info!("Creando superficie para output {}", name);
+
         let surface = self.compositor.create_surface(&self.qh);
         let layer_surface = self.layer_shell.create_layer_surface(
             &self.qh,
@@ -244,21 +247,23 @@ impl AppState {
             Some("cava-bg"),
             Some(output),
         );
+
         let logical_size = info.logical_size.unwrap_or((1920, 1080));
         let width = logical_size.0 as u32;
         let height = logical_size.1 as u32;
+
         layer_surface.set_size(width, height);
         layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
         layer_surface.set_exclusive_zone(-1);
         surface.commit();
 
-        // Obtener punteros para crear la superficie WGPU
+        // Crear superficie WGPU
         let wl_display = self.conn.display().id().as_ptr();
         let wl_surface_ptr = surface.id().as_ptr();
-        
+
         let display_ptr = NonNull::new(wl_display as *mut std::ffi::c_void).unwrap();
         let surface_ptr = NonNull::new(wl_surface_ptr as *mut std::ffi::c_void).unwrap();
-        
+
         let display_handle = WaylandDisplayHandle::new(display_ptr);
         let window_handle = WaylandWindowHandle::new(surface_ptr);
         let raw_display = RawDisplayHandle::Wayland(display_handle);
@@ -279,6 +284,7 @@ impl AppState {
             force_fallback_adapter: false,
         }))
         .context("Failed to find suitable GPU adapter")?;
+
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: None,
@@ -325,7 +331,7 @@ impl AppState {
             mapped_at_creation: false,
         });
 
-        let uniforms = Uniforms::new(&self.initial_colors, width as f32, height as f32);
+        let uniforms = Uniforms::new(&self.current_colors, width as f32, height as f32);
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Uniform Buffer"),
             contents: bytemuck::cast_slice(&[uniforms]),
@@ -345,6 +351,7 @@ impl AppState {
                 count: None,
             }],
         });
+
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Bind Group"),
             layout: &bind_group_layout,
@@ -359,6 +366,7 @@ impl AppState {
             bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
         });
+
         let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("Render Pipeline"),
             layout: Some(&pipeline_layout),
@@ -390,7 +398,8 @@ impl AppState {
             multiview: None,
         });
 
-        let static_surface = unsafe { std::mem::transmute(wgpu_surface) };
+        // La superficie debe vivir 'static, pero aquí sabemos que el programa no terminará antes que ella.
+        let static_surface = unsafe { std::mem::transmute::<_, wgpu::Surface<'static>>(wgpu_surface) };
 
         let state = PerOutputState {
             surface,
@@ -409,6 +418,7 @@ impl AppState {
             configured: false,
             frame_count: 0,
         };
+
         self.per_output.insert(name.clone(), state);
         info!("Superficie WGPU creada para {}: {}x{}", name, width, height);
         Ok(())
@@ -424,26 +434,22 @@ impl AppState {
             None => return,
         };
 
-        // Actualizar colores si hay nuevos
+        // Actualizar colores desde el watcher (si hay nuevos)
         if let Ok(guard) = self.color_rx.lock() {
             if let Ok(new_colors) = guard.try_recv() {
                 info!("Actualizando colores del degradado ({} colores)", new_colors.len());
-                let uniforms = Uniforms::new(&new_colors, state.width as f32, state.height as f32);
+                self.current_colors = new_colors.clone();
+                let uniforms = Uniforms::new(&self.current_colors, state.width as f32, state.height as f32);
                 state.wgpu_queue.write_buffer(&state.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
             }
         }
 
-        // Leer audio o generar prueba
+        // Leer datos de audio (o generar onda de prueba)
         let mut bar_heights = vec![0.0; self.bar_count];
-        let mut test_mode = false;
         if let Ok(new_heights) = self.audio_rx.try_recv() {
             bar_heights = new_heights;
-            if let Some(first) = bar_heights.first() {
-                debug!("Altura barra 0: {}", first);
-            }
         } else {
             // Modo de prueba: onda sinusoidal
-            test_mode = true;
             let phase = (std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -493,8 +499,12 @@ impl AppState {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        // Fondo transparente
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 0.0,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -510,8 +520,9 @@ impl AppState {
         }
         state.wgpu_queue.submit(std::iter::once(encoder.finish()));
         frame.present();
-        state.surface.frame(&self.qh, state.surface.clone());
+
         state.frame_count += 1;
+        state.surface.frame(&self.qh, state.surface.clone());
     }
 
     pub fn draw(&mut self) {
@@ -531,14 +542,17 @@ impl OutputHandler for AppState {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
     }
+
     fn new_output(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
         if let Err(e) = self.ensure_output(&output) {
             error!("Fallo al crear output: {}", e);
         }
     }
+
     fn update_output(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
         self.new_output(_conn, _qh, output);
     }
+
     fn output_destroyed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
         let info = match self.output_state.info(&output) {
             Some(i) => i,
@@ -564,17 +578,56 @@ impl ProvidesRegistryState for AppState {
 }
 
 impl CompositorHandler for AppState {
-    fn scale_factor_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_factor: i32) {}
-    fn transform_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_transform: wl_output::Transform) {}
-    fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {
+    fn scale_factor_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _new_factor: i32,
+    ) {
+    }
+
+    fn transform_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _new_transform: wl_output::Transform,
+    ) {
+    }
+
+    fn frame(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _time: u32,
+    ) {
         self.draw();
     }
-    fn surface_enter(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
-    fn surface_leave(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
+
+    fn surface_enter(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _output: &wl_output::WlOutput,
+    ) {
+    }
+
+    fn surface_leave(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _output: &wl_output::WlOutput,
+    ) {
+    }
 }
 
 impl LayerShellHandler for AppState {
     fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {}
+
     fn configure(
         &mut self,
         _conn: &Connection,
@@ -596,10 +649,10 @@ impl LayerShellHandler for AppState {
                 state.wgpu_config.width = width;
                 state.wgpu_config.height = height;
                 state.wgpu_surface.configure(&state.wgpu_device, &state.wgpu_config);
-                // Actualizar uniforme de tamaño
-                let current_colors = self.initial_colors.clone();
-                let new_uniforms = Uniforms::new(&current_colors, width as f32, height as f32);
-                state.wgpu_queue.write_buffer(&state.uniform_buffer, 0, bytemuck::cast_slice(&[new_uniforms]));
+
+                let uniforms = Uniforms::new(&self.current_colors, width as f32, height as f32);
+                state.wgpu_queue.write_buffer(&state.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
+
                 state.configured = true;
                 target_name = Some(name.clone());
                 info!("Output {} configurado: {}x{}", name, width, height);

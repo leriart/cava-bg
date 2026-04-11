@@ -68,7 +68,8 @@ fn main() -> Result<()> {
     let r = running.clone();
     ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
-    }).expect("Error setting Ctrl-C handler");
+    })
+    .expect("Error setting Ctrl-C handler");
 
     let (color_tx, color_rx) = mpsc::channel();
     let shared_color_rx = Arc::new(Mutex::new(color_rx));
@@ -96,7 +97,11 @@ fn main() -> Result<()> {
                         if path_changed || time_changed {
                             info!("Wallpaper changed: {:?}", current_path);
                             let now = SystemTime::now();
-                            if now.duration_since(last_sent).unwrap_or(Duration::ZERO) < Duration::from_millis(500) {
+                            if now
+                                .duration_since(last_sent)
+                                .unwrap_or(Duration::ZERO)
+                                < Duration::from_millis(500)
+                            {
                                 last_path = Some(current_path);
                                 last_modified = modified;
                                 continue;
