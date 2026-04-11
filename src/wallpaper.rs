@@ -54,7 +54,7 @@ impl WallpaperAnalyzer {
     }
 
     fn from_ambxst() -> Option<PathBuf> {
-        let cache_path = dirs::home_dir()?.join("~/.cache/ambxst/wallpapers.json");
+        let cache_path = dirs::home_dir()?.join(".cache/ambxst/wallpapers.json");
         if !cache_path.exists() {
             return None;
         }
