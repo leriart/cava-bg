@@ -98,7 +98,7 @@ impl WaylandRenderer {
         layer_surface.set_anchor(Anchor::TOP);
         surface.commit();
 
-        // EGL initialization (feature "static" required)
+        // EGL initialization with static feature (snake_case functions available)
         egl::bind_api(egl::OPENGL_API).context("Failed to bind EGL API")?;
         let egl_display = unsafe {
             egl::get_display(conn.display().id().as_ptr() as *mut c_void)
