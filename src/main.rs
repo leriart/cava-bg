@@ -120,7 +120,7 @@ fn main() -> Result<()> {
             let mut last_path: Option<std::path::PathBuf> = None;
             let mut last_modified: Option<SystemTime> = None;
             loop {
-                thread::sleep(Duration::from_secs(1));
+                thread::sleep(Duration::from_millis(1500));
                 match WallpaperAnalyzer::find_wallpaper() {
                     Some(current_path) => {
                         let modified = std::fs::metadata(&current_path)
@@ -149,7 +149,7 @@ fn main() -> Result<()> {
                         }
                     }
                     None => {
-                        thread::sleep(Duration::from_secs(5));
+                        thread::sleep(Duration::from_secs(3));
                     }
                 }
             }

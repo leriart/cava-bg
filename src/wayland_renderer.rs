@@ -309,6 +309,10 @@ impl AppState {
                 buffer_data.as_ptr() as *const _,
                 gl::STATIC_DRAW,
             );
+            gl::BindBufferBase(gl::SHADER_STORAGE_BUFFER, 0, self.gradient_colors_ssbo);
+            
+            gl::MemoryBarrier(gl::SHADER_STORAGE_BARRIER_BIT);
+            
             gl::BindBuffer(gl::SHADER_STORAGE_BUFFER, 0);
         }
         info!("Updated gradient colors from wallpaper change");

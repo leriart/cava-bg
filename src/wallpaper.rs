@@ -8,76 +8,72 @@ use std::sync::Mutex;
 use walkdir::WalkDir;
 
 static PREVIOUS_COLORS: Lazy<Mutex<Vec<[f32; 4]>>> = Lazy::new(|| Mutex::new(Vec::new()));
-const COLOR_SMOOTHING_FACTOR: f32 = 0.5;
+const COLOR_SMOOTHING_FACTOR: f32 = 0.8;
 
 pub struct WallpaperAnalyzer;
 
 impl WallpaperAnalyzer {
-    /// Encuentra el archivo de wallpaper actual. Devuelve Some si lo encuentra.
     pub fn find_wallpaper() -> Option<PathBuf> {
-        // 1. mpvpaper (muy común para GIFs/videos)
+        // 1. mpvpaper
         if let Some(path) = Self::from_mpvpaper() {
-            log::info!("Detected wallpaper via mpvpaper: {:?}", path);
+            log::debug!("Detected wallpaper via mpvpaper: {:?}", path);
             return Some(path);
         }
 
-        // 2. Preguntar a hyprpaper a través de hyprctl
+        // 2. hyprctl hyprpaper
         if let Some(path) = Self::from_hyprctl_hyprpaper() {
-            log::info!("Detected wallpaper via hyprctl hyprpaper: {:?}", path);
+            log::debug!("Detected wallpaper via hyprctl hyprpaper: {:?}", path);
             return Some(path);
         }
 
         // 3. awww / swww
         if let Some(path) = Self::from_swww_like("awww") {
-            log::info!("Detected wallpaper via awww: {:?}", path);
+            log::debug!("Detected wallpaper via awww: {:?}", path);
             return Some(path);
         }
         if let Some(path) = Self::from_swww_like("swww") {
-            log::info!("Detected wallpaper via swww: {:?}", path);
+            log::debug!("Detected wallpaper via swww: {:?}", path);
             return Some(path);
         }
 
         // 4. swaybg
         if let Some(path) = Self::from_swaybg() {
-            log::info!("Detected wallpaper via swaybg: {:?}", path);
+            log::debug!("Detected wallpaper via swaybg: {:?}", path);
             return Some(path);
         }
 
-        // 5. hyprpaper (archivo de configuración)
+        // 5. hyprpaper.conf
         if let Some(path) = Self::from_hyprpaper_conf() {
-            log::info!("Detected wallpaper via hyprpaper.conf: {:?}", path);
+            log::debug!("Detected wallpaper via hyprpaper.conf: {:?}", path);
             return Some(path);
         }
 
         // 6. wpaperd
         if let Some(path) = Self::from_wpaperd() {
-            log::info!("Detected wallpaper via wpaperd: {:?}", path);
+            log::debug!("Detected wallpaper via wpaperd: {:?}", path);
             return Some(path);
         }
 
         // 7. wbg
         if let Some(path) = Self::from_wbg() {
-            log::info!("Detected wallpaper via wbg: {:?}", path);
+            log::debug!("Detected wallpaper via wbg: {:?}", path);
             return Some(path);
         }
 
-        // 8. waypaper (config)
+        // 8. waypaper
         if let Some(path) = Self::from_waypaper() {
-            log::info!("Detected wallpaper via waypaper config: {:?}", path);
+            log::debug!("Detected wallpaper via waypaper config: {:?}", path);
             return Some(path);
         }
 
-        // 9. Fallback: buscar la imagen más reciente en directorios típicos
+        // 9. Fallback genérico (solo directorios estándar)
         if let Some(path) = Self::fallback_most_recent() {
-            log::info!("Fallback: using most recent image in wallpaper dirs: {:?}", path);
+            log::debug!("Fallback: using most recent image in wallpaper dirs: {:?}", path);
             return Some(path);
         }
 
-        log::warn!("No wallpaper could be detected by any method");
         None
     }
-
-    // --- Métodos concretos de detección ---
 
     fn from_hyprctl_hyprpaper() -> Option<PathBuf> {
         let output = Command::new("hyprctl")
@@ -160,18 +156,13 @@ impl WallpaperAnalyzer {
     }
 
     fn from_mpvpaper() -> Option<PathBuf> {
-        // Usamos ps aux para obtener la línea completa
         let output = Command::new("ps").arg("aux").output().ok()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
             if line.contains("mpvpaper") && !line.contains("grep") {
-                log::debug!("Found mpvpaper process: {}", line);
-                // Dividir por espacios y buscar el último argumento que sea una ruta de archivo válida
                 let parts: Vec<&str> = line.split_whitespace().collect();
-                // mpvpaper suele tener la ruta del archivo al final de la línea
                 for part in parts.iter().rev() {
                     let path = PathBuf::from(part);
-                    // Verificar si el archivo existe y tiene extensión de imagen/video
                     if path.exists() {
                         if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                             let ext_lower = ext.to_lowercase();
@@ -242,9 +233,8 @@ impl WallpaperAnalyzer {
             dirs::picture_dir(),
             dirs::picture_dir().map(|p| p.join("Wallpapers")),
             dirs::picture_dir().map(|p| p.join("Wallpaper")),
-            dirs::home_dir().map(|p| p.join("Imágenes").join("Wallpapers-Axenide")), // añadido para el usuario
-            dirs::home_dir().map(|p| p.join("Imágenes")),
             dirs::config_dir().map(|p| p.join("hypr")),
+            dirs::config_dir().map(|p| p.join("sway")),
         ];
         for dir in dirs_to_check.into_iter().flatten() {
             if dir.exists() {
@@ -271,7 +261,6 @@ impl WallpaperAnalyzer {
         candidates.into_iter().last()
     }
 
-    // --- Carga de imagen (soporta GIF y video vía ffmpeg) ---
     fn load_image_from_path(path: &PathBuf) -> Result<image::DynamicImage> {
         let ext = path.extension()
             .and_then(|e| e.to_str())
@@ -297,7 +286,6 @@ impl WallpaperAnalyzer {
         image::open(path).context("Failed to open image")
     }
 
-    // --- Paleta de colores por defecto (Catppuccin) ---
     pub fn default_colors(num_colors: usize) -> Vec<[f32; 4]> {
         let catppuccin = [
             [0.580, 0.886, 0.835, 1.0],
@@ -320,7 +308,6 @@ impl WallpaperAnalyzer {
         }
     }
 
-    /// Genera una paleta de colores a partir del archivo de wallpaper actual.
     pub fn generate_gradient_colors(num_colors: usize) -> Result<Vec<[f32; 4]>> {
         let wallpaper_path = match Self::find_wallpaper() {
             Some(path) => path,
@@ -354,6 +341,17 @@ impl WallpaperAnalyzer {
             }
         }
         *prev_guard = new_colors.clone();
+
+        log::info!("New gradient colors:");
+        for (i, color) in new_colors.iter().enumerate() {
+            log::info!("  Color {}: #{:02x}{:02x}{:02x} (alpha: {:.2})",
+                i+1,
+                (color[0]*255.0) as u8,
+                (color[1]*255.0) as u8,
+                (color[2]*255.0) as u8,
+                color[3]);
+        }
+
         Ok(new_colors)
     }
 
