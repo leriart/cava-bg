@@ -106,32 +106,41 @@ impl WallpaperAnalyzer {
         None
     }
 
-    /// Detecta wallpapers gestionados por Waypaper leyendo su archivo de configuración.
+    /// Detecta wallpapers gestionados por Waypaper utilizando su CLI o su archivo de configuración.
     fn from_waypaper() -> Option<PathBuf> {
+        // Método 1: Intentar usar el comando `waypaper --list` (más fiable)
+        if let Ok(output) = Command::new("waypaper").arg("--list").output() {
+            if output.status.success() {
+                if let Ok(json_str) = String::from_utf8(output.stdout) {
+                    if let Some(path) = Self::parse_waypaper_list_json(&json_str) {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+
+        // Método 2: Leer directamente el archivo config.ini
         let config_path = dirs::config_dir()?.join("waypaper").join("config.ini");
         if !config_path.exists() {
             return None;
         }
 
         let content = std::fs::read_to_string(config_path).ok()?;
-        let mut backend: Option<String> = None;
         let mut wallpaper_path: Option<String> = None;
 
         // Parsear el archivo INI de Waypaper
         for line in content.lines() {
             let line = line.trim();
-            if line.starts_with("backend") {
+            if line.starts_with("wallpaper") {
                 if let Some((_, value)) = line.split_once('=') {
-                    backend = Some(value.trim().to_string());
-                }
-            } else if line.starts_with("wallpaper") {
-                if let Some((_, value)) = line.split_once('=') {
+                    // La ruta puede estar entre comillas
                     wallpaper_path = Some(value.trim().trim_matches('"').to_string());
+                    break;
                 }
             }
         }
 
-        // Si tenemos una ruta de wallpaper, verificar si es válida
+        // Si encontramos una ruta, verificamos que exista
         if let Some(path_str) = wallpaper_path {
             let path = PathBuf::from(&path_str);
             if path.exists() {
@@ -139,15 +148,43 @@ impl WallpaperAnalyzer {
             }
         }
 
-        // Si no se encontró una ruta válida, intentar consultar al backend configurado
-        if let Some(be) = backend {
-            match be.as_str() {
-                "swaybg" => return Self::from_swaybg(),
-                "swww" => return Self::from_swww_like("swww"),
-                _ => {}
+        None
+    }
+
+    /// Parsea la salida JSON del comando `waypaper --list`.
+    fn parse_waypaper_list_json(json_str: &str) -> Option<PathBuf> {
+        // La salida JSON tiene el formato: {"monitor": "/path/to/image.jpg", ...}
+        // Usamos un análisis simple en lugar de una librería completa para mantenerlo ligero.
+        if let Some(start) = json_str.find('{') {
+            let json_part = &json_str[start..];
+            // Buscar el valor del primer monitor (no nos importa cuál, solo la ruta)
+            let mut in_value = false;
+            let mut path_start = 0;
+            let mut path_end = 0;
+
+            for (i, c) in json_part.char_indices() {
+                if c == '"' && !in_value {
+                    // Comienzo de una clave o valor
+                    in_value = true;
+                } else if c == '"' && in_value {
+                    // Fin de un valor
+                    let value = &json_part[path_start..i];
+                    if value.starts_with('/') && (value.ends_with(".jpg") || value.ends_with(".jpeg") || value.ends_with(".png") || value.ends_with(".gif") || value.ends_with(".webp") || value.ends_with(".bmp")) {
+                        let path = PathBuf::from(value);
+                        if path.exists() {
+                            return Some(path);
+                        }
+                    }
+                    in_value = false;
+                } else if in_value && path_start == 0 {
+                    path_start = i;
+                }
+                // Resetear para el siguiente valor
+                if !in_value {
+                    path_start = 0;
+                }
             }
         }
-
         None
     }
 
