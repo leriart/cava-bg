@@ -169,8 +169,6 @@ const SHADER_FALLBACKS: [ShaderConfig; 3] = [
             egl::NONE,                      // 3
             egl::NONE,                      // 4
             egl::NONE,                      // 5
-            egl::NONE,                      // 6
-            egl::NONE,                      // 7
         ],
         use_uniforms: true,
     },
