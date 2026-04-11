@@ -164,13 +164,13 @@ const SHADER_FALLBACKS: [ShaderConfig; 3] = [
         vertex_src: VERTEX_SHADER_100,
         fragment_src: FRAGMENT_SHADER_100,
         context_attribs: [
-            egl::CONTEXT_MAJOR_VERSION, 2,
-            egl::CONTEXT_MINOR_VERSION, 0,
-            egl::NONE,
-            egl::NONE,
-            egl::NONE,
-            egl::NONE,
-            egl::NONE,
+            egl::CONTEXT_MAJOR_VERSION, 2,  // 1
+            egl::CONTEXT_MINOR_VERSION, 0,  // 2
+            egl::NONE,                      // 3
+            egl::NONE,                      // 4
+            egl::NONE,                      // 5
+            egl::NONE,                      // 6
+            egl::NONE,                      // 7
         ],
         use_uniforms: true,
     },
