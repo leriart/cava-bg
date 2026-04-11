@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use log::{debug, error, info, warn};
-use smithay_client_toolkit::reexports::calloop::timer::{Timer, TimerHandle, TimeoutAction};
+use smithay_client_toolkit::reexports::calloop::timer::{Timer, TimeoutAction};
 use smithay_client_toolkit::reexports::calloop::{EventLoop, LoopHandle};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::ProvidesRegistryState;
@@ -32,7 +32,7 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::app_config::{array_from_config_color, Config};
 
@@ -202,12 +202,15 @@ impl WaylandRenderer {
         // Crear e insertar el temporizador periódico
         let timer = Timer::from_duration(frame_duration);
         loop_handle
-            .insert_source(timer, move |_event, _metadata: &mut TimerHandle<()>, state: &mut AppState| {
-                // Renderizar un frame
-                state.draw();
-                // Devolver TimeoutAction para reprogramar el temporizador
-                TimeoutAction::ToDuration(state.frame_duration)
-            })
+            .insert_source(
+                timer,
+                move |_event: Instant, _metadata: &mut smithay_client_toolkit::reexports::calloop::timer::TimerHandle<()>, state: &mut AppState| {
+                    // Renderizar un frame
+                    state.draw();
+                    // Devolver TimeoutAction para reprogramar el temporizador
+                    TimeoutAction::ToDuration(state.frame_duration)
+                },
+            )
             .map_err(|e| anyhow::anyhow!("Failed to insert timer source: {:?}", e))?;
 
         event_loop
