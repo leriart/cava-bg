@@ -33,7 +33,7 @@ use std::io::{BufReader, Read};
 use std::process::ChildStdout;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{mem, ptr};
 
@@ -45,7 +45,7 @@ const FRAGMENT_SHADER_SRC: &str = include_str!("shaders/fragment_shader.glsl");
 pub struct WaylandRenderer {
     config: Config,
     cava_reader: BufReader<ChildStdout>,
-    color_rx: Receiver<Vec<[f32; 4]>>,
+    color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
     running: Arc<AtomicBool>,
 }
 
@@ -53,7 +53,7 @@ impl WaylandRenderer {
     pub fn new(
         config: Config,
         cava_reader: BufReader<ChildStdout>,
-        color_rx: Receiver<Vec<[f32; 4]>>,
+        color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
         running: Arc<AtomicBool>,
     ) -> Self {
         Self {
@@ -287,7 +287,7 @@ struct AppState {
     background_color: [f32; 4],
     preferred_output_name: Option<String>,
     compositor: CompositorState,
-    color_rx: Receiver<Vec<[f32; 4]>>,
+    color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
     gradient_colors_ssbo: u32,
     gradient_colors: Vec<[f32; 4]>,
     running: Arc<AtomicBool>,
@@ -341,7 +341,7 @@ impl AppState {
             return;
         }
 
-        if let Ok(new_colors) = self.color_rx.try_recv() {
+        if let Ok(new_colors) = self.color_rx.lock().unwrap().try_recv() {
             self.update_colors(&new_colors);
         }
 
@@ -413,6 +413,7 @@ impl AppState {
     }
 }
 
+// --- Handlers (idénticos al original, excepto new_output sin tocar EGL) ---
 impl OutputHandler for AppState {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
@@ -447,6 +448,7 @@ impl OutputHandler for AppState {
             self.layer_surface.set_anchor(Anchor::TOP);
             self.surface.commit();
             old_surface.destroy();
+            // No recreamos EGL aquí – se hará en configure
         }
     }
     fn update_output(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
@@ -519,6 +521,7 @@ impl LayerShellHandler for AppState {
     }
 }
 
+// --- Funciones auxiliares para shaders ---
 fn compile_shader(shader_type: u32, src: &str) -> Result<u32> {
     unsafe {
         let shader = gl::CreateShader(shader_type);
