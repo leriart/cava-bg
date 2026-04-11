@@ -65,11 +65,8 @@ cava-bg
 # Start with default settings
 cava-bg
 
-# Force Wayland mode (if available)
-cava-bg --wayland
-
 # Test configuration and color extraction
-cava-bg --test-config
+RUST_LOG=info cava-bg
 ```
 
 ### Command Line Options
