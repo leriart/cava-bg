@@ -181,9 +181,28 @@ impl WaylandRenderer {
 
         let frame_duration = Duration::from_secs_f64(1.0 / self.config.general.framerate as f64);
 
-        // Crear un timer que disparará periódicamente usando la API de calloop 0.14
+        // Crear un temporizador que disparará periódicamente.
+        // Usamos `Timer::from_duration` para crear un temporizador que expira después de `frame_duration`.
         let timer = Timer::from_duration(frame_duration);
-        let timer_handle = timer.handle();
+
+        // Insertar el temporizador en el bucle de eventos.
+        // El closure recibe `(TimeoutAction, &mut (), &mut AppState)`.
+        loop_handle
+            .insert_source(timer, move |action, _: &mut (), state: &mut AppState| {
+                if let TimeoutAction::Timeout(_) = action {
+                    // Se ha alcanzado el timeout: dibujar un frame.
+                    state.draw();
+                    // Reprogramar el temporizador para el siguiente frame.
+                    // Para ello, obtenemos un handle al temporizador desde el propio evento.
+                    // Nota: El closure recibe `action` que contiene `TimerHandle`.
+                    // Podemos usar `action.handle()` para obtener el handle.
+                    if let Some(handle) = action.handle() {
+                        // Configurar un nuevo timeout con la misma duración.
+                        handle.set_duration(state.frame_duration);
+                    }
+                }
+            })
+            .map_err(|e| anyhow::anyhow!("Failed to insert timer source: {:?}", e))?;
 
         let mut app_state = AppState {
             registry_state: RegistryState::new(&globals),
@@ -202,23 +221,7 @@ impl WaylandRenderer {
             conn: conn.clone(),
             qh,
             loop_handle: loop_handle.clone(),
-            timer_handle,
-            next_frame_time: Instant::now(),
         };
-
-        // Insertar el timer en el event loop
-        loop_handle
-            .insert_source(timer, move |action, _: &mut std::sync::Mutex<AppState>, state: &mut AppState| {
-                match action {
-                    TimeoutAction::ToDuration(dur) => {
-                        // Reprogramar el timer para el siguiente frame
-                        state.timer_handle.set_duration(dur);
-                    }
-                    TimeoutAction::ToInstant(_) => {}
-                }
-                state.draw();
-            })
-            .map_err(|e| anyhow::anyhow!("Failed to insert timer source: {:?}", e))?;
 
         event_loop
             .run(None, &mut app_state, |_| {})
@@ -245,8 +248,6 @@ struct AppState {
     conn: Connection,
     qh: QueueHandle<Self>,
     loop_handle: LoopHandle<'static, Self>,
-    timer_handle: calloop::timer::TimerHandle,
-    next_frame_time: Instant,
 }
 
 impl AppState {
@@ -561,19 +562,6 @@ impl AppState {
             std::process::exit(0);
         }
 
-        // Calcular el tiempo para el siguiente frame y ajustar el timer
-        let now = Instant::now();
-        let next = self.next_frame_time;
-        if now >= next {
-            // Si nos hemos retrasado, programar inmediatamente
-            self.timer_handle.set_duration(Duration::ZERO);
-            self.next_frame_time = now + self.frame_duration;
-        } else {
-            let remaining = next - now;
-            self.timer_handle.set_duration(remaining);
-            self.next_frame_time = next + self.frame_duration;
-        }
-
         let names: Vec<String> = self.per_output.keys().cloned().collect();
         for name in names {
             self.draw_output(&name);
@@ -581,7 +569,7 @@ impl AppState {
     }
 }
 
-// --- Implementaciones de handlers (sin cambios) ---
+// --- Implementaciones de handlers ---
 
 impl OutputHandler for AppState {
     fn output_state(&mut self) -> &mut OutputState {
