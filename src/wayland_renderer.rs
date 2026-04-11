@@ -549,14 +549,16 @@ impl AppState {
 
         let wl_egl_surface = WlEglSurface::new(surface.id(), width as i32, height as i32)
             .context("Failed to create WlEglSurface")?;
-        let egl_surface = egl::API
-            .create_window_surface(
-                self.egl_display,
-                self.egl_config,
-                wl_egl_surface.ptr() as egl::NativeWindowType,
-                None,
-            )
-            .context("Failed to create EGL window surface")?;
+        let egl_surface = unsafe {
+            egl::API
+                .create_window_surface(
+                    self.egl_display,
+                    self.egl_config,
+                    wl_egl_surface.ptr() as egl::NativeWindowType,
+                    None,
+                )
+                .context("Failed to create EGL window surface")?
+        };
 
         self.per_output.insert(
             name.clone(),
