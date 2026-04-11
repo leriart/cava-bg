@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use log::{debug, error, info, warn};
-use smithay_client_toolkit::reexports::calloop::timer::{Timer, TimerHandle};
+use smithay_client_toolkit::reexports::calloop::timer::{Timer, TimeoutAction};
 use smithay_client_toolkit::reexports::calloop::{EventLoop, LoopHandle};
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::ProvidesRegistryState;
@@ -32,11 +32,11 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::app_config::{array_from_config_color, Config};
 
-// --- Shader WGSL ---
+// --- Shader WGSL (sin cambios) ---
 const SHADER_WGSL: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -181,10 +181,9 @@ impl WaylandRenderer {
 
         let frame_duration = Duration::from_secs_f64(1.0 / self.config.general.framerate as f64);
 
-        // Crear un timer que disparará periódicamente
-        let timer = Timer::new().context("Failed to create timer")?;
+        // Crear un timer que disparará periódicamente usando la API de calloop 0.14
+        let timer = Timer::from_duration(frame_duration);
         let timer_handle = timer.handle();
-        timer_handle.add_timeout(frame_duration, ());
 
         let mut app_state = AppState {
             registry_state: RegistryState::new(&globals),
@@ -204,15 +203,20 @@ impl WaylandRenderer {
             qh,
             loop_handle: loop_handle.clone(),
             timer_handle,
+            next_frame_time: Instant::now(),
         };
 
         // Insertar el timer en el event loop
         loop_handle
-            .insert_source(timer, |_, state: &mut AppState| {
-                // Este closure se llama cuando el timer expira
+            .insert_source(timer, move |action, _: &mut std::sync::Mutex<AppState>, state: &mut AppState| {
+                match action {
+                    TimeoutAction::ToDuration(dur) => {
+                        // Reprogramar el timer para el siguiente frame
+                        state.timer_handle.set_duration(dur);
+                    }
+                    TimeoutAction::ToInstant(_) => {}
+                }
                 state.draw();
-                // Reprogramar el timer para el siguiente frame
-                state.timer_handle.add_timeout(state.frame_duration, ());
             })
             .map_err(|e| anyhow::anyhow!("Failed to insert timer source: {:?}", e))?;
 
@@ -241,7 +245,8 @@ struct AppState {
     conn: Connection,
     qh: QueueHandle<Self>,
     loop_handle: LoopHandle<'static, Self>,
-    timer_handle: TimerHandle,
+    timer_handle: calloop::timer::TimerHandle,
+    next_frame_time: Instant,
 }
 
 impl AppState {
@@ -450,7 +455,7 @@ impl AppState {
     fn draw_output(&mut self, name: &str) {
         let state = match self.per_output.get_mut(name) {
             Some(s) if s.configured => s,
-            Some(s) => {
+            Some(_) => {
                 debug!("Output {} no configurado aún", name);
                 return;
             }
@@ -556,6 +561,19 @@ impl AppState {
             std::process::exit(0);
         }
 
+        // Calcular el tiempo para el siguiente frame y ajustar el timer
+        let now = Instant::now();
+        let next = self.next_frame_time;
+        if now >= next {
+            // Si nos hemos retrasado, programar inmediatamente
+            self.timer_handle.set_duration(Duration::ZERO);
+            self.next_frame_time = now + self.frame_duration;
+        } else {
+            let remaining = next - now;
+            self.timer_handle.set_duration(remaining);
+            self.next_frame_time = next + self.frame_duration;
+        }
+
         let names: Vec<String> = self.per_output.keys().cloned().collect();
         for name in names {
             self.draw_output(&name);
@@ -563,7 +581,7 @@ impl AppState {
     }
 }
 
-// --- Implementaciones de handlers ---
+// --- Implementaciones de handlers (sin cambios) ---
 
 impl OutputHandler for AppState {
     fn output_state(&mut self) -> &mut OutputState {
