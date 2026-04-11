@@ -2,31 +2,28 @@
 name = "cava-bg"
 version = "0.2.0"
 edition = "2021"
-authors = ["rs-pro0", "leriart"]
-description = "CAVA audio visualizer as wallpaper overlay for Wayland"
-repository = "https://github.com/leriart/cava-bg"
+authors = ["leriart"]
+description = "A native Wayland implementation of wallpaper-cava with auto-colors"
 license = "MIT"
+repository = "https://github.com/leriart/cava-bg"
 
 [dependencies]
-# Renderer funcional (wallpaper-cava)
-gl = "0.14.0"
-khronos-egl = { version = "6.0.0", features = ["static", "1_0", "1_1", "1_2", "1_3", "1_4", "1_5"] }
-smithay-client-toolkit = { git = "https://github.com/Smithay/client-toolkit.git" }
-wayland-client = "0.31.2"
-wayland-egl = "0.32.0"
-wayland-protocols = "0.31.2"
-wayland-protocols-wlr = "0.3.1"
-
-# Nuevas dependencias (cava-bg)
 anyhow = "1.0"
 log = "0.4"
 env_logger = "0.11"
-clap = { version = "4.5", features = ["derive"] }
-serde = { version = "1.0", features = ["derive"] }
-toml = "0.8"
-image = "0.24"
-walkdir = "2"
-dirs = "5"
 ctrlc = "3.4"
-crossbeam-channel = "0.5"
-once_cell = "1"
+toml = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+dirs = "5.0"
+walkdir = "2.5"
+image = "0.24"
+once_cell = "1.20"
+clap = { version = "4.5", features = ["derive"] }
+gl = "0.14"
+khronos-egl = "6.0"
+wayland-client = "0.31"
+wayland-egl = "0.32"
+smithay-client-toolkit = { git = "https://github.com/Smithay/client-toolkit.git", rev = "99ddfec" }
+calloop = "0.14"
+calloop-wayland-source = "0.4"
+notify = "6.1"
