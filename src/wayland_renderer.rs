@@ -1,6 +1,3 @@
-// src/wayland_renderer.rs
-// Versión corregida: fondo transparente, barras siempre visibles (con datos de prueba si cava falla)
-
 use anyhow::{anyhow, Context, Result};
 use gl::types::{GLsizei, GLsizeiptr};
 use khronos_egl as egl;
@@ -40,7 +37,6 @@ use std::{mem, ptr};
 
 use crate::app_config::{array_from_config_color, Config};
 
-// Shaders (versión 330 core)
 const VERTEX_SHADER_330: &str = r#"
 #version 330 core
 in vec2 position;
@@ -70,12 +66,10 @@ void main() {
 }
 "#;
 
-// Solo usaremos el fallback #2 (Uniform) porque es el que funciona en Intel
 struct ShaderConfig {
     vertex_src: &'static str,
     fragment_src: &'static str,
     context_attribs: &'static [i32],
-    use_uniforms: bool,
 }
 
 const SHADER_CONFIG: ShaderConfig = ShaderConfig {
@@ -87,7 +81,6 @@ const SHADER_CONFIG: ShaderConfig = ShaderConfig {
         egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
         egl::NONE,
     ],
-    use_uniforms: true,
 };
 
 struct PerOutputState {
@@ -123,7 +116,7 @@ impl WaylandRenderer {
     }
 
     pub fn run(self) -> Result<()> {
-        info!("Starting Wayland renderer (fixed bars, transparent bg)");
+        info!("Starting Wayland renderer (final, transparent bg)");
         std::env::set_var("EGL_PLATFORM", "wayland");
 
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
@@ -140,7 +133,6 @@ impl WaylandRenderer {
         let compositor = CompositorState::bind(&globals, &qh).context("wl_compositor not available")?;
         let layer_shell = LayerShell::bind(&globals, &qh).context("layer shell not available")?;
 
-        // Inicialización EGL
         egl::API
             .bind_api(egl::OPENGL_API)
             .context("Failed to bind EGL API")?;
@@ -165,12 +157,10 @@ impl WaylandRenderer {
             .context("Failed to choose EGL config")?
             .context("No EGL config found")?;
 
-        // Crear contexto EGL
         let egl_context = egl::API
             .create_context(egl_display, egl_config, None, SHADER_CONFIG.context_attribs)
             .context("Failed to create EGL context")?;
 
-        // Superficie dummy para compilar shaders
         let dummy_surface = unsafe {
             egl::API
                 .create_pbuffer_surface(egl_display, egl_config, &[egl::WIDTH, 1, egl::HEIGHT, 1, egl::NONE])
@@ -206,7 +196,6 @@ impl WaylandRenderer {
             .map(|(_, color)| array_from_config_color(color.clone()))
             .collect();
 
-        // No usamos SSBO, solo uniforms
         let bar_count = self.config.bars.amount as usize;
         let mut indices: Vec<u16> = vec![0; bar_count * 6];
         for i in 0..bar_count {
@@ -267,14 +256,13 @@ impl WaylandRenderer {
             windows_size_location,
             bar_count: self.config.bars.amount,
             bar_gap: self.config.bars.gap,
-            background_color: [0.0, 0.0, 0.0, 0.0], // Transparente
+            background_color: [0.0, 0.0, 0.0, 0.0], // 强制透明
             preferred_output_name: self.config.general.preferred_output,
             cava_reader: self.cava_reader,
             color_rx: self.color_rx,
             gradient_colors: gradient_colors_rgba,
             running: self.running,
             updating_colors,
-            use_uniforms: true,
             test_phase: 0.0,
         };
 
@@ -308,7 +296,6 @@ struct AppState {
     gradient_colors: Vec<[f32; 4]>,
     running: Arc<AtomicBool>,
     updating_colors: Arc<AtomicBool>,
-    use_uniforms: bool,
     test_phase: f32,
 }
 
@@ -397,7 +384,6 @@ impl AppState {
             gl::Viewport(0, 0, state.width as GLsizei, state.height as GLsizei);
         }
 
-        // Leer datos de cava (o usar test si falla)
         let mut unpacked_data: Vec<f32> = vec![0.0; self.bar_count as usize];
         let mut cava_buffer: Vec<u8> = vec![0; self.bar_count as usize * 2];
         match self.cava_reader.read_exact(&mut cava_buffer) {
@@ -408,7 +394,6 @@ impl AppState {
                 }
             }
             Err(e) => {
-                // Si falla, usamos una onda senoidal de prueba para ver las barras moverse
                 self.test_phase += 0.1;
                 for i in 0..unpacked_data.len() {
                     unpacked_data[i] = ((self.test_phase + i as f32 * 0.5).sin() * 0.5 + 0.5).clamp(0.0, 1.0);
@@ -419,7 +404,11 @@ impl AppState {
             }
         }
 
-        // Construir vértices
+        if unpacked_data.is_empty() {
+            return;
+        }
+        debug!("Bar 0 height: {:.2}", unpacked_data[0]);
+
         let bar_width: f32 =
             2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
         let bar_gap_width: f32 = bar_width * self.bar_gap;
@@ -460,7 +449,6 @@ impl AppState {
             gl::UseProgram(self.shader_program);
             gl::Uniform2f(self.windows_size_location, fwidth, fheight);
 
-            // Enviar colores como uniforms
             let colors_count = self.gradient_colors.len() as i32;
             let size_loc = unsafe {
                 let name = CString::new("gradient_colors_size").unwrap();
