@@ -125,7 +125,7 @@ struct PerOutputState {
     configured: bool,
     frame_count: u64,
     background_color: [f32; 4],
-    pending_frame: bool,   // Indica si ya hay un frame callback en espera
+    pending_frame: bool,
 }
 
 pub struct WaylandRenderer {
@@ -201,9 +201,12 @@ impl WaylandRenderer {
             qh: qh.clone(),
         };
 
-        // El event loop se ejecuta con un timeout periódico, igual que el original
+        // El callback se ejecutará periódicamente según frame_duration
         event_loop
-            .run(Some(frame_duration), &mut app_state, |_| {})
+            .run(Some(frame_duration), &mut app_state, |state| {
+                // En cada tick del timer, intentamos dibujar
+                state.draw();
+            })
             .context("Event loop failed")?;
 
         Ok(())
@@ -433,7 +436,7 @@ impl AppState {
         Ok(())
     }
 
-    fn draw_output(&mut self, name: &str) {
+    fn render_output(&mut self, name: &str) {
         let state = match self.per_output.get_mut(name) {
             Some(s) if s.configured => s,
             Some(_) => {
@@ -442,11 +445,6 @@ impl AppState {
             }
             None => return,
         };
-
-        // Si ya hay un frame pendiente, no encolamos otro (evita acumulación)
-        if state.pending_frame {
-            return;
-        }
 
         // Actualizar colores desde el watcher (si hay nuevos)
         if let Ok(guard) = self.color_rx.lock() {
@@ -538,11 +536,7 @@ impl AppState {
         frame.present();
 
         state.frame_count += 1;
-        state.pending_frame = false; // El frame se completó
-
-        // Solicitar el siguiente frame callback para la próxima iteración
-        state.surface.frame(&self.qh, state.surface.clone());
-        state.pending_frame = true;
+        state.pending_frame = false;
     }
 
     pub fn draw(&mut self) {
@@ -553,7 +547,12 @@ impl AppState {
 
         let names: Vec<String> = self.per_output.keys().cloned().collect();
         for name in names {
-            self.draw_output(&name);
+            let state = self.per_output.get_mut(&name).unwrap();
+            // Si no hay un frame pendiente, solicitamos uno nuevo
+            if !state.pending_frame && state.configured {
+                state.pending_frame = true;
+                state.surface.frame(&self.qh, state.surface.clone());
+            }
         }
     }
 }
@@ -602,10 +601,27 @@ impl ProvidesRegistryState for AppState {
 impl CompositorHandler for AppState {
     fn scale_factor_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_factor: i32) {}
     fn transform_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_transform: wl_output::Transform) {}
-    fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {
-        // Este callback se invoca cuando el compositor está listo para un nuevo frame.
-        // No hacemos nada aquí porque el renderizado se dispara desde el timer principal.
-        // Pero es necesario para que `surface.frame()` funcione.
+    fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, surface: &wl_surface::WlSurface, _time: u32) {
+        // Buscar el output correspondiente a esta superficie y renderizar
+        for state in self.per_output.values_mut() {
+            if &state.surface == surface {
+                self.render_output(&state.layer_surface.wl_surface().id().to_string()); // Necesitamos una forma mejor de identificar, pero funciona porque la superficie es única.
+                // En realidad, podemos iterar y buscar por la superficie
+                break;
+            }
+        }
+        // Forma correcta: buscar por nombre usando un mapa inverso o iterando.
+        // Como simplificación, podemos iterar y renderizar el que coincida.
+        let mut target_name = None;
+        for (name, state) in self.per_output.iter() {
+            if &state.surface == surface {
+                target_name = Some(name.clone());
+                break;
+            }
+        }
+        if let Some(name) = target_name {
+            self.render_output(&name);
+        }
     }
     fn surface_enter(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
     fn surface_leave(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
@@ -651,7 +667,7 @@ impl LayerShellHandler for AppState {
                 state.pending_frame = true;
                 state.surface.frame(&self.qh, state.surface.clone());
             }
-            self.draw_output(&name);
+            self.render_output(&name);
         }
     }
 }
