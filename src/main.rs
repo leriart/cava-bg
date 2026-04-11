@@ -9,7 +9,7 @@ use std::fs;
 use std::io::{BufReader, Write};
 use std::process::{ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, SystemTime};
@@ -118,7 +118,7 @@ fn main() -> Result<()> {
     })
     .expect("Error setting Ctrl-C handler");
 
-    // Canal para actualizaciones de color, compartido con Arc<Mutex<Receiver>>
+    // Canal para actualizaciones de color
     let (color_tx, color_rx) = mpsc::channel();
     let shared_color_rx = Arc::new(Mutex::new(color_rx));
 

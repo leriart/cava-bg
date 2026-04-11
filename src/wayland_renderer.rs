@@ -341,7 +341,10 @@ impl AppState {
             return;
         }
 
-        if let Ok(new_colors) = self.color_rx.lock().unwrap().try_recv() {
+        // CORRECCIÓN: evitar conflicto de préstamo
+        let maybe_new_colors = self.color_rx.lock().unwrap().try_recv().ok();
+        // El lock se libera aquí al salir de la expresión
+        if let Some(new_colors) = maybe_new_colors {
             self.update_colors(&new_colors);
         }
 
@@ -413,7 +416,6 @@ impl AppState {
     }
 }
 
-// --- Handlers (idénticos al original, excepto new_output sin tocar EGL) ---
 impl OutputHandler for AppState {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
@@ -448,7 +450,6 @@ impl OutputHandler for AppState {
             self.layer_surface.set_anchor(Anchor::TOP);
             self.surface.commit();
             old_surface.destroy();
-            // No recreamos EGL aquí – se hará en configure
         }
     }
     fn update_output(&mut self, _conn: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
@@ -521,7 +522,6 @@ impl LayerShellHandler for AppState {
     }
 }
 
-// --- Funciones auxiliares para shaders ---
 fn compile_shader(shader_type: u32, src: &str) -> Result<u32> {
     unsafe {
         let shader = gl::CreateShader(shader_type);
