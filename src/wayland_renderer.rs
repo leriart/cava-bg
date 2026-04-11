@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use log::{debug, error, info};
+use log::{debug, error, info, warn};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::ProvidesRegistryState;
@@ -213,7 +213,7 @@ struct AppState {
     bar_gap: f32,
     preferred_output_name: Option<String>,
     audio_rx: Receiver<Vec<f32>>,
-    color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
+    color_rx: Arc<Mutex<Receiver<Vec<f32; 4]>>>>,
     running: Arc<AtomicBool>,
     initial_colors: Vec<[f32; 4]>,
     frame_duration: Duration,
@@ -392,7 +392,7 @@ impl AppState {
             multiview: None,
         });
 
-        // Convertir la superficie a 'static (vivirá tanto como el programa)
+        // Convertir la superficie a 'static
         let static_surface = unsafe { std::mem::transmute(wgpu_surface) };
 
         let state = PerOutputState {
@@ -411,7 +411,6 @@ impl AppState {
             height,
             configured: false,
         };
-        // CORRECCIÓN: clonar name antes de insertar para poder usarlo en el log
         self.per_output.insert(name.clone(), state);
         info!("Superficie WGPU creada para {}: {}x{}", name, width, height);
         Ok(())
@@ -420,12 +419,17 @@ impl AppState {
     fn draw_output(&mut self, name: &str) {
         let state = match self.per_output.get_mut(name) {
             Some(s) if s.configured => s,
-            _ => return,
+            Some(s) => {
+                debug!("Output {} no configurado aún", name);
+                return;
+            }
+            None => return,
         };
 
         // Actualizar colores si hay nuevos
         if let Ok(guard) = self.color_rx.lock() {
             if let Ok(new_colors) = guard.try_recv() {
+                info!("Actualizando colores del degradado ({} colores)", new_colors.len());
                 let uniforms = Uniforms::new(&new_colors, state.width as f32, state.height as f32);
                 state.wgpu_queue.write_buffer(&state.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
             }
@@ -435,6 +439,10 @@ impl AppState {
         let mut bar_heights = vec![0.0; self.bar_count];
         if let Ok(new_heights) = self.audio_rx.try_recv() {
             bar_heights = new_heights;
+            // Log para depurar: primera barra
+            if let Some(first) = bar_heights.first() {
+                debug!("Altura barra 0: {}", first);
+            }
         }
 
         // Calcular vértices
@@ -459,7 +467,10 @@ impl AppState {
         // Renderizar
         let frame = match state.wgpu_surface.get_current_texture() {
             Ok(frame) => frame,
-            Err(_) => return,
+            Err(e) => {
+                error!("Error obteniendo textura de la superficie: {:?}", e);
+                return;
+            }
         };
         let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let mut encoder = state.wgpu_device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
@@ -470,7 +481,8 @@ impl AppState {
                     view: &view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 0.0 }),
+                        // Cambiar temporalmente a color rojo para ver si la superficie se muestra
+                        load: wgpu::LoadOp::Clear(wgpu::Color { r: 1.0, g: 0.0, b: 0.0, a: 0.5 }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -572,7 +584,7 @@ impl LayerShellHandler for AppState {
                 state.wgpu_config.height = height;
                 state.wgpu_surface.configure(&state.wgpu_device, &state.wgpu_config);
                 // Actualizar uniforme de tamaño
-                let current_colors = self.initial_colors.clone(); // simplificación, podría leer del buffer
+                let current_colors = self.initial_colors.clone();
                 let new_uniforms = Uniforms::new(&current_colors, width as f32, height as f32);
                 state.wgpu_queue.write_buffer(&state.uniform_buffer, 0, bytemuck::cast_slice(&[new_uniforms]));
                 state.configured = true;
