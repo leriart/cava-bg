@@ -1,5 +1,5 @@
 // src/wayland_renderer.rs
-// Versión corregida para khronos-egl 6.0 (sin feature static)
+// Versión corregida para khronos-egl 6.0 con feature "static"
 
 use anyhow::{Context, Result};
 use gl::types::{GLsizei, GLsizeiptr};
@@ -101,76 +101,80 @@ impl WaylandRenderer {
         layer_surface.set_anchor(Anchor::TOP);
         surface.commit();
 
-        // EGL initialization (corregido para khronos-egl 6.0 - nombres capitalizados)
-        unsafe {
-            egl::BindAPI(egl::OPENGL_API).context("Failed to bind EGL API")?;
-            let egl_display = egl::GetDisplay(conn.display().id().as_ptr() as *mut c_void)
-                .context("Failed to get EGL display")?;
-            egl::Initialize(egl_display, ptr::null_mut(), ptr::null_mut())
-                .context("Failed to initialize EGL")?;
+        // EGL initialization (usando feature "static")
+        egl::bind_api(egl::OPENGL_API).context("Failed to bind EGL API")?;
+        let egl_display = unsafe {
+            egl::get_display(conn.display().id().as_ptr() as *mut c_void)
+                .context("Failed to get EGL display")?
+        };
+        egl::initialize(egl_display).context("Failed to initialize EGL")?;
 
-            const ATTRIBUTES: [i32; 9] = [
-                egl::RED_SIZE, 8,
-                egl::GREEN_SIZE, 8,
-                egl::BLUE_SIZE, 8,
-                egl::ALPHA_SIZE, 8,
-                egl::NONE,
-            ];
-            let mut configs = [0; 1];
-            let mut num_configs = 0;
-            egl::ChooseConfig(egl_display, ATTRIBUTES.as_ptr(), configs.as_mut_ptr(), 1, &mut num_configs)
-                .context("Failed to choose EGL config")?;
-            if num_configs == 0 {
-                anyhow::bail!("No EGL config found");
-            }
-            let egl_config = configs[0];
+        const ATTRIBUTES: [i32; 9] = [
+            egl::RED_SIZE, 8,
+            egl::GREEN_SIZE, 8,
+            egl::BLUE_SIZE, 8,
+            egl::ALPHA_SIZE, 8,
+            egl::NONE,
+        ];
+        let egl_config = egl::choose_first_config(egl_display, &ATTRIBUTES)
+            .context("Failed to choose EGL config")?
+            .context("No EGL config found")?;
 
-            const CONTEXT_ATTRIBUTES: [i32; 7] = [
-                egl::CONTEXT_MAJOR_VERSION, 4,
-                egl::CONTEXT_MINOR_VERSION, 6,
-                egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
-                egl::NONE,
-            ];
-            let egl_context = egl::CreateContext(egl_display, egl_config, egl::NO_CONTEXT, CONTEXT_ATTRIBUTES.as_ptr())
-                .context("Failed to create EGL context")?;
+        const CONTEXT_ATTRIBUTES: [i32; 7] = [
+            egl::CONTEXT_MAJOR_VERSION, 4,
+            egl::CONTEXT_MINOR_VERSION, 6,
+            egl::CONTEXT_OPENGL_PROFILE_MASK, egl::CONTEXT_OPENGL_CORE_PROFILE_BIT,
+            egl::NONE,
+        ];
+        let egl_context = egl::create_context(egl_display, egl_config, None, &CONTEXT_ATTRIBUTES)
+            .context("Failed to create EGL context")?;
 
-            let wl_egl_surface = WlEglSurface::new(surface.id(), 256, 256)
-                .context("Failed to create WlEglSurface")?;
-            let egl_surface = egl::CreateWindowSurface(
+        let wl_egl_surface = WlEglSurface::new(surface.id(), 256, 256)
+            .context("Failed to create WlEglSurface")?;
+        let egl_surface = unsafe {
+            egl::create_window_surface(
                 egl_display,
                 egl_config,
                 wl_egl_surface.ptr() as egl::NativeWindowType,
-                ptr::null(),
+                None,
             )
-            .context("Failed to create EGL window surface")?;
+            .context("Failed to create EGL window surface")?
+        };
+        egl::make_current(
+            egl_display,
+            Some(egl_surface),
+            Some(egl_surface),
+            Some(egl_context),
+        )
+        .context("Failed to make EGL context current")?;
 
-            egl::MakeCurrent(egl_display, egl_surface, egl_surface, egl_context)
-                .context("Failed to make EGL context current")?;
+        gl::load_with(|name| egl::get_proc_address(name).unwrap() as *const c_void);
 
-            gl::load_with(|name| egl::GetProcAddress(name.as_ptr() as *const _) as *const c_void);
-
-            let vert_shader = compile_shader(gl::VERTEX_SHADER, VERTEX_SHADER_SRC)?;
-            let frag_shader = compile_shader(gl::FRAGMENT_SHADER, FRAGMENT_SHADER_SRC)?;
-            let shader_program = link_program(vert_shader, frag_shader)?;
+        let vert_shader = compile_shader(gl::VERTEX_SHADER, VERTEX_SHADER_SRC)?;
+        let frag_shader = compile_shader(gl::FRAGMENT_SHADER, FRAGMENT_SHADER_SRC)?;
+        let shader_program = link_program(vert_shader, frag_shader)?;
+        unsafe {
             gl::DeleteShader(vert_shader);
             gl::DeleteShader(frag_shader);
+        }
 
-            let (gradient_colors_ssbo, _) = create_ssbo(&gradient_colors);
+        let (gradient_colors_ssbo, _) = create_ssbo(&gradient_colors);
 
-            let mut indices: Vec<u16> = vec![0; bar_count as usize * 6];
-            for i in 0..bar_count as usize {
-                let base = (i * 4) as u16;
-                indices[i * 6] = base;
-                indices[i * 6 + 1] = base + 1;
-                indices[i * 6 + 2] = base + 2;
-                indices[i * 6 + 3] = base + 1;
-                indices[i * 6 + 4] = base + 2;
-                indices[i * 6 + 5] = base + 3;
-            }
+        let mut indices: Vec<u16> = vec![0; bar_count as usize * 6];
+        for i in 0..bar_count as usize {
+            let base = (i * 4) as u16;
+            indices[i * 6] = base;
+            indices[i * 6 + 1] = base + 1;
+            indices[i * 6 + 2] = base + 2;
+            indices[i * 6 + 3] = base + 1;
+            indices[i * 6 + 4] = base + 2;
+            indices[i * 6 + 5] = base + 3;
+        }
 
-            let mut vao = 0;
-            let mut vbo = 0;
-            let mut ebo = 0;
+        let mut vao = 0;
+        let mut vbo = 0;
+        let mut ebo = 0;
+        unsafe {
             gl::GenVertexArrays(1, &mut vao);
             gl::BindVertexArray(vao);
             gl::GenBuffers(1, &mut vbo);
@@ -193,45 +197,46 @@ impl WaylandRenderer {
             );
             gl::EnableVertexAttribArray(0);
             gl::BindVertexArray(0);
-
-            let window_size_string = CString::new("WindowSize").unwrap();
-            let window_size_location = gl::GetUniformLocation(shader_program, window_size_string.as_ptr());
-
-            let mut app_state = AppState {
-                registry_state: RegistryState::new(&globals),
-                output_state: OutputState::new(&globals, &qh),
-                width: 256,
-                height: 256,
-                layer_shell,
-                layer_surface,
-                surface,
-                cava_reader: self.cava_reader,
-                wl_egl_surface,
-                egl_surface,
-                egl_config,
-                egl_context,
-                egl_display,
-                shader_program,
-                vao,
-                vbo,
-                window_size_location,
-                bar_count,
-                bar_gap,
-                background_color,
-                preferred_output_name: preferred_output,
-                compositor,
-                color_rx: self.color_rx,
-                gradient_colors_ssbo,
-                gradient_colors,
-            };
-
-            info!("Entering event loop with frame duration {:?}", frame_duration);
-            event_loop
-                .run(frame_duration, &mut app_state, |_| {})
-                .context("Event loop failed")?;
-
-            Ok(())
         }
+
+        let window_size_string = CString::new("WindowSize").unwrap();
+        let window_size_location =
+            unsafe { gl::GetUniformLocation(shader_program, window_size_string.as_ptr()) };
+
+        let mut app_state = AppState {
+            registry_state: RegistryState::new(&globals),
+            output_state: OutputState::new(&globals, &qh),
+            width: 256,
+            height: 256,
+            layer_shell,
+            layer_surface,
+            surface,
+            cava_reader: self.cava_reader,
+            wl_egl_surface,
+            egl_surface,
+            egl_config,
+            egl_context,
+            egl_display,
+            shader_program,
+            vao,
+            vbo,
+            window_size_location,
+            bar_count,
+            bar_gap,
+            background_color,
+            preferred_output_name: preferred_output,
+            compositor,
+            color_rx: self.color_rx,
+            gradient_colors_ssbo,
+            gradient_colors,
+        };
+
+        info!("Entering event loop with frame duration {:?}", frame_duration);
+        event_loop
+            .run(frame_duration, &mut app_state, |_| {})
+            .context("Event loop failed")?;
+
+        Ok(())
     }
 }
 
@@ -379,10 +384,8 @@ impl AppState {
             gl::BindVertexArray(0);
         }
 
-        unsafe {
-            if let Err(e) = egl::SwapBuffers(self.egl_display, self.egl_surface) {
-                error!("Failed to swap buffers: {}", e);
-            }
+        if let Err(e) = egl::swap_buffers(self.egl_display, self.egl_surface) {
+            error!("Failed to swap buffers: {}", e);
         }
         self.surface.frame(qh, self.surface.clone());
     }
@@ -433,20 +436,28 @@ impl OutputHandler for AppState {
             self.surface.commit();
             old_surface.destroy();
 
-            unsafe {
-                egl::MakeCurrent(self.egl_display, egl::NO_SURFACE, egl::NO_SURFACE, egl::NO_CONTEXT).ok();
-                egl::DestroySurface(self.egl_display, self.egl_surface).ok();
-                self.wl_egl_surface = WlEglSurface::new(self.surface.id(), self.width as i32, self.height as i32)
-                    .expect("Failed to create new WlEglSurface");
-                self.egl_surface = egl::CreateWindowSurface(
+            // Recreate EGL surface
+            egl::make_current(self.egl_display, None, None, None).ok();
+            egl::destroy_surface(self.egl_display, self.egl_surface).ok();
+            self.wl_egl_surface = WlEglSurface::new(self.surface.id(), self.width as i32, self.height as i32)
+                .expect("Failed to create new WlEglSurface");
+            self.egl_surface = unsafe {
+                egl::create_window_surface(
                     self.egl_display,
                     self.egl_config,
                     self.wl_egl_surface.ptr() as egl::NativeWindowType,
-                    ptr::null(),
+                    None,
                 )
-                .expect("Failed to create new EGL surface");
-                egl::MakeCurrent(self.egl_display, self.egl_surface, self.egl_surface, self.egl_context)
-                    .expect("Failed to make EGL context current");
+                .expect("Failed to create new EGL surface")
+            };
+            egl::make_current(
+                self.egl_display,
+                Some(self.egl_surface),
+                Some(self.egl_surface),
+                Some(self.egl_context),
+            )
+            .expect("Failed to make EGL context current");
+            unsafe {
                 gl::Viewport(0, 0, self.width as GLsizei, self.height as GLsizei);
             }
             info!("Output changed: {}x{}", self.width, self.height);
@@ -539,21 +550,28 @@ impl LayerShellHandler for AppState {
         self.width = width;
         self.height = height;
 
-        unsafe {
-            egl::MakeCurrent(self.egl_display, egl::NO_SURFACE, egl::NO_SURFACE, egl::NO_CONTEXT).ok();
-            egl::DestroySurface(self.egl_display, self.egl_surface).ok();
-            self.wl_egl_surface = WlEglSurface::new(self.surface.id(), self.width as i32, self.height as i32)
-                .expect("Failed to create new WlEglSurface");
-            self.surface.commit();
-            self.egl_surface = egl::CreateWindowSurface(
+        egl::make_current(self.egl_display, None, None, None).ok();
+        egl::destroy_surface(self.egl_display, self.egl_surface).ok();
+        self.wl_egl_surface = WlEglSurface::new(self.surface.id(), self.width as i32, self.height as i32)
+            .expect("Failed to create new WlEglSurface");
+        self.surface.commit();
+        self.egl_surface = unsafe {
+            egl::create_window_surface(
                 self.egl_display,
                 self.egl_config,
                 self.wl_egl_surface.ptr() as egl::NativeWindowType,
-                ptr::null(),
+                None,
             )
-            .expect("Failed to create new EGL surface");
-            egl::MakeCurrent(self.egl_display, self.egl_surface, self.egl_surface, self.egl_context)
-                .expect("Failed to make EGL context current");
+            .expect("Failed to create new EGL surface")
+        };
+        egl::make_current(
+            self.egl_display,
+            Some(self.egl_surface),
+            Some(self.egl_surface),
+            Some(self.egl_context),
+        )
+        .expect("Failed to make EGL context current");
+        unsafe {
             gl::Viewport(0, 0, self.width as GLsizei, self.height as GLsizei);
         }
         self.draw(_conn, qh);
