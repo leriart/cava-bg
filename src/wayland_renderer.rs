@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Context, Result};
 use gl::types::{GLsizei, GLsizeiptr, GLint};
 use khronos_egl as egl;
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::ProvidesRegistryState;
@@ -220,7 +220,7 @@ impl WaylandRenderer {
             color_locs[i] = unsafe { gl::GetUniformLocation(shader_program, cname.as_ptr()) };
         }
 
-        let app_state = AppState {
+        let mut app_state = AppState {
             registry_state: RegistryState::new(&globals),
             output_state: OutputState::new(&globals, &qh),
             layer_shell,
@@ -358,12 +358,10 @@ impl AppState {
         }
 
         let mut unpacked_data: Vec<f32> = vec![0.0; self.bar_count as usize];
-        // Recibir nuevos datos de audio (no bloqueante)
         if let Ok(new_data) = self.audio_rx.try_recv() {
             unpacked_data = new_data;
         }
 
-        // Generar geometría de barras
         let bar_width: f32 =
             2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
         let bar_gap_width: f32 = bar_width * self.bar_gap;
@@ -425,13 +423,11 @@ impl AppState {
         if !self.running.load(Ordering::SeqCst) {
             info!("Apagando graceful...");
             for (_, state) in self.per_output.iter() {
-                unsafe { egl::API.destroy_surface(self.egl_display, state.egl_surface).ok(); }
+                egl::API.destroy_surface(self.egl_display, state.egl_surface).ok();
             }
-            unsafe {
-                egl::API.make_current(self.egl_display, None, None, None).ok();
-                egl::API.destroy_context(self.egl_display, self.egl_context).ok();
-                egl::API.terminate(self.egl_display).ok();
-            }
+            egl::API.make_current(self.egl_display, None, None, None).ok();
+            egl::API.destroy_context(self.egl_display, self.egl_context).ok();
+            egl::API.terminate(self.egl_display).ok();
             std::process::exit(0);
         }
 
@@ -459,7 +455,7 @@ impl OutputHandler for AppState {
         };
         let name = info.name.unwrap_or_else(|| "unknown".to_string());
         if let Some(state) = self.per_output.remove(&name) {
-            unsafe { egl::API.destroy_surface(self.egl_display, state.egl_surface).ok(); }
+            egl::API.destroy_surface(self.egl_display, state.egl_surface).ok();
             info!("Output {} eliminado", name);
         }
     }
@@ -505,10 +501,8 @@ impl LayerShellHandler for AppState {
                 }
                 state.width = width;
                 state.height = height;
-                unsafe {
-                    egl::API.make_current(self.egl_display, None, None, None).ok();
-                    egl::API.destroy_surface(self.egl_display, state.egl_surface).ok();
-                }
+                egl::API.make_current(self.egl_display, None, None, None).ok();
+                egl::API.destroy_surface(self.egl_display, state.egl_surface).ok();
                 state.wl_egl_surface = match WlEglSurface::new(
                     state.surface.id(),
                     state.width as i32,
