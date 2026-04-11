@@ -9,7 +9,7 @@ void main() {
     if (gradient_colors_size == 1) {
         fragColor = gradient_colors[0];
     } else {
-        float findex = (gl_FragCoord.y * float(gradient_colors_size - 1)) / WindowSize.y;
+        float findex = (gl_FragCoord.x * float(gradient_colors_size - 1)) / WindowSize.x;
         int index = int(findex);
         float step = findex - float(index);
         if (index == gradient_colors_size - 1) {

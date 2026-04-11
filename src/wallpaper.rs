@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
-use image::{GenericImageView, Pixel};
+use color_thief::{get_palette, ColorFormat};
+use image::{self, GenericImageView};
 use log;
 use once_cell::sync::Lazy;
 use std::path::PathBuf;
@@ -7,7 +8,7 @@ use std::process::Command;
 use std::sync::Mutex;
 
 static PREVIOUS_COLORS: Lazy<Mutex<Vec<[f32; 4]>>> = Lazy::new(|| Mutex::new(Vec::new()));
-const COLOR_SMOOTHING_FACTOR: f32 = 0.8;
+const COLOR_SMOOTHING_FACTOR: f32 = 0.7;
 
 pub struct WallpaperAnalyzer;
 
@@ -18,13 +19,11 @@ impl WallpaperAnalyzer {
             log::debug!("Detected wallpaper via mpvpaper: {:?}", path);
             return Some(path);
         }
-
         // 2. hyprctl hyprpaper
         if let Some(path) = Self::from_hyprctl_hyprpaper() {
             log::debug!("Detected wallpaper via hyprctl hyprpaper: {:?}", path);
             return Some(path);
         }
-
         // 3. awww / swww
         if let Some(path) = Self::from_swww_like("awww") {
             log::debug!("Detected wallpaper via awww: {:?}", path);
@@ -34,46 +33,40 @@ impl WallpaperAnalyzer {
             log::debug!("Detected wallpaper via swww: {:?}", path);
             return Some(path);
         }
-
         // 4. swaybg
         if let Some(path) = Self::from_swaybg() {
             log::debug!("Detected wallpaper via swaybg: {:?}", path);
             return Some(path);
         }
-
         // 5. hyprpaper.conf
         if let Some(path) = Self::from_hyprpaper_conf() {
             log::debug!("Detected wallpaper via hyprpaper.conf: {:?}", path);
             return Some(path);
         }
-
         // 6. wpaperd
         if let Some(path) = Self::from_wpaperd() {
             log::debug!("Detected wallpaper via wpaperd: {:?}", path);
             return Some(path);
         }
-
         // 7. wbg
         if let Some(path) = Self::from_wbg() {
             log::debug!("Detected wallpaper via wbg: {:?}", path);
             return Some(path);
         }
-
         // 8. waypaper
         if let Some(path) = Self::from_waypaper() {
             log::debug!("Detected wallpaper via waypaper config: {:?}", path);
             return Some(path);
         }
-
-        // 9. Fallback genérico (solo directorios estándar)
+        // 9. Fallback genérico
         if let Some(path) = Self::fallback_most_recent() {
             log::debug!("Fallback: using most recent image in wallpaper dirs: {:?}", path);
             return Some(path);
         }
-
         None
     }
 
+    // --- Métodos de detección (igual que antes) ---
     fn from_hyprctl_hyprpaper() -> Option<PathBuf> {
         let output = Command::new("hyprctl")
             .args(["hyprpaper", "listloaded"])
@@ -260,6 +253,7 @@ impl WallpaperAnalyzer {
         candidates.into_iter().last()
     }
 
+    // --- Carga de imagen (soporta GIF y video) ---
     fn load_image_from_path(path: &PathBuf) -> Result<image::DynamicImage> {
         let ext = path.extension()
             .and_then(|e| e.to_str())
@@ -307,6 +301,7 @@ impl WallpaperAnalyzer {
         }
     }
 
+    /// Genera una paleta de colores usando el algoritmo Median Cut (color-thief)
     pub fn generate_gradient_colors(num_colors: usize) -> Result<Vec<[f32; 4]>> {
         let wallpaper_path = match Self::find_wallpaper() {
             Some(path) => path,
@@ -328,8 +323,28 @@ impl WallpaperAnalyzer {
 
         let (width, height) = img.dimensions();
         log::debug!("Wallpaper dimensions: {}x{}", width, height);
-        let mut new_colors = Self::extract_and_generate_gradient(&img, num_colors);
 
+        // Convertir a RGB8 (color-thief espera un slice de bytes RGB)
+        let rgb_img = img.to_rgb8();
+        let pixels = rgb_img.as_raw();
+
+        // Obtener paleta de colores con color-thief (máximo 8 colores)
+        let palette = get_palette(pixels, ColorFormat::Rgb, 10, num_colors as u8)
+            .context("Failed to extract color palette")?;
+
+        let mut new_colors: Vec<[f32; 4]> = palette
+            .iter()
+            .map(|c| [c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0, 1.0])
+            .collect();
+
+        // Ordenar colores por luminosidad para un gradiente más natural
+        new_colors.sort_by(|a, b| {
+            let lum_a = 0.299 * a[0] + 0.587 * a[1] + 0.114 * a[2];
+            let lum_b = 0.299 * b[0] + 0.587 * b[1] + 0.114 * b[2];
+            lum_a.partial_cmp(&lum_b).unwrap()
+        });
+
+        // Suavizar con colores anteriores
         let mut prev_guard = PREVIOUS_COLORS.lock().unwrap();
         if !prev_guard.is_empty() && prev_guard.len() == new_colors.len() {
             for i in 0..new_colors.len() {
@@ -352,144 +367,5 @@ impl WallpaperAnalyzer {
         }
 
         Ok(new_colors)
-    }
-
-    fn extract_and_generate_gradient(img: &image::DynamicImage, num_colors: usize) -> Vec<[f32; 4]> {
-        let (width, height) = img.dimensions();
-        let mut samples = Vec::new();
-        let step = (width * height / 10000).max(1) as u32;
-        for y in (0..height).step_by(step as usize) {
-            for x in (0..width).step_by(step as usize) {
-                let pixel = img.get_pixel(x, y);
-                let rgb = pixel.to_rgb();
-                let channels = rgb.channels();
-                let brightness = (channels[0] as f32 + channels[1] as f32 + channels[2] as f32) / 3.0;
-                let max_ch = channels[0].max(channels[1]).max(channels[2]) as f32;
-                let min_ch = channels[0].min(channels[1]).min(channels[2]) as f32;
-                let saturation = if max_ch > 0.0 { (max_ch - min_ch) / max_ch } else { 0.0 };
-                let is_bw = saturation < 0.1;
-                if is_bw {
-                    if brightness > 20.0 && brightness < 230.0 {
-                        samples.push([channels[0] as f32, channels[1] as f32, channels[2] as f32]);
-                    }
-                } else {
-                    if brightness > 50.0 && saturation > 0.2 {
-                        samples.push([channels[0] as f32, channels[1] as f32, channels[2] as f32]);
-                    }
-                }
-            }
-        }
-        if samples.is_empty() {
-            for y in (0..height).step_by((step * 2) as usize) {
-                for x in (0..width).step_by((step * 2) as usize) {
-                    let pixel = img.get_pixel(x, y);
-                    let rgb = pixel.to_rgb();
-                    let channels = rgb.channels();
-                    samples.push([channels[0] as f32, channels[1] as f32, channels[2] as f32]);
-                }
-            }
-        }
-        if samples.is_empty() {
-            return Self::default_colors(num_colors);
-        }
-        let dominant = Self::find_dominant_colors(&samples, 4.min(samples.len()));
-        Self::generate_gradient_palette(&dominant, num_colors)
-    }
-
-    fn find_dominant_colors(samples: &[[f32; 3]], k: usize) -> Vec<[f32; 3]> {
-        if samples.len() <= k {
-            return samples.to_vec();
-        }
-        let mut centroids: Vec<[f32; 3]> = (0..k).map(|i| samples[i * samples.len() / k]).collect();
-        for _ in 0..5 {
-            let mut clusters: Vec<Vec<[f32; 3]>> = vec![Vec::new(); centroids.len()];
-            for sample in samples {
-                let mut min_dist = f32::MAX;
-                let mut cluster_idx = 0;
-                for (i, cent) in centroids.iter().enumerate() {
-                    let d = Self::color_distance(sample, cent);
-                    if d < min_dist {
-                        min_dist = d;
-                        cluster_idx = i;
-                    }
-                }
-                clusters[cluster_idx].push(*sample);
-            }
-            let mut new_centroids = Vec::new();
-            for cluster in clusters {
-                if cluster.is_empty() {
-                    new_centroids.push(samples[new_centroids.len() % samples.len()]);
-                } else {
-                    let mut sum = [0.0, 0.0, 0.0];
-                    for s in &cluster {
-                        sum[0] += s[0];
-                        sum[1] += s[1];
-                        sum[2] += s[2];
-                    }
-                    let n = cluster.len() as f32;
-                    new_centroids.push([sum[0] / n, sum[1] / n, sum[2] / n]);
-                }
-            }
-            centroids = new_centroids;
-        }
-        centroids
-    }
-
-    fn generate_gradient_palette(dominant: &[[f32; 3]], num_colors: usize) -> Vec<[f32; 4]> {
-        if dominant.is_empty() {
-            return Self::default_colors(num_colors);
-        }
-        let is_bw = dominant.iter().all(|c| {
-            let max = c[0].max(c[1]).max(c[2]);
-            let min = c[0].min(c[1]).min(c[2]);
-            let sat = if max > 0.0 { (max - min) / max } else { 0.0 };
-            sat < 0.1
-        });
-        if is_bw {
-            let colorful = vec![
-                [0.2, 0.4, 0.8, 1.0],
-                [0.4, 0.6, 0.9, 1.0],
-                [0.6, 0.4, 0.9, 1.0],
-                [0.8, 0.2, 0.8, 1.0],
-                [0.9, 0.4, 0.6, 1.0],
-                [0.9, 0.6, 0.4, 1.0],
-                [0.8, 0.8, 0.2, 1.0],
-                [0.6, 0.9, 0.4, 1.0],
-            ];
-            return colorful.into_iter().take(num_colors).collect();
-        }
-        let mut palette = Vec::new();
-        for i in 0..num_colors {
-            let t = i as f32 / (num_colors - 1) as f32;
-            let seg = t * (dominant.len() - 1) as f32;
-            let idx = seg.floor() as usize;
-            let frac = seg - idx as f32;
-            if idx >= dominant.len() - 1 {
-                let c = dominant.last().unwrap();
-                palette.push([c[0] / 255.0, c[1] / 255.0, c[2] / 255.0, 1.0]);
-            } else {
-                let c1 = dominant[idx];
-                let c2 = dominant[idx + 1];
-                palette.push([
-                    (c1[0] + (c2[0] - c1[0]) * frac) / 255.0,
-                    (c1[1] + (c2[1] - c1[1]) * frac) / 255.0,
-                    (c1[2] + (c2[2] - c1[2]) * frac) / 255.0,
-                    1.0,
-                ]);
-            }
-        }
-        for c in &mut palette {
-            c[0] = c[0].clamp(0.0, 1.0);
-            c[1] = c[1].clamp(0.0, 1.0);
-            c[2] = c[2].clamp(0.0, 1.0);
-        }
-        palette
-    }
-
-    fn color_distance(a: &[f32; 3], b: &[f32; 3]) -> f32 {
-        let dr = a[0] - b[0];
-        let dg = a[1] - b[1];
-        let db = a[2] - b[2];
-        (dr * dr * 0.299 + dg * dg * 0.587 + db * db * 0.114).sqrt()
     }
 }
