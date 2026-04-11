@@ -1,14 +1,10 @@
-// src/main.rs
-// Visualizador de audio estilo CAVA como fondo de pantalla (SDL2)
-// Soporta comando "kill", auto‑colores y detección de cambios de wallpaper.
-
 mod app_config;
 mod wallpaper;
 mod cava_backend;
 mod sdl2_renderer;
 
 use anyhow::{Context, Result};
-use log::{error, info, warn};
+use log::{error, info};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -31,12 +27,10 @@ fn main() -> Result<()> {
 
     let args: Vec<String> = env::args().collect();
 
-    // Comando "kill"
     if args.len() >= 2 && args[1] == "kill" {
         return kill_existing_instance();
     }
 
-    // Ruta de configuración
     let config_path = get_config_path(&args);
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent)?;
@@ -45,7 +39,6 @@ fn main() -> Result<()> {
     let mut config = load_or_create_config(&config_path)?;
     let auto_colors_enabled = config.general.auto_colors;
 
-    // Detección inicial de colores del wallpaper
     if auto_colors_enabled {
         info!("Initial wallpaper detection...");
         match wallpaper::WallpaperAnalyzer::generate_gradient_colors(8) {
@@ -72,18 +65,15 @@ fn main() -> Result<()> {
         }
     }
 
-    // Bandera de ejecución (Ctrl+C)
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
     ctrlc::set_handler(move || {
         r.store(false, Ordering::SeqCst);
     }).expect("Error setting Ctrl-C handler");
 
-    // Canal para actualizaciones de color (desde el hilo de wallpaper)
     let (color_tx, color_rx) = mpsc::channel();
     let shared_color_rx = Arc::new(Mutex::new(color_rx));
 
-    // Hilo de vigilancia de cambios de wallpaper (si auto_colors está activado)
     if auto_colors_enabled {
         let tx = color_tx.clone();
         thread::spawn(move || {
@@ -132,34 +122,29 @@ fn main() -> Result<()> {
         });
     }
 
-    // Iniciar backend de CAVA
     let bar_count = config.bars.amount as usize;
     let (_cava_backend, audio_rx) = CavaBackend::new(bar_count, &config)
         .context("Failed to start cava backend")?;
 
-    // Colores iniciales
-    let mut colors: Vec<[f32; 4]> = config.colors.values()
+    let colors: Vec<[f32; 4]> = config.colors.values()
         .map(|c| app_config::array_from_config_color(c.clone()))
         .collect();
 
-    // Lanzar renderizador SDL2
     info!("Starting SDL2 renderer (universal)");
     let mut renderer = Sdl2Renderer::new(
         bar_count,
         config.bars.gap,
-        colors.clone(),
+        colors,
         audio_rx,
-        shared_color_rx.clone(),
+        shared_color_rx,
         running,
     )?;
 
-    // Ejecutar el bucle principal (bloqueante)
     renderer.run()?;
 
     Ok(())
 }
 
-// Funciones auxiliares (configuración y kill)
 fn get_config_path(args: &[String]) -> PathBuf {
     if args.len() == 3 && args[1] == "--config" {
         return PathBuf::from(&args[2]);
