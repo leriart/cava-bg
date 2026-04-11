@@ -1,4 +1,3 @@
-// src/cava_backend.rs
 use anyhow::{Context, Result};
 use log::info;
 use std::io::{BufReader, Read, Write};

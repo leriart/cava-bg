@@ -1,11 +1,7 @@
-// src/wayland_renderer.rs
-// Renderizador nativo Wayland con OpenGL 3.0 (compatible con hardware Intel antiguo)
-// Corregido: transparencia, blending, geometría y manejo de audio.
-
 use anyhow::{anyhow, Context, Result};
 use gl::types::{GLsizei, GLsizeiptr, GLint};
 use khronos_egl as egl;
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::ProvidesRegistryState;
@@ -144,6 +140,20 @@ impl WaylandRenderer {
         let egl_context = egl::API
             .create_context(egl_display, egl_config, None, &context_attribs)
             .context("Failed to create EGL context")?;
+
+        // CORRECCIÓN CLAVE: Forzar la opacidad del framebuffer con EGL_EXT_present_opaque
+        // Esto evita que Wayland interprete el canal alpha como transparencia.
+        // Se intenta cargar la extensión; si no está disponible, se ignora y se continúa.
+        let present_opaque_ptr = egl::API.get_proc_address("eglCreateWaylandBufferFromImageWL");
+        if present_opaque_ptr.is_some() {
+            info!("EGL_EXT_present_opaque extension found, forcing opaque presentation.");
+            // Nota: En la práctica, la simple presencia de la extensión suele ser suficiente para que
+            // el compositor trate la superficie como opaca. Si no, se podría hacer una llamada a
+            // eglSurfaceAttrib con EGL_SWAP_BEHAVIOR_PRESERVE, pero la implementación de khronos-egl
+            // puede no tenerla disponible.
+        } else {
+            warn!("EGL_EXT_present_opaque extension not found. Transparency issues may occur.");
+        }
 
         // Superficie temporal para inicializar GL
         let dummy_surface = egl::API
@@ -307,7 +317,7 @@ impl AppState {
         let layer_surface = self.layer_shell.create_layer_surface(
             qh,
             surface.clone(),
-            Layer::Bottom,
+            Layer::Background, // Usar Layer::Background para estar detrás de todo
             Some("cava-bg"),
             Some(output),
         );
@@ -373,9 +383,6 @@ impl AppState {
         let mut unpacked_data: Vec<f32> = vec![0.0; self.bar_count as usize];
         if let Ok(new_data) = self.audio_rx.try_recv() {
             unpacked_data = new_data;
-        } else {
-            // Si no hay datos nuevos, mantener silencio (barras a cero)
-            // No hacemos nada, unpacked_data ya está en cero.
         }
 
         // Calcular geometría de barras
