@@ -22,7 +22,6 @@ impl Default for Config {
                 ConfigColor::Simple(hex.to_string()),
             );
         }
-
         Config {
             general: GeneralConfig::default(),
             bars: BarConfig::default(),
@@ -140,5 +139,36 @@ pub fn array_from_config_color(color: ConfigColor) -> [f32; 4] {
         ConfigColor::Complex(color) => {
             color_from_hex(color.hex.to_string(), color.alpha.unwrap_or(1.0))
         }
+    }
+}
+
+impl Config {
+    /// Genera la configuración TOML para pasarle a cava por stdin.
+    pub fn to_cava_raw_config(&self) -> String {
+        let mut config = String::new();
+        config.push_str("[general]\n");
+        config.push_str(&format!("framerate = {}\n", self.general.framerate));
+        if let Some(autosens) = self.general.autosens {
+            config.push_str(&format!("autosens = {}\n", if autosens { 1 } else { 0 }));
+        }
+        if let Some(sensitivity) = self.general.sensitivity {
+            config.push_str(&format!("sensitivity = {}\n", sensitivity));
+        }
+        config.push_str("\n[output]\n");
+        config.push_str(&format!("bars = {}\n", self.bars.amount));
+        config.push_str("method = raw\n");
+        config.push_str("raw_target = /dev/stdout\n");
+        config.push_str("bit_format = 16bit\n");
+        config.push_str("\n[smoothing]\n");
+        if let Some(monstercat) = self.smoothing.monstercat {
+            config.push_str(&format!("monstercat = {}\n", monstercat));
+        }
+        if let Some(waves) = self.smoothing.waves {
+            config.push_str(&format!("waves = {}\n", waves));
+        }
+        if let Some(noise_reduction) = self.smoothing.noise_reduction {
+            config.push_str(&format!("noise_reduction = {:.2}\n", noise_reduction));
+        }
+        config
     }
 }
