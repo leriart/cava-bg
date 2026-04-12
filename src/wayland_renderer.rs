@@ -503,7 +503,7 @@ impl AppState {
 
         // Necesitamos una referencia 'static para la superficie. Como la aplicación vive hasta el final,
         // podemos usar Box::leak de forma segura.
-        let static_surface = Box::leak(Box::new(wgpu_surface));
+        let static_surface = unsafe { std::mem::transmute::<_, wgpu::Surface<'static>>(wgpu_surface) };
 
         let state = PerOutputState {
             surface,
