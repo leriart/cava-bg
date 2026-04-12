@@ -3,7 +3,6 @@
 A high-performance audio visualizer for Wayland compositors (Hyprland, Sway, River, etc.) that displays real-time CAVA audio bars as a transparent overlay over your wallpaper, with automatic color extraction and dynamic updates when your wallpaper changes.
 
 ![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange.svg)
-![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)
 ![Wayland](https://img.shields.io/badge/Wayland-Native-green.svg)
 ![Arch Linux](https://img.shields.io/badge/Arch_Linux-AUR-blue.svg)
 
