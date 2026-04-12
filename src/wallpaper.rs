@@ -243,10 +243,13 @@ impl WallpaperAnalyzer {
         Ok(new_colors)
     }
 
-    pub fn start_wallpaper_monitor(tx: Sender<Vec<[f32; 4]>>, num_colors: usize) {
+    /// Inicia un hilo que monitorea cambios en el wallpaper.
+    /// Nota: El número de colores se fija a 8 (se puede cambiar si se pasa como parámetro).
+    pub fn start_wallpaper_monitor(tx: Sender<Vec<[f32; 4]>>) {
         thread::spawn(move || {
             let mut last_path: Option<PathBuf> = None;
             let mut last_modified: Option<std::time::SystemTime> = None;
+            let num_colors = 8; // Puedes ajustar este valor según necesites
 
             loop {
                 if let Some(path) = Self::find_wallpaper() {
@@ -271,12 +274,14 @@ impl WallpaperAnalyzer {
                         last_path = Some(path);
                         last_modified = Some(modified);
                     }
-                } else if last_path.is_some() {
-                    log::warn!("Wallpaper disappeared, using default colors");
-                    let default_colors = Self::default_colors(num_colors);
-                    let _ = tx.send(default_colors);
-                    last_path = None;
-                    last_modified = None;
+                } else {
+                    if last_path.is_some() {
+                        log::warn!("Wallpaper disappeared, using default colors");
+                        let default_colors = Self::default_colors(num_colors);
+                        let _ = tx.send(default_colors);
+                        last_path = None;
+                        last_modified = None;
+                    }
                 }
                 thread::sleep(Duration::from_secs(2));
             }

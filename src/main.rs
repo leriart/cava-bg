@@ -1,7 +1,7 @@
 mod app_config;
 mod cli_help;
-mod wayland_renderer;
 mod wallpaper;
+mod wayland_renderer;
 
 use anyhow::{Context, Result};
 use log::info;
@@ -25,25 +25,33 @@ fn create_default_config(path: &PathBuf) -> Result<()> {
     let default_config = Config {
         general: GeneralConfig {
             framerate: 60,
-            background_color: ConfigColor::Simple("#000000".to_string()),
-            autosens: Some(true),
+            background_color: ConfigColor::Complex(app_config::HexColorConfig {
+                hex: "#000000".to_string(),
+                alpha: Some(0.0),
+            }),
+            autosens: None,   // no poner autosens por defecto
             sensitivity: None,
             preferred_output: None,
             dynamic_colors: true,
         },
         bars: BarConfig {
-            amount: 32,
-            gap: 0.05,
+            amount: 76,
+            gap: 0.1,
         },
         colors: {
             let mut map = HashMap::new();
-            map.insert("gradient1".to_string(), ConfigColor::Simple("#ff0000".to_string()));
-            map.insert("gradient2".to_string(), ConfigColor::Simple("#00ff00".to_string()));
-            map.insert("gradient3".to_string(), ConfigColor::Simple("#0000ff".to_string()));
+            map.insert("gradient_color_1".to_string(), ConfigColor::Simple("#94e2d5".to_string()));
+            map.insert("gradient_color_2".to_string(), ConfigColor::Simple("#89dceb".to_string()));
+            map.insert("gradient_color_3".to_string(), ConfigColor::Simple("#74c7ec".to_string()));
+            map.insert("gradient_color_4".to_string(), ConfigColor::Simple("#89b4fa".to_string()));
+            map.insert("gradient_color_5".to_string(), ConfigColor::Simple("#cba6f7".to_string()));
+            map.insert("gradient_color_6".to_string(), ConfigColor::Simple("#f5c2e7".to_string()));
+            map.insert("gradient_color_7".to_string(), ConfigColor::Simple("#eba0ac".to_string()));
+            map.insert("gradient_color_8".to_string(), ConfigColor::Simple("#f38ba8".to_string()));
             map
         },
         smoothing: SmoothingConfig {
-            monstercat: Some(0.5),
+            monstercat: None,
             waves: None,
             noise_reduction: None,
         },

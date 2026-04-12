@@ -199,7 +199,7 @@ impl WaylandRenderer {
                 Ok(colors) => {
                     info!("Using dynamic colors from wallpaper");
                     // Iniciar monitor de cambios
-                    WallpaperAnalyzer::start_wallpaper_monitor(color_tx, num_colors);
+                    WallpaperAnalyzer::start_wallpaper_monitor(color_tx);
                     colors
                 }
                 Err(e) => {
