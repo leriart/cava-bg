@@ -53,15 +53,11 @@ impl WallpaperAnalyzer {
         let content = fs::read_to_string(cache_path).ok()?;
         log::debug!("ambxst config content: {}", content);
 
-        // Buscar "currentWall" seguido de cualquier espacio y dos puntos, luego comillas
-        // Usamos una aproximación simple pero robusta.
         let tag = "currentWall";
         if let Some(start) = content.find(tag) {
-            // Buscar el primer ':' después del tag
             let after_tag = &content[start + tag.len()..];
             if let Some(colon_pos) = after_tag.find(':') {
                 let after_colon = &after_tag[colon_pos + 1..];
-                // Buscar la primera comilla doble
                 if let Some(quote_start) = after_colon.find('"') {
                     let after_quote = &after_colon[quote_start + 1..];
                     if let Some(quote_end) = after_quote.find('"') {

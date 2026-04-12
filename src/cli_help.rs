@@ -1,4 +1,11 @@
 pub fn print_help() {
-    println!("Command line options");
-    println!("--config path");
+    println!("cava-bg - Audio visualizer for Wayland");
+    println!();
+    println!("Usage:");
+    println!("  cava-bg [--config <path>]");
+    println!("  cava-bg kill");
+    println!();
+    println!("Options:");
+    println!("  --config <path>    Specify config file path");
+    println!("  -h, --help         Show this help");
 }

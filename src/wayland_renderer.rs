@@ -36,6 +36,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crate::app_config::{array_from_config_color, Config, CavaConfig, CavaGeneralConfig, CavaSmoothingConfig};
+use crate::wallpaper::WallpaperAnalyzer;
 
 const SHADER_WGSL: &str = r#"
 struct VertexInput {
@@ -162,7 +163,7 @@ impl WaylandRenderer {
     }
 
     pub fn run(self) -> Result<()> {
-        info!("Starting wallpaper-cava with wgpu backend");
+        info!("Starting cava-bg with wgpu backend");
 
         // Spawn cava
         let cava_config_str = Self::build_cava_config(&self.config);
@@ -185,6 +186,31 @@ impl WaylandRenderer {
         let mut cava_reader = BufReader::new(cava_stdout);
         let bar_count = self.config.bars.amount as usize;
 
+        // Obtener colores según dynamic_colors
+        let gradient_colors: Vec<[f32; 4]> = if self.config.general.dynamic_colors {
+            let num_colors = std::cmp::max(1, bar_count.min(32));
+            match WallpaperAnalyzer::generate_gradient_colors(num_colors) {
+                Ok(colors) => {
+                    info!("Using dynamic colors from wallpaper");
+                    colors
+                }
+                Err(e) => {
+                    error!("Failed to generate colors from wallpaper: {}, using fallback", e);
+                    // Usar colores de la configuración como fallback
+                    self.config.colors.values()
+                        .map(|c| array_from_config_color(c.clone()))
+                        .collect()
+                }
+            }
+        } else {
+            info!("Using static colors from config");
+            self.config.colors.values()
+                .map(|c| array_from_config_color(c.clone()))
+                .collect()
+        };
+
+        let background_color = array_from_config_color(self.config.general.background_color.clone());
+
         // Wayland connection
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
         let (globals, event_queue) = registry_queue_init(&conn).context("Failed to init registry")?;
@@ -200,11 +226,6 @@ impl WaylandRenderer {
         let compositor = CompositorState::bind(&globals, &qh).context("wl_compositor not available")?;
         let layer_shell = LayerShell::bind(&globals, &qh).context("layer shell not available")?;
 
-        let colors: Vec<[f32; 4]> = self.config.colors.values()
-            .map(|c| array_from_config_color(c.clone()))
-            .collect();
-        let background_color = array_from_config_color(self.config.general.background_color.clone());
-
         let frame_duration = Duration::from_secs(1) / self.config.general.framerate;
 
         let mut app_state = AppState {
@@ -217,21 +238,21 @@ impl WaylandRenderer {
             bar_gap: self.config.bars.gap,
             preferred_output_name: self.config.general.preferred_output.clone(),
             cava_reader,
-            colors,
+            colors: gradient_colors,
             background_color,
             conn: conn.clone(),
             qh: qh.clone(),
             running: self.running,
         };
 
-        // Enumerate existing outputs (algunos pueden no estar listos aún, se manejarán en new_output)
+        // Enumerate existing outputs
         for output in app_state.output_state.outputs() {
             if let Err(e) = app_state.ensure_output(&output) {
                 error!("Failed to create initial output: {}", e);
             }
         }
 
-        // Bucle principal con timer: en cada tick se lee cava, se actualizan vértices y se renderiza.
+        // Main loop
         event_loop.run(Some(frame_duration), &mut app_state, |state| {
             if !state.running.load(Ordering::SeqCst) {
                 std::process::exit(0);
@@ -283,7 +304,7 @@ impl AppState {
             &self.qh,
             surface.clone(),
             Layer::Bottom,
-            Some("wallpaper-cava"),
+            Some("cava-bg"),
             Some(output),
         );
 
@@ -292,12 +313,11 @@ impl AppState {
         let height = logical_size.1 as u32;
 
         layer_surface.set_size(width, height);
-        // Anchor completo para cubrir toda la pantalla
         layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
         layer_surface.set_exclusive_zone(-1);
         surface.commit();
 
-        // Crear superficie WGPU
+        // Create WGPU surface
         let wl_display = self.conn.display().id().as_ptr();
         let wl_surface_ptr = surface.id().as_ptr();
 
@@ -475,17 +495,14 @@ impl AppState {
             }
             Err(e) => {
                 error!("Failed to read from cava: {}", e);
-                // Continuar con alturas anteriores (cero)
             }
         }
         bar_heights
     }
 
     fn draw(&mut self) {
-        // Leer datos de cava (bloqueante, igual que en el main.rs original)
         let bar_heights = self.read_cava_data();
 
-        // Calcular vértices comunes a todos los outputs
         let bar_width = 2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
         let bar_gap_width = bar_width * self.bar_gap;
         let mut vertices = vec![0.0f32; self.bar_count * 8];
@@ -503,16 +520,13 @@ impl AppState {
             vertices[i * 8 + 7] = -1.0;
         }
 
-        // Renderizar en cada output configurado
         for state in self.per_output.values_mut() {
             if !state.configured {
                 continue;
             }
 
-            // Actualizar buffer de vértices
             state.wgpu_queue.write_buffer(&state.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
 
-            // Adquirir textura de la superficie
             let frame = match state.wgpu_surface.get_current_texture() {
                 Ok(frame) => frame,
                 Err(wgpu::SurfaceError::Lost) => {
@@ -557,13 +571,12 @@ impl AppState {
             state.wgpu_queue.submit(std::iter::once(encoder.finish()));
             frame.present();
 
-            // Solicitar siguiente frame (mantiene sincronización con el compositor)
             state.surface.frame(&self.qh, state.surface.clone());
         }
     }
 }
 
-// --- Wayland Handlers ---
+// Wayland Handlers
 
 impl OutputHandler for AppState {
     fn output_state(&mut self) -> &mut OutputState {
@@ -609,7 +622,7 @@ impl CompositorHandler for AppState {
     fn transform_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_transform: wl_output::Transform) {}
 
     fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {
-        // El renderizado ya se hace en el timer; aquí no necesitamos hacer nada.
+        // Renderizado ya manejado por timer
     }
 
     fn surface_enter(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
@@ -650,6 +663,5 @@ impl LayerShellHandler for AppState {
                 break;
             }
         }
-        // No es necesario solicitar frame aquí; el timer se encarga.
     }
 }
