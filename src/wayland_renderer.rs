@@ -27,19 +27,18 @@ use raw_window_handle::{
 };
 
 use std::collections::HashMap;
+use std::fs;
 use std::io::{BufReader, Read, Write};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::ptr::NonNull;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Receiver;
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use crate::app_config::{array_from_config_color, Config};
+use crate::app_config::{array_from_config_color, Config, CavaConfig, CavaGeneralConfig, CavaSmoothingConfig};
 
-// -----------------------------------------------------------------------------
-// Shader WGSL con coordenada Y invertida para igualar OpenGL
-// -----------------------------------------------------------------------------
+// Shader WGSL equivalente a los shaders GLSL originales.
+// La coordenada Y se invierte porque en wgpu (0,0) es arriba-izquierda.
 const SHADER_WGSL: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -70,7 +69,7 @@ struct Uniforms {
 
 @fragment
 fn fs_main(@builtin(position) coord: vec4<f32>) -> @location(0) vec4<f32> {
-    // Invertir Y para que el gradiente vaya de abajo hacia arriba (como en OpenGL)
+    // Invertir Y para que el degradado vaya de abajo hacia arriba como en OpenGL
     let y = uniforms.window_size.y - coord.y;
     let height = uniforms.window_size.y;
     if (uniforms.colors_count == 1) {
@@ -88,9 +87,6 @@ fn fs_main(@builtin(position) coord: vec4<f32>) -> @location(0) vec4<f32> {
 }
 "#;
 
-// -----------------------------------------------------------------------------
-// Estructura de datos para los uniformes (debe coincidir con el shader)
-// -----------------------------------------------------------------------------
 #[repr(C)]
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
@@ -117,9 +113,6 @@ impl Uniforms {
     }
 }
 
-// -----------------------------------------------------------------------------
-// Estado por cada salida (monitor)
-// -----------------------------------------------------------------------------
 struct PerOutputState {
     surface: WlSurface,
     layer_surface: LayerSurface,
@@ -136,67 +129,48 @@ struct PerOutputState {
     height: u32,
     configured: bool,
     background_color: [f32; 4],
-    last_frame_time: Instant,
 }
 
-// -----------------------------------------------------------------------------
-// Renderer principal
-// -----------------------------------------------------------------------------
 pub struct WaylandRenderer {
     config: Config,
-    color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
     running: Arc<AtomicBool>,
 }
 
 impl WaylandRenderer {
-    pub fn new(
-        config: Config,
-        color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
-        running: Arc<AtomicBool>,
-    ) -> Self {
-        Self {
-            config,
-            color_rx,
-            running,
-        }
+    pub fn new(config: Config, running: Arc<AtomicBool>) -> Self {
+        Self { config, running }
     }
 
     fn build_cava_config(config: &Config) -> String {
-        let mut ini = String::new();
-        ini.push_str("[general]\n");
-        ini.push_str(&format!("framerate = {}\n", config.general.framerate));
-        if let Some(autosens) = config.general.autosens {
-            ini.push_str(&format!("autosens = {}\n", if autosens { 1 } else { 0 }));
-        }
-        if let Some(sensitivity) = config.general.sensitivity {
-            ini.push_str(&format!("sensitivity = {}\n", sensitivity));
-        }
-        ini.push_str("\n[output]\n");
-        ini.push_str(&format!("bars = {}\n", config.bars.amount));
-        ini.push_str("method = raw\n");
-        ini.push_str("raw_target = /dev/stdout\n");
-        ini.push_str("bit_format = 16bit\n");
-        ini.push_str("\n[smoothing]\n");
-        if let Some(monstercat) = config.smoothing.monstercat {
-            ini.push_str(&format!("monstercat = {}\n", monstercat));
-        }
-        if let Some(waves) = config.smoothing.waves {
-            ini.push_str(&format!("waves = {}\n", waves));
-        }
-        if let Some(noise_reduction) = config.smoothing.noise_reduction {
-            ini.push_str(&format!("noise_reduction = {:.2}\n", noise_reduction));
-        }
-        ini
+        let cava_config = CavaConfig {
+            general: CavaGeneralConfig {
+                framerate: config.general.framerate,
+                bars: config.bars.amount,
+                autosens: config.general.autosens,
+                sensitivity: config.general.sensitivity,
+            },
+            smoothing: CavaSmoothingConfig {
+                monstercat: config.smoothing.monstercat,
+                waves: config.smoothing.waves,
+                noise_reduction: config.smoothing.noise_reduction,
+            },
+            output: HashMap::from([
+                ("method".to_string(), "raw".to_string()),
+                ("raw_target".to_string(), "/dev/stdout".to_string()),
+                ("bit_format".to_string(), "16bit".to_string()),
+            ]),
+        };
+        toml::to_string(&cava_config).unwrap()
     }
 
     pub fn run(self) -> Result<()> {
-        info!("Starting Wayland renderer with WGPU backend");
+        info!("Starting wallpaper-cava with wgpu backend");
 
-        // Generar configuración para cava y lanzar el proceso
+        // 1. Spawn cava process
         let cava_config_str = Self::build_cava_config(&self.config);
-        debug!("cava configuration:\n{}", cava_config_str);
+        debug!("cava config:\n{}", cava_config_str);
 
-        let mut cava_child = Command::new("cava")
+        let mut cmd = Command::new("cava")
             .arg("-p")
             .arg("/dev/stdin")
             .stdout(Stdio::piped())
@@ -204,24 +178,20 @@ impl WaylandRenderer {
             .spawn()
             .context("Failed to spawn cava process")?;
 
-        if let Some(mut stdin) = cava_child.stdin.take() {
-            stdin
-                .write_all(cava_config_str.as_bytes())
-                .context("Failed to write config to cava stdin")?;
-            stdin.flush().context("Failed to flush cava stdin")?;
+        if let Some(mut stdin) = cmd.stdin.take() {
+            stdin.write_all(cava_config_str.as_bytes())?;
+            stdin.flush()?;
         }
 
-        let cava_stdout = cava_child.stdout.take().context("Failed to get cava stdout")?;
-        let cava_reader = BufReader::new(cava_stdout);
+        let cava_stdout = cmd.stdout.take().context("Failed to get cava stdout")?;
+        let mut cava_reader = BufReader::new(cava_stdout);
         let bar_count = self.config.bars.amount as usize;
-        info!("cava backend started, reading {} bars", bar_count);
 
-        // Conexión Wayland
+        // 2. Wayland connection
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
         let (globals, event_queue) = registry_queue_init(&conn).context("Failed to init registry")?;
         let qh = event_queue.handle();
 
-        // Crear el event loop
         let mut event_loop: EventLoop<AppState> =
             EventLoop::try_new().context("Failed to create event loop")?;
         let loop_handle = event_loop.handle();
@@ -229,21 +199,16 @@ impl WaylandRenderer {
             .insert(loop_handle)
             .map_err(|e| anyhow::anyhow!("Wayland source error: {:?}", e))?;
 
-        // Inicializar estados de Wayland
         let compositor = CompositorState::bind(&globals, &qh).context("wl_compositor not available")?;
         let layer_shell = LayerShell::bind(&globals, &qh).context("layer shell not available")?;
 
-        // Colores iniciales desde la configuración
-        let initial_colors: Vec<[f32; 4]> = self
-            .config
-            .colors
-            .values()
+        // 3. Extract colors from config
+        let colors: Vec<[f32; 4]> = self.config.colors.values()
             .map(|c| array_from_config_color(c.clone()))
             .collect();
-
         let background_color = array_from_config_color(self.config.general.background_color.clone());
 
-        // Estado de la aplicación
+        // 4. Build AppState
         let mut app_state = AppState {
             registry_state: RegistryState::new(&globals),
             output_state: OutputState::new(&globals, &qh),
@@ -253,49 +218,28 @@ impl WaylandRenderer {
             bar_count,
             bar_gap: self.config.bars.gap,
             preferred_output_name: self.config.general.preferred_output.clone(),
-            cava_child: Some(cava_child),
             cava_reader,
-            color_rx: self.color_rx,
-            running: self.running,
-            current_colors: initial_colors,
+            colors,
             background_color,
             conn: conn.clone(),
             qh: qh.clone(),
-            last_update: Instant::now(),
-            frame_duration: Duration::from_secs_f64(1.0 / self.config.general.framerate as f64),
+            running: self.running,
         };
 
-        // Iniciar el event loop con un timeout para controlar la tasa de frames
-        event_loop
-            .run(Some(Duration::from_millis(16)), &mut app_state, |state| {
-                // Este callback se llama en cada iteración del bucle.
-                // Verificamos si debemos renderizar un nuevo frame según el framerate configurado.
-                let now = Instant::now();
-                if now.duration_since(state.last_update) >= state.frame_duration {
-                    state.draw();
-                    state.last_update = now;
-                }
+        // 5. Enumerate existing outputs
+        for output in app_state.output_state.outputs() {
+            if let Err(e) = app_state.ensure_output(&output) {
+                error!("Failed to create initial output: {}", e);
+            }
+        }
 
-                // Verificar si debemos terminar
-                if !state.running.load(Ordering::SeqCst) {
-                    info!("Shutting down gracefully...");
-                    // Limpiar el proceso cava
-                    if let Some(mut child) = state.cava_child.take() {
-                        let _ = child.kill();
-                        let _ = child.wait();
-                    }
-                    std::process::exit(0);
-                }
-            })
-            .context("Event loop failed")?;
+        // 6. Run event loop without timer – rendering is driven by frame callbacks
+        event_loop.run(None, &mut app_state, |_| {})?;
 
         Ok(())
     }
 }
 
-// -----------------------------------------------------------------------------
-// Estado principal de la aplicación
-// -----------------------------------------------------------------------------
 struct AppState {
     registry_state: RegistryState,
     output_state: OutputState,
@@ -305,20 +249,15 @@ struct AppState {
     bar_count: usize,
     bar_gap: f32,
     preferred_output_name: Option<String>,
-    cava_child: Option<Child>,
     cava_reader: BufReader<std::process::ChildStdout>,
-    color_rx: Arc<Mutex<Receiver<Vec<[f32; 4]>>>>,
-    running: Arc<AtomicBool>,
-    current_colors: Vec<[f32; 4]>,
+    colors: Vec<[f32; 4]>,
     background_color: [f32; 4],
     conn: Connection,
     qh: QueueHandle<Self>,
-    last_update: Instant,
-    frame_duration: Duration,
+    running: Arc<AtomicBool>,
 }
 
 impl AppState {
-    /// Crea o asegura que exista una superficie para una salida dada.
     fn ensure_output(&mut self, output: &wl_output::WlOutput) -> Result<()> {
         let info = self.output_state.info(output).context("Failed to get output info")?;
         let name = info.name.clone().unwrap_or_else(|| "unknown".to_string());
@@ -327,7 +266,6 @@ impl AppState {
             return Ok(());
         }
 
-        // Si hay una salida preferida y esta no coincide, la ignoramos
         if let Some(ref pref) = self.preferred_output_name {
             if &name != pref {
                 debug!("Skipping output {} (preferred is {})", name, pref);
@@ -342,7 +280,7 @@ impl AppState {
             &self.qh,
             surface.clone(),
             Layer::Bottom,
-            Some("cava-bg"),
+            Some("wallpaper-cava"),
             Some(output),
         );
 
@@ -355,7 +293,7 @@ impl AppState {
         layer_surface.set_exclusive_zone(-1);
         surface.commit();
 
-        // Crear superficie WGPU
+        // Create WGPU surface
         let wl_display = self.conn.display().id().as_ptr();
         let wl_surface_ptr = surface.id().as_ptr();
 
@@ -388,7 +326,6 @@ impl AppState {
                 label: None,
                 required_features: wgpu::Features::empty(),
                 required_limits: wgpu::Limits::default(),
-                ..Default::default()
             },
             None,
         ))
@@ -407,13 +344,11 @@ impl AppState {
             .unwrap_or(wgpu::CompositeAlphaMode::Auto);
         wgpu_surface.configure(&device, &surface_config);
 
-        // Shader y pipeline
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Shader"),
             source: wgpu::ShaderSource::Wgsl(SHADER_WGSL.into()),
         });
 
-        // Índices para dibujar dos triángulos por barra (6 índices por barra)
         let mut indices = Vec::with_capacity(self.bar_count * 6);
         for i in 0..self.bar_count {
             let base = (i * 4) as u16;
@@ -425,7 +360,6 @@ impl AppState {
             usage: wgpu::BufferUsages::INDEX,
         });
 
-        // Buffer de vértices (se actualizará cada frame)
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Vertex Buffer"),
             size: (self.bar_count * 8 * std::mem::size_of::<f32>()) as u64,
@@ -433,8 +367,7 @@ impl AppState {
             mapped_at_creation: false,
         });
 
-        // Uniform buffer
-        let uniforms = Uniforms::new(&self.current_colors, width as f32, height as f32);
+        let uniforms = Uniforms::new(&self.colors, width as f32, height as f32);
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Uniform Buffer"),
             contents: bytemuck::cast_slice(&[uniforms]),
@@ -501,9 +434,8 @@ impl AppState {
             multiview: None,
         });
 
-        // Necesitamos una referencia 'static para la superficie. Como la aplicación vive hasta el final,
-        // podemos usar Box::leak de forma segura.
-        let static_surface = unsafe { std::mem::transmute::<_, wgpu::Surface<'static>>(wgpu_surface) };
+        // Safe because the surface lives for the entire program duration
+        let static_surface: wgpu::Surface<'static> = unsafe { std::mem::transmute(wgpu_surface) };
 
         let state = PerOutputState {
             surface,
@@ -521,7 +453,6 @@ impl AppState {
             height,
             configured: false,
             background_color: self.background_color,
-            last_frame_time: Instant::now(),
         };
 
         self.per_output.insert(name.clone(), state);
@@ -529,52 +460,43 @@ impl AppState {
         Ok(())
     }
 
-    /// Renderiza un frame en todas las salidas configuradas.
-    fn draw(&mut self) {
-        // 1. Intentar recibir nuevos colores (si los hay)
-        if let Ok(guard) = self.color_rx.lock() {
-            if let Ok(new_colors) = guard.try_recv() {
-                info!("Updating gradient colors ({} colors)", new_colors.len());
-                self.current_colors = new_colors.clone();
-                // Actualizar uniform buffers de todas las salidas
-                for state in self.per_output.values_mut() {
-                    if state.configured {
-                        let uniforms = Uniforms::new(&self.current_colors, state.width as f32, state.height as f32);
-                        state.wgpu_queue.write_buffer(&state.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
-                    }
-                }
-            }
-        }
-
-        // 2. Leer datos de cava
-        let mut cava_buffer: Vec<u8> = vec![0; self.bar_count * 2];
+    fn read_cava_data(&mut self) -> Vec<f32> {
+        let mut cava_buffer = vec![0u8; self.bar_count * 2];
         let mut bar_heights = vec![0.0f32; self.bar_count];
         match self.cava_reader.read_exact(&mut cava_buffer) {
             Ok(()) => {
                 for (i, chunk) in cava_buffer.chunks_exact(2).enumerate() {
                     let num = u16::from_le_bytes([chunk[0], chunk[1]]);
-                    // Normalizar a [0,1] (65535 es el máximo para 16 bits)
-                    bar_heights[i] = (num as f32) / 65535.0;
+                    bar_heights[i] = (num as f32) / 65530.0;
                 }
             }
             Err(e) => {
-                // Si falla la lectura, usamos ceros y solo mostramos el error una vez
+                // If we fail to read, we just keep previous heights (or zeros).
+                // Log only once to avoid spam.
                 static mut LOGGED_ERROR: bool = false;
                 unsafe {
                     if !LOGGED_ERROR {
-                        error!("Error reading from cava (will use zeros): {}", e);
+                        error!("Failed to read from cava: {}", e);
                         LOGGED_ERROR = true;
                     }
                 }
             }
         }
+        bar_heights
+    }
 
-        // 3. Calcular vértices comunes para todas las salidas (las posiciones son en NDC, independientes del tamaño)
+    fn render_output(&mut self, name: &str, bar_heights: &[f32]) {
+        let state = match self.per_output.get_mut(name) {
+            Some(s) if s.configured => s,
+            _ => return,
+        };
+
+        // Compute vertex positions
         let bar_width = 2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
         let bar_gap_width = bar_width * self.bar_gap;
         let mut vertices = vec![0.0f32; self.bar_count * 8];
         for i in 0..self.bar_count {
-            let h = 2.0 * bar_heights[i] - 1.0; // Mapear [0,1] a [-1,1]
+            let h = 2.0 * bar_heights[i] - 1.0;
             let x0 = bar_gap_width * i as f32 + bar_width * i as f32 - 1.0;
             let x1 = bar_gap_width * i as f32 + bar_width * (i + 1) as f32 - 1.0;
             vertices[i * 8] = x0;
@@ -586,76 +508,59 @@ impl AppState {
             vertices[i * 8 + 6] = x1;
             vertices[i * 8 + 7] = -1.0;
         }
+        state.wgpu_queue.write_buffer(&state.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
 
-        // 4. Renderizar en cada salida configurada
-        for state in self.per_output.values_mut() {
-            if !state.configured {
-                continue;
+        // Render
+        let frame = match state.wgpu_surface.get_current_texture() {
+            Ok(frame) => frame,
+            Err(wgpu::SurfaceError::Lost) => {
+                state.wgpu_surface.configure(&state.wgpu_device, &state.wgpu_config);
+                return;
             }
-
-            // Actualizar buffer de vértices
-            state.wgpu_queue.write_buffer(&state.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
-
-            // Obtener la textura actual de la superficie
-            let frame = match state.wgpu_surface.get_current_texture() {
-                Ok(frame) => frame,
-                Err(wgpu::SurfaceError::Lost) => {
-                    // Reconfigurar si la superficie se perdió
-                    warn!("Surface lost, reconfiguring...");
-                    state.wgpu_surface.configure(&state.wgpu_device, &state.wgpu_config);
-                    continue;
-                }
-                Err(e) => {
-                    error!("Error acquiring surface texture: {:?}", e);
-                    continue;
-                }
-            };
-
-            let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let mut encoder = state.wgpu_device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
-            {
-                let bg = state.background_color;
-                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("Render Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &view,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color {
-                                r: bg[0] as f64,
-                                g: bg[1] as f64,
-                                b: bg[2] as f64,
-                                a: bg[3] as f64,
-                            }),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    occlusion_query_set: None,
-                    timestamp_writes: None,
-                });
-
-                render_pass.set_pipeline(&state.render_pipeline);
-                render_pass.set_bind_group(0, &state.bind_group, &[]);
-                render_pass.set_vertex_buffer(0, state.vertex_buffer.slice(..));
-                render_pass.set_index_buffer(state.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-                render_pass.draw_indexed(0..(self.bar_count * 6) as u32, 0, 0..1);
+            Err(e) => {
+                error!("Error acquiring surface texture: {:?}", e);
+                return;
             }
+        };
 
-            state.wgpu_queue.submit(std::iter::once(encoder.finish()));
-            frame.present();
-
-            // Solicitar el siguiente frame callback (necesario para que Wayland nos notifique cuando podemos renderizar de nuevo)
-            state.surface.frame(&self.qh, state.surface.clone());
-            state.last_frame_time = Instant::now();
+        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = state.wgpu_device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        {
+            let bg = state.background_color;
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: bg[0] as f64,
+                            g: bg[1] as f64,
+                            b: bg[2] as f64,
+                            a: bg[3] as f64,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+            });
+            render_pass.set_pipeline(&state.render_pipeline);
+            render_pass.set_bind_group(0, &state.bind_group, &[]);
+            render_pass.set_vertex_buffer(0, state.vertex_buffer.slice(..));
+            render_pass.set_index_buffer(state.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+            render_pass.draw_indexed(0..(self.bar_count * 6) as u32, 0, 0..1);
         }
+        state.wgpu_queue.submit(std::iter::once(encoder.finish()));
+        frame.present();
+
+        // Request next frame
+        state.surface.frame(&self.qh, state.surface.clone());
     }
 }
 
-// -----------------------------------------------------------------------------
-// Implementación de los handlers de Wayland
-// -----------------------------------------------------------------------------
+// --- Wayland Handlers ---
 
 impl OutputHandler for AppState {
     fn output_state(&mut self) -> &mut OutputState {
@@ -669,10 +574,7 @@ impl OutputHandler for AppState {
     }
 
     fn update_output(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
-        // Podría haber cambios en la salida (ej. resolución). Reintentamos ensure_output.
-        if let Err(e) = self.ensure_output(&output) {
-            error!("Failed to update output: {}", e);
-        }
+        self.new_output(_conn, _qh, output);
     }
 
     fn output_destroyed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
@@ -703,8 +605,25 @@ impl CompositorHandler for AppState {
     fn scale_factor_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_factor: i32) {}
     fn transform_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_transform: wl_output::Transform) {}
 
-    fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {
-        // El renderizado se maneja en el bucle principal (draw). No hacemos nada aquí.
+    fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, surface: &wl_surface::WlSurface, _time: u32) {
+        if !self.running.load(Ordering::SeqCst) {
+            std::process::exit(0);
+        }
+
+        // Find which output this surface belongs to
+        let mut target_name = None;
+        for (name, state) in self.per_output.iter() {
+            if &state.surface == surface {
+                target_name = Some(name.clone());
+                break;
+            }
+        }
+
+        if let Some(name) = target_name {
+            // Read cava data once per frame (shared across outputs)
+            let bar_heights = self.read_cava_data();
+            self.render_output(&name, &bar_heights);
+        }
     }
 
     fn surface_enter(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
@@ -712,9 +631,7 @@ impl CompositorHandler for AppState {
 }
 
 impl LayerShellHandler for AppState {
-    fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {
-        // Si se cierra la capa, podríamos eliminarla, pero normalmente no ocurre.
-    }
+    fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {}
 
     fn configure(
         &mut self,
@@ -729,19 +646,16 @@ impl LayerShellHandler for AppState {
             if &state.layer_surface == layer {
                 let width = configure.new_size.0;
                 let height = configure.new_size.1;
-
-                // Si ya está configurado y el tamaño no cambió, no hacer nada
-                if state.configured && width == state.width && height == state.height {
+                if width == state.width && height == state.height && state.configured {
                     return;
                 }
-
                 state.width = width;
                 state.height = height;
                 state.wgpu_config.width = width;
                 state.wgpu_config.height = height;
                 state.wgpu_surface.configure(&state.wgpu_device, &state.wgpu_config);
 
-                let uniforms = Uniforms::new(&self.current_colors, width as f32, height as f32);
+                let uniforms = Uniforms::new(&self.colors, width as f32, height as f32);
                 state.wgpu_queue.write_buffer(&state.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
 
                 state.configured = true;
@@ -750,10 +664,11 @@ impl LayerShellHandler for AppState {
                 break;
             }
         }
-
-        // Si se configuró una salida, forzamos un renderizado inmediato para que se muestre
-        if target_name.is_some() {
-            self.draw();
+        if let Some(name) = target_name {
+            // Request first frame after configure
+            if let Some(state) = self.per_output.get(&name) {
+                state.surface.frame(&self.qh, state.surface.clone());
+            }
         }
     }
 }
