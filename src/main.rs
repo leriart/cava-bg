@@ -76,15 +76,13 @@ fn main() -> Result<()> {
         exit(0);
     };
 
+        // (dentro de main, después de cargar la configuración)
     let config_str = fs::read_to_string(&config_path)
         .with_context(|| format!("Unable to read config file: {:?}", config_path))?;
-    let mut config: Config = toml::from_str(&config_str)
+    let config: Config = toml::from_str(&config_str)
         .with_context(|| format!("Error parsing config: {:?}", config_path))?;
 
-    
-    if config.general.dynamic_colors.is_nil() {
-        
-    }
+
 
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();

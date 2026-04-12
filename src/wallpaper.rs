@@ -245,7 +245,7 @@ impl WallpaperAnalyzer {
 
     /// Inicia un hilo que monitorea cambios en el wallpaper y envía los nuevos colores
     /// a través del canal `tx` cada vez que se detecta un cambio.
-    pub fn start_wallpaper_monitor(tx: Sender<Vec<[f32; 4]>>) {
+    pub fn start_wallpaper_monitor(tx: Sender<Vec<[f32; 4]>>, num_colors: usize) {
         thread::spawn(move || {
             let mut last_path: Option<PathBuf> = None;
             let mut last_modified: Option<std::time::SystemTime> = None;
@@ -261,27 +261,24 @@ impl WallpaperAnalyzer {
                     };
                     if changed {
                         log::info!("Wallpaper changed to: {:?}", path);
-                        // Usamos 8 colores por defecto (se puede parametrizar después)
-                        if let Ok(colors) = Self::generate_gradient_colors(8) {
-                            if let Err(e) = tx.send(colors) {
-                                log::error!("Failed to send new colors: {}", e);
-                                break;
+                        match Self::generate_gradient_colors(num_colors) {
+                            Ok(colors) => {
+                                if let Err(e) = tx.send(colors) {
+                                    log::error!("Failed to send new colors: {}", e);
+                                    break;
+                                }
                             }
+                            Err(e) => log::error!("Failed to generate colors: {}", e),
                         }
                         last_path = Some(path);
                         last_modified = Some(modified);
                     }
-                } else {
-                    if last_path.is_some() {
-                        log::warn!("Wallpaper disappeared, using default colors");
-                        let default_colors = Self::default_colors(8);
-                        if let Err(e) = tx.send(default_colors) {
-                            log::error!("Failed to send default colors: {}", e);
-                            break;
-                        }
-                        last_path = None;
-                        last_modified = None;
-                    }
+                } else if last_path.is_some() {
+                    log::warn!("Wallpaper disappeared, using default colors");
+                    let default_colors = Self::default_colors(num_colors);
+                    let _ = tx.send(default_colors);
+                    last_path = None;
+                    last_modified = None;
                 }
                 thread::sleep(Duration::from_secs(2));
             }
