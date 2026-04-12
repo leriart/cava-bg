@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::ProvidesRegistryState;
@@ -38,7 +38,6 @@ use std::time::Duration;
 use crate::app_config::{array_from_config_color, Config, CavaConfig, CavaGeneralConfig, CavaSmoothingConfig};
 
 // Shader WGSL equivalente a los shaders GLSL originales.
-// La coordenada Y se invierte porque en wgpu (0,0) es arriba-izquierda.
 const SHADER_WGSL: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -129,6 +128,7 @@ struct PerOutputState {
     height: u32,
     configured: bool,
     background_color: [f32; 4],
+    pending_frame: bool,
 }
 
 pub struct WaylandRenderer {
@@ -184,7 +184,7 @@ impl WaylandRenderer {
         }
 
         let cava_stdout = cmd.stdout.take().context("Failed to get cava stdout")?;
-        let mut cava_reader = BufReader::new(cava_stdout);
+        let cava_reader = BufReader::new(cava_stdout);
         let bar_count = self.config.bars.amount as usize;
 
         // 2. Wayland connection
@@ -208,7 +208,10 @@ impl WaylandRenderer {
             .collect();
         let background_color = array_from_config_color(self.config.general.background_color.clone());
 
-        // 4. Build AppState
+        // 4. Timer duration (same as original main.rs)
+        let frame_duration = Duration::from_secs(1) / self.config.general.framerate;
+
+        // 5. Build AppState
         let mut app_state = AppState {
             registry_state: RegistryState::new(&globals),
             output_state: OutputState::new(&globals, &qh),
@@ -224,17 +227,34 @@ impl WaylandRenderer {
             conn: conn.clone(),
             qh: qh.clone(),
             running: self.running,
+            bar_heights: vec![0.0; bar_count],
         };
 
-        // 5. Enumerate existing outputs
+        // 6. Enumerate existing outputs
         for output in app_state.output_state.outputs() {
             if let Err(e) = app_state.ensure_output(&output) {
                 error!("Failed to create initial output: {}", e);
             }
         }
 
-        // 6. Run event loop without timer – rendering is driven by frame callbacks
-        event_loop.run(None, &mut app_state, |_| {})?;
+        // 7. Run event loop with timer (exactly like original main.rs)
+        event_loop.run(Some(frame_duration), &mut app_state, |state| {
+            // This closure is called on each timer tick.
+            if !state.running.load(Ordering::SeqCst) {
+                std::process::exit(0);
+            }
+
+            // Read cava data (blocking, but inside timer tick it's safe)
+            state.read_cava_data();
+
+            // Request a frame for all configured outputs
+            for s in state.per_output.values_mut() {
+                if s.configured && !s.pending_frame {
+                    s.pending_frame = true;
+                    s.surface.frame(&state.qh, s.surface.clone());
+                }
+            }
+        })?;
 
         Ok(())
     }
@@ -255,6 +275,7 @@ struct AppState {
     conn: Connection,
     qh: QueueHandle<Self>,
     running: Arc<AtomicBool>,
+    bar_heights: Vec<f32>, // Store latest bar heights
 }
 
 impl AppState {
@@ -434,7 +455,6 @@ impl AppState {
             multiview: None,
         });
 
-        // Safe because the surface lives for the entire program duration
         let static_surface: wgpu::Surface<'static> = unsafe { std::mem::transmute(wgpu_surface) };
 
         let state = PerOutputState {
@@ -453,6 +473,7 @@ impl AppState {
             height,
             configured: false,
             background_color: self.background_color,
+            pending_frame: false,
         };
 
         self.per_output.insert(name.clone(), state);
@@ -460,43 +481,34 @@ impl AppState {
         Ok(())
     }
 
-    fn read_cava_data(&mut self) -> Vec<f32> {
+    fn read_cava_data(&mut self) {
         let mut cava_buffer = vec![0u8; self.bar_count * 2];
-        let mut bar_heights = vec![0.0f32; self.bar_count];
         match self.cava_reader.read_exact(&mut cava_buffer) {
             Ok(()) => {
                 for (i, chunk) in cava_buffer.chunks_exact(2).enumerate() {
                     let num = u16::from_le_bytes([chunk[0], chunk[1]]);
-                    bar_heights[i] = (num as f32) / 65530.0;
+                    self.bar_heights[i] = (num as f32) / 65530.0;
                 }
             }
             Err(e) => {
-                // If we fail to read, we just keep previous heights (or zeros).
-                // Log only once to avoid spam.
-                static mut LOGGED_ERROR: bool = false;
-                unsafe {
-                    if !LOGGED_ERROR {
-                        error!("Failed to read from cava: {}", e);
-                        LOGGED_ERROR = true;
-                    }
-                }
+                error!("Failed to read from cava: {}", e);
+                // Keep previous heights
             }
         }
-        bar_heights
     }
 
-    fn render_output(&mut self, name: &str, bar_heights: &[f32]) {
+    fn render_output(&mut self, name: &str) {
         let state = match self.per_output.get_mut(name) {
             Some(s) if s.configured => s,
             _ => return,
         };
 
-        // Compute vertex positions
+        // Compute vertex positions using latest bar heights
         let bar_width = 2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
         let bar_gap_width = bar_width * self.bar_gap;
         let mut vertices = vec![0.0f32; self.bar_count * 8];
         for i in 0..self.bar_count {
-            let h = 2.0 * bar_heights[i] - 1.0;
+            let h = 2.0 * self.bar_heights[i] - 1.0;
             let x0 = bar_gap_width * i as f32 + bar_width * i as f32 - 1.0;
             let x1 = bar_gap_width * i as f32 + bar_width * (i + 1) as f32 - 1.0;
             vertices[i * 8] = x0;
@@ -515,10 +527,12 @@ impl AppState {
             Ok(frame) => frame,
             Err(wgpu::SurfaceError::Lost) => {
                 state.wgpu_surface.configure(&state.wgpu_device, &state.wgpu_config);
+                state.pending_frame = false;
                 return;
             }
             Err(e) => {
                 error!("Error acquiring surface texture: {:?}", e);
+                state.pending_frame = false;
                 return;
             }
         };
@@ -555,8 +569,7 @@ impl AppState {
         state.wgpu_queue.submit(std::iter::once(encoder.finish()));
         frame.present();
 
-        // Request next frame
-        state.surface.frame(&self.qh, state.surface.clone());
+        state.pending_frame = false;
     }
 }
 
@@ -606,11 +619,6 @@ impl CompositorHandler for AppState {
     fn transform_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_transform: wl_output::Transform) {}
 
     fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, surface: &wl_surface::WlSurface, _time: u32) {
-        if !self.running.load(Ordering::SeqCst) {
-            std::process::exit(0);
-        }
-
-        // Find which output this surface belongs to
         let mut target_name = None;
         for (name, state) in self.per_output.iter() {
             if &state.surface == surface {
@@ -618,11 +626,8 @@ impl CompositorHandler for AppState {
                 break;
             }
         }
-
         if let Some(name) = target_name {
-            // Read cava data once per frame (shared across outputs)
-            let bar_heights = self.read_cava_data();
-            self.render_output(&name, &bar_heights);
+            self.render_output(&name);
         }
     }
 
@@ -664,11 +669,6 @@ impl LayerShellHandler for AppState {
                 break;
             }
         }
-        if let Some(name) = target_name {
-            // Request first frame after configure
-            if let Some(state) = self.per_output.get(&name) {
-                state.surface.frame(&self.qh, state.surface.clone());
-            }
-        }
+        // No es necesario solicitar frame aquí; el timer lo hará periódicamente.
     }
 }
