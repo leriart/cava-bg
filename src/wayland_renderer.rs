@@ -37,6 +37,7 @@ use std::time::Duration;
 
 use crate::app_config::{array_from_config_color, Config};
 
+// Shader WGSL corregido: invertir coordenada Y para igualar OpenGL
 const SHADER_WGSL: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -67,7 +68,8 @@ struct Uniforms {
 
 @fragment
 fn fs_main(@builtin(position) coord: vec4<f32>) -> @location(0) vec4<f32> {
-    let y = coord.y;
+    // Invertir Y: en WGSL coord.y es 0 arriba, en OpenGL gl_FragCoord.y es 0 abajo
+    let y = uniforms.window_size.y - coord.y;
     let height = uniforms.window_size.y;
     if (uniforms.colors_count == 1) {
         return uniforms.gradient_colors[0];
@@ -267,10 +269,11 @@ impl AppState {
         info!("Creando superficie para output {}", name);
 
         let surface = self.compositor.create_surface(&self.qh);
+        // USAR LAYER BOTTOM PARA ESTAR POR ENCIMA DE BACKGROUND
         let layer_surface = self.layer_shell.create_layer_surface(
             &self.qh,
             surface.clone(),
-            Layer::Background,
+            Layer::Bottom,
             Some("cava-bg"),
             Some(output),
         );
@@ -480,7 +483,7 @@ impl AppState {
             }
             debug!("Usando datos reales de audio: {} barras", bar_heights.len());
         } else {
-            // Modo de prueba: onda sinusoidal (igual que antes, pero con menos frecuencia de log)
+            // Modo de prueba: onda sinusoidal
             let phase = (std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
