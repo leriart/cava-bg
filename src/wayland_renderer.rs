@@ -33,10 +33,10 @@ use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crate::app_config::{array_from_config_color, Config};
 
-// Shader WGSL (idéntico al GLSL original, con Y invertida)
 const SHADER_WGSL: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -126,6 +126,7 @@ struct PerOutputState {
     height: u32,
     configured: bool,
     background_color: [f32; 4],
+    pending_frame: bool,
 }
 
 pub struct WaylandRenderer {
@@ -176,7 +177,7 @@ impl WaylandRenderer {
     }
 
     pub fn run(self) -> Result<()> {
-        info!("Iniciando renderizador Wayland con WGPU (calco wallpaper-cava)");
+        info!("Iniciando renderizador Wayland con WGPU");
         std::env::set_var("EGL_PLATFORM", "wayland");
 
         let cava_config_str = Self::build_cava_config(&self.config);
@@ -226,6 +227,7 @@ impl WaylandRenderer {
             .collect();
 
         let background_color = array_from_config_color(self.config.general.background_color.clone());
+        let frame_duration = Duration::from_secs_f64(1.0 / self.config.general.framerate as f64);
 
         let mut app_state = AppState {
             registry_state: RegistryState::new(&globals),
@@ -246,7 +248,9 @@ impl WaylandRenderer {
         };
 
         event_loop
-            .run(None, &mut app_state, |_| {})
+            .run(Some(frame_duration), &mut app_state, |state| {
+                state.request_frames();
+            })
             .context("Event loop failed")?;
 
         Ok(())
@@ -466,6 +470,7 @@ impl AppState {
             height,
             configured: false,
             background_color: self.background_color,
+            pending_frame: false,
         };
 
         self.per_output.insert(name.clone(), state);
@@ -473,20 +478,22 @@ impl AppState {
         Ok(())
     }
 
-    fn render_surface(&mut self, surface: &wl_surface::WlSurface) {
-        let mut target_name = None;
-        for (name, state) in self.per_output.iter() {
-            if &state.surface == surface {
-                target_name = Some(name.clone());
-                break;
+    fn request_frames(&mut self) {
+        if !self.running.load(Ordering::SeqCst) {
+            info!("Apagando graceful...");
+            std::process::exit(0);
+        }
+
+        for state in self.per_output.values_mut() {
+            if state.configured && !state.pending_frame {
+                state.pending_frame = true;
+                state.surface.frame(&self.qh, state.surface.clone());
             }
         }
-        let name = match target_name {
-            Some(n) => n,
-            None => return,
-        };
+    }
 
-        let state = match self.per_output.get_mut(&name) {
+    fn render_output(&mut self, name: &str) {
+        let state = match self.per_output.get_mut(name) {
             Some(s) if s.configured => s,
             _ => return,
         };
@@ -501,16 +508,17 @@ impl AppState {
             }
         }
 
-        // Leer datos de cava
+        // Leer datos de cava (ignoramos errores para no detener el ciclo)
         let mut cava_buffer: Vec<u8> = vec![0; self.bar_count * 2];
         let mut bar_heights = vec![0.0; self.bar_count];
-        if let Err(e) = self.cava_reader.read_exact(&mut cava_buffer) {
-            error!("Error leyendo de cava: {}", e);
-            return;
-        }
-        for (i, chunk) in cava_buffer.chunks_exact(2).enumerate() {
-            let num = u16::from_le_bytes([chunk[0], chunk[1]]);
-            bar_heights[i] = (num as f32) / 65530.0;
+        if self.cava_reader.read_exact(&mut cava_buffer).is_err() {
+            // Si falla la lectura, reutilizamos los últimos datos o ponemos cero
+            // pero no detenemos el renderizado.
+        } else {
+            for (i, chunk) in cava_buffer.chunks_exact(2).enumerate() {
+                let num = u16::from_le_bytes([chunk[0], chunk[1]]);
+                bar_heights[i] = (num as f32) / 65530.0;
+            }
         }
 
         // Calcular vértices
@@ -537,6 +545,7 @@ impl AppState {
             Ok(frame) => frame,
             Err(e) => {
                 error!("Error obteniendo textura de la superficie: {:?}", e);
+                state.pending_frame = false;
                 return;
             }
         };
@@ -572,8 +581,7 @@ impl AppState {
         state.wgpu_queue.submit(std::iter::once(encoder.finish()));
         frame.present();
 
-        // Solicitar el siguiente frame
-        state.surface.frame(&self.qh, state.surface.clone());
+        state.pending_frame = false;
     }
 }
 
@@ -623,7 +631,16 @@ impl CompositorHandler for AppState {
     fn transform_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_transform: wl_output::Transform) {}
 
     fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, surface: &wl_surface::WlSurface, _time: u32) {
-        self.render_surface(surface);
+        let mut target_name = None;
+        for (name, state) in self.per_output.iter() {
+            if &state.surface == surface {
+                target_name = Some(name.clone());
+                break;
+            }
+        }
+        if let Some(name) = target_name {
+            self.render_output(&name);
+        }
     }
 
     fn surface_enter(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
@@ -665,13 +682,13 @@ impl LayerShellHandler for AppState {
             }
         }
         if let Some(name) = target_name {
-            // Solicitar el primer frame y además forzar un renderizado inicial
+            // Iniciar el ciclo de frames (solicitar el primero)
             if let Some(state) = self.per_output.get_mut(&name) {
-                let surface = state.surface.clone();
-                state.surface.frame(&self.qh, surface.clone());
-                // Renderizado inicial inmediato (clave para que se vea al arrancar)
-                self.render_surface(&surface);
+                state.pending_frame = true;
+                state.surface.frame(&self.qh, state.surface.clone());
             }
+            // El primer renderizado se producirá cuando llegue el evento frame.
+            // No forzamos render aquí para evitar dobles frames.
         }
     }
 }
