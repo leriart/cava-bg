@@ -64,28 +64,20 @@ cava-bg kill
 ```
 ## How It Works
 
-```
-Wallpaper detection – The program locates your current wallpaper by checking common tools: ambxst, mpvpaper, waypaper, swaybg.
-
-Color extraction – Using color_thief, it extracts a palette of dominant colors, sorts them by luminance, and applies temporal smoothing to avoid abrupt changes.
-
-CAVA integration – Spawns a cava process with a raw 16‑bit output, reads the audio data, and normalises the values.
-
-Wayland layer – Creates a wlr_layer_shell surface anchored to the whole screen, with a transparent background.
-
-wgpu rendering – A full‑screen quad is drawn for each bar. A fragment shader interpolates the gradient vertically. The uniform buffer is updated whenever the wallpaper colors change.
-
-Wallpaper monitoring – Every 2 seconds the wallpaper path is rechecked; if it changed, a new palette is generated and sent to the render thread.
-```
+**Wallpaper detection** – The program locates your current wallpaper by checking common tools: ambxst, mpvpaper, waypaper, swaybg.
+**Color extraction** – Using color_thief, it extracts a palette of dominant colors, sorts them by luminance, and applies temporal smoothing to avoid abrupt changes.
+**CAVA integration** – Spawns a cava process with a raw 16‑bit output, reads the audio data, and normalises the values.
+**Wayland layer** – Creates a wlr_layer_shell surface anchored to the whole screen, with a transparent background.
+**wgpu rendering** – A full‑screen quad is drawn for each bar. A fragment shader interpolates the gradient vertically. The uniform buffer is updated whenever the wallpaper colors change.
+**Wallpaper monitoring** – Every 2 seconds the wallpaper path is rechecked; if it changed, a new palette is generated and sent to the render thread.
 
 ### Supported Wallpaper Tools
-```
-ambxst – reads ~/.cache/ambxst/wallpapers.json
-mpvpaper – detects running mpvpaper process
-waypaper – reads ~/.config/waypaper/config.ini
-swaybg – detects swaybg -i command line
 
-```
+**ambxst** – reads ~/.cache/ambxst/wallpapers.json
+**mpvpaper** – detects running mpvpaper process
+**waypaper** – reads ~/.config/waypaper/config.ini
+**swaybg** – detects swaybg -i command line
+
 
 ## Acknowledgments
 
