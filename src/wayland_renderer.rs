@@ -6,7 +6,6 @@ use smithay_client_toolkit::registry::ProvidesRegistryState;
 use smithay_client_toolkit::shell::wlr_layer::{
     Anchor, Layer, LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
 };
-use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     output::{OutputHandler, OutputState},
@@ -36,6 +35,7 @@ use std::time::Duration;
 
 use crate::app_config::{array_from_config_color, Config};
 
+// Shader WGSL que replica el comportamiento del fragment shader GLSL original
 const SHADER_WGSL: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -124,9 +124,8 @@ struct PerOutputState {
     width: u32,
     height: u32,
     configured: bool,
-    frame_count: u64,
     background_color: [f32; 4],
-    pending_frame: bool,
+    frame_count: u64,
 }
 
 pub struct WaylandRenderer {
@@ -204,6 +203,8 @@ impl WaylandRenderer {
 
         event_loop
             .run(Some(frame_duration), &mut app_state, |state| {
+                // Este closure se ejecuta periódicamente según frame_duration.
+                // Igual que el original, solicitamos un frame callback y dibujamos.
                 state.draw();
             })
             .context("Event loop failed")?;
@@ -425,9 +426,8 @@ impl AppState {
             width,
             height,
             configured: false,
-            frame_count: 0,
             background_color: self.background_color,
-            pending_frame: false,
+            frame_count: 0,
         };
 
         self.per_output.insert(name.clone(), state);
@@ -435,7 +435,7 @@ impl AppState {
         Ok(())
     }
 
-    fn render_output(&mut self, name: &str) {
+    fn draw_output(&mut self, name: &str) {
         let state = match self.per_output.get_mut(name) {
             Some(s) if s.configured => s,
             Some(_) => {
@@ -475,7 +475,7 @@ impl AppState {
             }
         }
 
-        // Calcular vértices
+        // Calcular vértices (misma lógica que el original)
         let bar_width = 2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
         let bar_gap_width = bar_width * self.bar_gap;
         let mut vertices = vec![0.0f32; self.bar_count * 8];
@@ -535,7 +535,8 @@ impl AppState {
         frame.present();
 
         state.frame_count += 1;
-        state.pending_frame = false;
+        // Solicitar el siguiente frame callback para mantener el ciclo (igual que el original)
+        state.surface.frame(&self.qh, state.surface.clone());
     }
 
     pub fn draw(&mut self) {
@@ -546,11 +547,14 @@ impl AppState {
 
         let names: Vec<String> = self.per_output.keys().cloned().collect();
         for name in names {
-            let state = self.per_output.get_mut(&name).unwrap();
-            if !state.pending_frame && state.configured {
-                state.pending_frame = true;
-                state.surface.frame(&self.qh, state.surface.clone());
+            // Igual que el original: en cada iteración del timer, solicitamos un frame callback
+            // y renderizamos inmediatamente.
+            if let Some(state) = self.per_output.get_mut(&name) {
+                if state.configured {
+                    state.surface.frame(&self.qh, state.surface.clone());
+                }
             }
+            self.draw_output(&name);
         }
     }
 }
@@ -599,18 +603,9 @@ impl ProvidesRegistryState for AppState {
 impl CompositorHandler for AppState {
     fn scale_factor_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_factor: i32) {}
     fn transform_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_transform: wl_output::Transform) {}
-    fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, surface: &wl_surface::WlSurface, _time: u32) {
-        // Buscar el output correspondiente a esta superficie y renderizar
-        let mut target_name = None;
-        for (name, state) in self.per_output.iter() {
-            if &state.surface == surface {
-                target_name = Some(name.clone());
-                break;
-            }
-        }
-        if let Some(name) = target_name {
-            self.render_output(&name);
-        }
+    fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {
+        // En el original, el callback frame solo se usa para que el compositor nos notifique,
+        // pero el renderizado ya se hizo en draw(). Aquí no necesitamos hacer nada adicional.
     }
     fn surface_enter(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
     fn surface_leave(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
@@ -651,12 +646,11 @@ impl LayerShellHandler for AppState {
             }
         }
         if let Some(name) = target_name {
-            // Iniciar el ciclo de frames
+            // Iniciar el ciclo de frames (igual que el original)
             if let Some(state) = self.per_output.get_mut(&name) {
-                state.pending_frame = true;
                 state.surface.frame(&self.qh, state.surface.clone());
             }
-            self.render_output(&name);
+            self.draw_output(&name);
         }
     }
 }
