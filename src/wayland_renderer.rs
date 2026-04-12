@@ -36,7 +36,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::app_config::{array_from_config_color, Config};
 
-// Shader WGSL que replica exactamente el fragment shader GLSL original (con Y invertida)
+// Shader WGSL (idéntico al GLSL original, con Y invertida)
 const SHADER_WGSL: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -67,7 +67,6 @@ struct Uniforms {
 
 @fragment
 fn fs_main(@builtin(position) coord: vec4<f32>) -> @location(0) vec4<f32> {
-    // Invertir Y para igualar OpenGL (gl_FragCoord.y tiene origen abajo)
     let y = uniforms.window_size.y - coord.y;
     let height = uniforms.window_size.y;
     if (uniforms.colors_count == 1) {
@@ -148,7 +147,6 @@ impl WaylandRenderer {
         }
     }
 
-    /// Construye la configuración de cava en formato INI (idéntica al original)
     fn build_cava_config(config: &Config) -> String {
         let mut ini = String::new();
         ini.push_str("[general]\n");
@@ -178,10 +176,9 @@ impl WaylandRenderer {
     }
 
     pub fn run(self) -> Result<()> {
-        info!("Iniciando renderizador Wayland con WGPU (calco exacto de wallpaper-cava)");
+        info!("Iniciando renderizador Wayland con WGPU (calco wallpaper-cava)");
         std::env::set_var("EGL_PLATFORM", "wayland");
 
-        // 1. Lanzar cava
         let cava_config_str = Self::build_cava_config(&self.config);
         debug!("Configuración de cava:\n{}", cava_config_str);
 
@@ -205,7 +202,6 @@ impl WaylandRenderer {
         let bar_count = self.config.bars.amount as usize;
         info!("cava backend iniciado, leyendo {} barras", bar_count);
 
-        // 2. Conexión Wayland
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
         let (globals, event_queue) = registry_queue_init(&conn).context("Failed to init registry")?;
         let qh = event_queue.handle();
@@ -249,7 +245,6 @@ impl WaylandRenderer {
             qh: qh.clone(),
         };
 
-        // 3. Ejecutar el event loop SIN timeout (solo eventos)
         event_loop
             .run(None, &mut app_state, |_| {})
             .context("Event loop failed")?;
@@ -478,13 +473,7 @@ impl AppState {
         Ok(())
     }
 
-    fn draw(&mut self, surface: &wl_surface::WlSurface) {
-        if !self.running.load(Ordering::SeqCst) {
-            info!("Apagando graceful...");
-            std::process::exit(0);
-        }
-
-        // Encontrar el output correspondiente a esta superficie
+    fn render_surface(&mut self, surface: &wl_surface::WlSurface) {
         let mut target_name = None;
         for (name, state) in self.per_output.iter() {
             if &state.surface == surface {
@@ -502,7 +491,7 @@ impl AppState {
             _ => return,
         };
 
-        // Actualizar colores desde el watcher (si hay nuevos)
+        // Actualizar colores
         if let Ok(guard) = self.color_rx.lock() {
             if let Ok(new_colors) = guard.try_recv() {
                 info!("Actualizando colores del degradado ({} colores)", new_colors.len());
@@ -512,7 +501,7 @@ impl AppState {
             }
         }
 
-        // Leer datos de audio de cava (bloqueante, igual que el original)
+        // Leer datos de cava
         let mut cava_buffer: Vec<u8> = vec![0; self.bar_count * 2];
         let mut bar_heights = vec![0.0; self.bar_count];
         if let Err(e) = self.cava_reader.read_exact(&mut cava_buffer) {
@@ -524,7 +513,7 @@ impl AppState {
             bar_heights[i] = (num as f32) / 65530.0;
         }
 
-        // Calcular vértices (misma lógica que el original)
+        // Calcular vértices
         let bar_width = 2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
         let bar_gap_width = bar_width * self.bar_gap;
         let mut vertices = vec![0.0f32; self.bar_count * 8];
@@ -583,7 +572,7 @@ impl AppState {
         state.wgpu_queue.submit(std::iter::once(encoder.finish()));
         frame.present();
 
-        // Solicitar el siguiente frame (encadenamiento)
+        // Solicitar el siguiente frame
         state.surface.frame(&self.qh, state.surface.clone());
     }
 }
@@ -634,7 +623,7 @@ impl CompositorHandler for AppState {
     fn transform_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_transform: wl_output::Transform) {}
 
     fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, surface: &wl_surface::WlSurface, _time: u32) {
-        self.draw(surface);
+        self.render_surface(surface);
     }
 
     fn surface_enter(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
@@ -676,9 +665,12 @@ impl LayerShellHandler for AppState {
             }
         }
         if let Some(name) = target_name {
-            // Iniciar el ciclo de frames
+            // Solicitar el primer frame y además forzar un renderizado inicial
             if let Some(state) = self.per_output.get_mut(&name) {
-                state.surface.frame(&self.qh, state.surface.clone());
+                let surface = state.surface.clone();
+                state.surface.frame(&self.qh, surface.clone());
+                // Renderizado inicial inmediato (clave para que se vea al arrancar)
+                self.render_surface(&surface);
             }
         }
     }
