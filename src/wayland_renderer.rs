@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::ProvidesRegistryState;
@@ -37,7 +37,7 @@ use std::time::Duration;
 
 use crate::app_config::{array_from_config_color, Config};
 
-// Shader WGSL corregido: invertir coordenada Y para igualar OpenGL
+// Shader WGSL con la coordenada Y invertida para igualar OpenGL
 const SHADER_WGSL: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -68,7 +68,7 @@ struct Uniforms {
 
 @fragment
 fn fs_main(@builtin(position) coord: vec4<f32>) -> @location(0) vec4<f32> {
-    // Invertir Y: en WGSL coord.y es 0 arriba, en OpenGL gl_FragCoord.y es 0 abajo
+    // Invertir Y: en WGSL (0,0) es arriba-izquierda, en OpenGL (0,0) es abajo-izquierda
     let y = uniforms.window_size.y - coord.y;
     let height = uniforms.window_size.y;
     if (uniforms.colors_count == 1) {
@@ -149,12 +149,41 @@ impl WaylandRenderer {
         }
     }
 
+    /// Construye la configuración de cava en formato INI tal como lo hacía el main.rs original.
+    fn build_cava_config(config: &Config) -> String {
+        let mut ini = String::new();
+        ini.push_str("[general]\n");
+        ini.push_str(&format!("framerate = {}\n", config.general.framerate));
+        if let Some(autosens) = config.general.autosens {
+            ini.push_str(&format!("autosens = {}\n", if autosens { 1 } else { 0 }));
+        }
+        if let Some(sensitivity) = config.general.sensitivity {
+            ini.push_str(&format!("sensitivity = {}\n", sensitivity));
+        }
+        ini.push_str("\n[output]\n");
+        ini.push_str(&format!("bars = {}\n", config.bars.amount));
+        ini.push_str("method = raw\n");
+        ini.push_str("raw_target = /dev/stdout\n");
+        ini.push_str("bit_format = 16bit\n");
+        ini.push_str("\n[smoothing]\n");
+        if let Some(monstercat) = config.smoothing.monstercat {
+            ini.push_str(&format!("monstercat = {}\n", monstercat));
+        }
+        if let Some(waves) = config.smoothing.waves {
+            ini.push_str(&format!("waves = {}\n", waves));
+        }
+        if let Some(noise_reduction) = config.smoothing.noise_reduction {
+            ini.push_str(&format!("noise_reduction = {:.2}\n", noise_reduction));
+        }
+        ini
+    }
+
     pub fn run(self) -> Result<()> {
-        info!("Iniciando renderizador Wayland con WGPU (calco de wallpaper-cava)");
+        info!("Iniciando renderizador Wayland con WGPU (capa Bottom, shader corregido)");
         std::env::set_var("EGL_PLATFORM", "wayland");
 
-        // Spawn de cava (igual que el original)
-        let cava_config_str = self.config.to_cava_raw_config();
+        // 1. Lanzar cava con la configuración generada
+        let cava_config_str = Self::build_cava_config(&self.config);
         debug!("Configuración de cava:\n{}", cava_config_str);
 
         let mut cmd = Command::new("cava")
@@ -175,8 +204,9 @@ impl WaylandRenderer {
         let cava_stdout = cmd.stdout.take().context("Failed to get cava stdout")?;
         let cava_reader = BufReader::new(cava_stdout);
         let bar_count = self.config.bars.amount as usize;
-        info!("cava backend started, reading {} bars", bar_count);
+        info!("cava backend iniciado, leyendo {} barras", bar_count);
 
+        // 2. Conexión Wayland
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
         let (globals, event_queue) = registry_queue_init(&conn).context("Failed to init registry")?;
         let qh = event_queue.handle();
@@ -221,9 +251,9 @@ impl WaylandRenderer {
             qh: qh.clone(),
         };
 
+        // 3. Ejecutar el event loop con timeout periódico
         event_loop
             .run(Some(frame_duration), &mut app_state, |state| {
-                // En cada tick del timer, igual que el original
                 state.draw();
             })
             .context("Event loop failed")?;
@@ -269,7 +299,7 @@ impl AppState {
         info!("Creando superficie para output {}", name);
 
         let surface = self.compositor.create_surface(&self.qh);
-        // USAR LAYER BOTTOM PARA ESTAR POR ENCIMA DE BACKGROUND
+        // Usar Layer::Bottom para estar por encima de los fondos de pantalla background
         let layer_surface = self.layer_shell.create_layer_surface(
             &self.qh,
             surface.clone(),
@@ -473,7 +503,7 @@ impl AppState {
             }
         }
 
-        // Leer datos de audio (exactamente como el original)
+        // Leer datos de audio de cava
         let mut cava_buffer: Vec<u8> = vec![0; self.bar_count * 2];
         let mut bar_heights = vec![0.0; self.bar_count];
         if self.cava_reader.read_exact(&mut cava_buffer).is_ok() {
@@ -481,9 +511,8 @@ impl AppState {
                 let num = u16::from_le_bytes([chunk[0], chunk[1]]);
                 bar_heights[i] = (num as f32) / 65530.0;
             }
-            debug!("Usando datos reales de audio: {} barras", bar_heights.len());
         } else {
-            // Modo de prueba: onda sinusoidal
+            // Fallback: onda de prueba silenciosa
             let phase = (std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -553,7 +582,7 @@ impl AppState {
         state.wgpu_queue.submit(std::iter::once(encoder.finish()));
         frame.present();
 
-        // Solicitar el siguiente frame callback (igual que el original)
+        // Solicitar el siguiente frame callback
         state.surface.frame(&self.qh, state.surface.clone());
     }
 
@@ -570,7 +599,7 @@ impl AppState {
     }
 }
 
-// --- Implementaciones de handlers (idénticas a versiones anteriores) ---
+// --- Handlers ---
 
 impl OutputHandler for AppState {
     fn output_state(&mut self) -> &mut OutputState {
@@ -614,9 +643,7 @@ impl ProvidesRegistryState for AppState {
 impl CompositorHandler for AppState {
     fn scale_factor_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_factor: i32) {}
     fn transform_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_transform: wl_output::Transform) {}
-    fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {
-        // No hacemos nada, el renderizado ya se hizo en draw()
-    }
+    fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {}
     fn surface_enter(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
     fn surface_leave(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
 }
@@ -656,7 +683,6 @@ impl LayerShellHandler for AppState {
             }
         }
         if let Some(name) = target_name {
-            // Iniciar el ciclo de frames
             if let Some(state) = self.per_output.get_mut(&name) {
                 state.surface.frame(&self.qh, state.surface.clone());
             }
