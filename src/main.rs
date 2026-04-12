@@ -1,7 +1,7 @@
 mod app_config;
 mod cli_help;
-mod wallpaper;
 mod wayland_renderer;
+mod wallpaper;
 
 use anyhow::{Context, Result};
 use log::info;
@@ -13,11 +13,13 @@ use std::process::exit;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use app_config::{Config, GeneralConfig, BarConfig, SmoothingConfig, ConfigColor};
+use app_config::{Config, GeneralConfig, BarConfig, SmoothingConfig, ConfigColor, HexColorConfig};
 use cli_help::print_help;
 use wayland_renderer::WaylandRenderer;
 
+/// Crea un archivo de configuración por defecto en la ruta especificada.
 fn create_default_config(path: &PathBuf) -> Result<()> {
+    // Crear el directorio padre si no existe
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -25,14 +27,14 @@ fn create_default_config(path: &PathBuf) -> Result<()> {
     let default_config = Config {
         general: GeneralConfig {
             framerate: 60,
-            background_color: ConfigColor::Complex(app_config::HexColorConfig {
+            background_color: ConfigColor::Complex(HexColorConfig {
                 hex: "#000000".to_string(),
                 alpha: Some(0.0),
             }),
-            autosens: None,   // no poner autosens por defecto
+            autosens: None,        // no incluimos autosens por defecto
             sensitivity: None,
             preferred_output: None,
-            dynamic_colors: true,
+            dynamic_colors: true,  // activado por defecto
         },
         bars: BarConfig {
             amount: 76,
@@ -72,7 +74,8 @@ fn main() -> Result<()> {
         let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
         let default_path = PathBuf::from(format!("{}/.config/cava-bg/config.toml", home));
         if !default_path.exists() {
-            create_default_config(&default_path)?;
+            create_default_config(&default_path)
+                .with_context(|| format!("Failed to create default config at {:?}", default_path))?;
         }
         default_path
     } else {
