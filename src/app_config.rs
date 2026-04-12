@@ -16,12 +16,7 @@ pub struct GeneralConfig {
     pub autosens: Option<bool>,
     pub sensitivity: Option<f32>,
     pub preferred_output: Option<String>,
-    #[serde(default = "default_dynamic_colors")]
-    pub dynamic_colors: bool,
-}
-
-fn default_dynamic_colors() -> bool {
-    true
+    pub dynamic_colors: Option<bool>, // Nueva opción: usar colores dinámicos del wallpaper
 }
 
 #[derive(Serialize, Deserialize, Debug)]

@@ -27,7 +27,6 @@ use raw_window_handle::{
 };
 
 use std::collections::HashMap;
-use std::fs;
 use std::io::{BufReader, Read, Write};
 use std::process::{Command, Stdio};
 use std::ptr::NonNull;
@@ -183,20 +182,24 @@ impl WaylandRenderer {
         }
 
         let cava_stdout = cmd.stdout.take().context("Failed to get cava stdout")?;
-        let mut cava_reader = BufReader::new(cava_stdout);
+        let cava_reader = BufReader::new(cava_stdout);
         let bar_count = self.config.bars.amount as usize;
 
-        // Obtener colores según dynamic_colors
-        let gradient_colors: Vec<[f32; 4]> = if self.config.general.dynamic_colors {
-            let num_colors = std::cmp::max(1, bar_count.min(32));
+        // Obtener colores del gradiente: dinámicos o de la configuración
+        let use_dynamic = self.config.general.dynamic_colors.unwrap_or(true);
+        let gradient_colors: Vec<[f32; 4]> = if use_dynamic {
+            let num_colors = if !self.config.colors.is_empty() {
+                self.config.colors.len()
+            } else {
+                8
+            };
             match WallpaperAnalyzer::generate_gradient_colors(num_colors) {
                 Ok(colors) => {
                     info!("Using dynamic colors from wallpaper");
                     colors
                 }
                 Err(e) => {
-                    error!("Failed to generate colors from wallpaper: {}, using fallback", e);
-                    // Usar colores de la configuración como fallback
+                    error!("Failed to generate colors from wallpaper: {}, using config colors", e);
                     self.config.colors.values()
                         .map(|c| array_from_config_color(c.clone()))
                         .collect()
@@ -252,7 +255,7 @@ impl WaylandRenderer {
             }
         }
 
-        // Main loop
+        // Bucle principal con timer
         event_loop.run(Some(frame_duration), &mut app_state, |state| {
             if !state.running.load(Ordering::SeqCst) {
                 std::process::exit(0);
@@ -317,7 +320,7 @@ impl AppState {
         layer_surface.set_exclusive_zone(-1);
         surface.commit();
 
-        // Create WGPU surface
+        // Crear superficie WGPU
         let wl_display = self.conn.display().id().as_ptr();
         let wl_surface_ptr = surface.id().as_ptr();
 
@@ -576,7 +579,7 @@ impl AppState {
     }
 }
 
-// Wayland Handlers
+// --- Wayland Handlers ---
 
 impl OutputHandler for AppState {
     fn output_state(&mut self) -> &mut OutputState {
@@ -599,7 +602,7 @@ impl OutputHandler for AppState {
             None => return,
         };
         let name = info.name.unwrap_or_else(|| "unknown".to_string());
-        if let Some(_) = self.per_output.remove(&name) {
+        if self.per_output.remove(&name).is_some() {
             info!("Output {} removed", name);
         }
     }
@@ -622,7 +625,7 @@ impl CompositorHandler for AppState {
     fn transform_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_transform: wl_output::Transform) {}
 
     fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {
-        // Renderizado ya manejado por timer
+        // El renderizado ya se hace en el timer
     }
 
     fn surface_enter(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
@@ -640,7 +643,6 @@ impl LayerShellHandler for AppState {
         configure: LayerSurfaceConfigure,
         _serial: u32,
     ) {
-        let mut target_name = None;
         for (name, state) in self.per_output.iter_mut() {
             if &state.layer_surface == layer {
                 let width = configure.new_size.0;
@@ -658,7 +660,6 @@ impl LayerShellHandler for AppState {
                 state.wgpu_queue.write_buffer(&state.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
 
                 state.configured = true;
-                target_name = Some(name.clone());
                 info!("Output {} configured: {}x{}", name, width, height);
                 break;
             }

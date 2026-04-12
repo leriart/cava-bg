@@ -7,5 +7,4 @@ pub fn print_help() {
     println!();
     println!("Options:");
     println!("  --config <path>    Specify config file path");
-    println!("  -h, --help         Show this help");
 }
