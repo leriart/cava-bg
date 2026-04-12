@@ -1,6 +1,5 @@
 mod app_config;
 mod wallpaper;
-mod cava_backend;
 mod wayland_renderer;
 
 use anyhow::{Context, Result};
@@ -16,7 +15,6 @@ use std::thread;
 use std::time::{Duration, SystemTime};
 
 use app_config::Config;
-use cava_backend::CavaBackend;
 use wayland_renderer::WaylandRenderer;
 
 const CONFIG_DIR: &str = "cava-bg";
@@ -126,12 +124,8 @@ fn main() -> Result<()> {
         });
     }
 
-    let bar_count = config.bars.amount as usize;
-    let (_cava_backend, audio_rx) = CavaBackend::new(bar_count, &config)
-        .context("Failed to start cava backend")?;
-
     info!("Starting Wayland WGPU renderer");
-    let renderer = WaylandRenderer::new(config, audio_rx, shared_color_rx, running);
+    let renderer = WaylandRenderer::new(config, shared_color_rx, running);
     renderer.run()?;
 
     Ok(())
