@@ -37,7 +37,6 @@ use std::time::Duration;
 
 use crate::app_config::{array_from_config_color, Config, CavaConfig, CavaGeneralConfig, CavaSmoothingConfig};
 
-// Shader WGSL equivalente a los shaders GLSL originales.
 const SHADER_WGSL: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -128,7 +127,6 @@ struct PerOutputState {
     height: u32,
     configured: bool,
     background_color: [f32; 4],
-    pending_frame: bool,
 }
 
 pub struct WaylandRenderer {
@@ -166,7 +164,7 @@ impl WaylandRenderer {
     pub fn run(self) -> Result<()> {
         info!("Starting wallpaper-cava with wgpu backend");
 
-        // 1. Spawn cava process
+        // Spawn cava
         let cava_config_str = Self::build_cava_config(&self.config);
         debug!("cava config:\n{}", cava_config_str);
 
@@ -184,10 +182,10 @@ impl WaylandRenderer {
         }
 
         let cava_stdout = cmd.stdout.take().context("Failed to get cava stdout")?;
-        let cava_reader = BufReader::new(cava_stdout);
+        let mut cava_reader = BufReader::new(cava_stdout);
         let bar_count = self.config.bars.amount as usize;
 
-        // 2. Wayland connection
+        // Wayland connection
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
         let (globals, event_queue) = registry_queue_init(&conn).context("Failed to init registry")?;
         let qh = event_queue.handle();
@@ -202,16 +200,13 @@ impl WaylandRenderer {
         let compositor = CompositorState::bind(&globals, &qh).context("wl_compositor not available")?;
         let layer_shell = LayerShell::bind(&globals, &qh).context("layer shell not available")?;
 
-        // 3. Extract colors from config
         let colors: Vec<[f32; 4]> = self.config.colors.values()
             .map(|c| array_from_config_color(c.clone()))
             .collect();
         let background_color = array_from_config_color(self.config.general.background_color.clone());
 
-        // 4. Timer duration (same as original main.rs)
         let frame_duration = Duration::from_secs(1) / self.config.general.framerate;
 
-        // 5. Build AppState
         let mut app_state = AppState {
             registry_state: RegistryState::new(&globals),
             output_state: OutputState::new(&globals, &qh),
@@ -227,33 +222,21 @@ impl WaylandRenderer {
             conn: conn.clone(),
             qh: qh.clone(),
             running: self.running,
-            bar_heights: vec![0.0; bar_count],
         };
 
-        // 6. Enumerate existing outputs
+        // Enumerate existing outputs (algunos pueden no estar listos aún, se manejarán en new_output)
         for output in app_state.output_state.outputs() {
             if let Err(e) = app_state.ensure_output(&output) {
                 error!("Failed to create initial output: {}", e);
             }
         }
 
-        // 7. Run event loop with timer (exactly like original main.rs)
+        // Bucle principal con timer: en cada tick se lee cava, se actualizan vértices y se renderiza.
         event_loop.run(Some(frame_duration), &mut app_state, |state| {
-            // This closure is called on each timer tick.
             if !state.running.load(Ordering::SeqCst) {
                 std::process::exit(0);
             }
-
-            // Read cava data (blocking, but inside timer tick it's safe)
-            state.read_cava_data();
-
-            // Request a frame for all configured outputs
-            for s in state.per_output.values_mut() {
-                if s.configured && !s.pending_frame {
-                    s.pending_frame = true;
-                    s.surface.frame(&state.qh, s.surface.clone());
-                }
-            }
+            state.draw();
         })?;
 
         Ok(())
@@ -275,7 +258,6 @@ struct AppState {
     conn: Connection,
     qh: QueueHandle<Self>,
     running: Arc<AtomicBool>,
-    bar_heights: Vec<f32>, // Store latest bar heights
 }
 
 impl AppState {
@@ -310,11 +292,12 @@ impl AppState {
         let height = logical_size.1 as u32;
 
         layer_surface.set_size(width, height);
+        // Anchor completo para cubrir toda la pantalla
         layer_surface.set_anchor(Anchor::TOP | Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
         layer_surface.set_exclusive_zone(-1);
         surface.commit();
 
-        // Create WGPU surface
+        // Crear superficie WGPU
         let wl_display = self.conn.display().id().as_ptr();
         let wl_surface_ptr = surface.id().as_ptr();
 
@@ -473,7 +456,6 @@ impl AppState {
             height,
             configured: false,
             background_color: self.background_color,
-            pending_frame: false,
         };
 
         self.per_output.insert(name.clone(), state);
@@ -481,34 +463,34 @@ impl AppState {
         Ok(())
     }
 
-    fn read_cava_data(&mut self) {
+    fn read_cava_data(&mut self) -> Vec<f32> {
         let mut cava_buffer = vec![0u8; self.bar_count * 2];
+        let mut bar_heights = vec![0.0f32; self.bar_count];
         match self.cava_reader.read_exact(&mut cava_buffer) {
             Ok(()) => {
                 for (i, chunk) in cava_buffer.chunks_exact(2).enumerate() {
                     let num = u16::from_le_bytes([chunk[0], chunk[1]]);
-                    self.bar_heights[i] = (num as f32) / 65530.0;
+                    bar_heights[i] = (num as f32) / 65530.0;
                 }
             }
             Err(e) => {
                 error!("Failed to read from cava: {}", e);
-                // Keep previous heights
+                // Continuar con alturas anteriores (cero)
             }
         }
+        bar_heights
     }
 
-    fn render_output(&mut self, name: &str) {
-        let state = match self.per_output.get_mut(name) {
-            Some(s) if s.configured => s,
-            _ => return,
-        };
+    fn draw(&mut self) {
+        // Leer datos de cava (bloqueante, igual que en el main.rs original)
+        let bar_heights = self.read_cava_data();
 
-        // Compute vertex positions using latest bar heights
+        // Calcular vértices comunes a todos los outputs
         let bar_width = 2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
         let bar_gap_width = bar_width * self.bar_gap;
         let mut vertices = vec![0.0f32; self.bar_count * 8];
         for i in 0..self.bar_count {
-            let h = 2.0 * self.bar_heights[i] - 1.0;
+            let h = 2.0 * bar_heights[i] - 1.0;
             let x0 = bar_gap_width * i as f32 + bar_width * i as f32 - 1.0;
             let x1 = bar_gap_width * i as f32 + bar_width * (i + 1) as f32 - 1.0;
             vertices[i * 8] = x0;
@@ -520,56 +502,64 @@ impl AppState {
             vertices[i * 8 + 6] = x1;
             vertices[i * 8 + 7] = -1.0;
         }
-        state.wgpu_queue.write_buffer(&state.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
 
-        // Render
-        let frame = match state.wgpu_surface.get_current_texture() {
-            Ok(frame) => frame,
-            Err(wgpu::SurfaceError::Lost) => {
-                state.wgpu_surface.configure(&state.wgpu_device, &state.wgpu_config);
-                state.pending_frame = false;
-                return;
+        // Renderizar en cada output configurado
+        for state in self.per_output.values_mut() {
+            if !state.configured {
+                continue;
             }
-            Err(e) => {
-                error!("Error acquiring surface texture: {:?}", e);
-                state.pending_frame = false;
-                return;
-            }
-        };
 
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = state.wgpu_device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-        {
-            let bg = state.background_color;
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Render Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: bg[0] as f64,
-                            g: bg[1] as f64,
-                            b: bg[2] as f64,
-                            a: bg[3] as f64,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-            });
-            render_pass.set_pipeline(&state.render_pipeline);
-            render_pass.set_bind_group(0, &state.bind_group, &[]);
-            render_pass.set_vertex_buffer(0, state.vertex_buffer.slice(..));
-            render_pass.set_index_buffer(state.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
-            render_pass.draw_indexed(0..(self.bar_count * 6) as u32, 0, 0..1);
+            // Actualizar buffer de vértices
+            state.wgpu_queue.write_buffer(&state.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
+
+            // Adquirir textura de la superficie
+            let frame = match state.wgpu_surface.get_current_texture() {
+                Ok(frame) => frame,
+                Err(wgpu::SurfaceError::Lost) => {
+                    state.wgpu_surface.configure(&state.wgpu_device, &state.wgpu_config);
+                    continue;
+                }
+                Err(e) => {
+                    error!("Error acquiring surface texture: {:?}", e);
+                    continue;
+                }
+            };
+
+            let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+            let mut encoder = state.wgpu_device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            {
+                let bg = state.background_color;
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("Render Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &view,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: bg[0] as f64,
+                                g: bg[1] as f64,
+                                b: bg[2] as f64,
+                                a: bg[3] as f64,
+                            }),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                });
+                render_pass.set_pipeline(&state.render_pipeline);
+                render_pass.set_bind_group(0, &state.bind_group, &[]);
+                render_pass.set_vertex_buffer(0, state.vertex_buffer.slice(..));
+                render_pass.set_index_buffer(state.index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+                render_pass.draw_indexed(0..(self.bar_count * 6) as u32, 0, 0..1);
+            }
+            state.wgpu_queue.submit(std::iter::once(encoder.finish()));
+            frame.present();
+
+            // Solicitar siguiente frame (mantiene sincronización con el compositor)
+            state.surface.frame(&self.qh, state.surface.clone());
         }
-        state.wgpu_queue.submit(std::iter::once(encoder.finish()));
-        frame.present();
-
-        state.pending_frame = false;
     }
 }
 
@@ -618,17 +608,8 @@ impl CompositorHandler for AppState {
     fn scale_factor_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_factor: i32) {}
     fn transform_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_transform: wl_output::Transform) {}
 
-    fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, surface: &wl_surface::WlSurface, _time: u32) {
-        let mut target_name = None;
-        for (name, state) in self.per_output.iter() {
-            if &state.surface == surface {
-                target_name = Some(name.clone());
-                break;
-            }
-        }
-        if let Some(name) = target_name {
-            self.render_output(&name);
-        }
+    fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {
+        // El renderizado ya se hace en el timer; aquí no necesitamos hacer nada.
     }
 
     fn surface_enter(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
@@ -669,6 +650,6 @@ impl LayerShellHandler for AppState {
                 break;
             }
         }
-        // No es necesario solicitar frame aquí; el timer lo hará periódicamente.
+        // No es necesario solicitar frame aquí; el timer se encarga.
     }
 }
