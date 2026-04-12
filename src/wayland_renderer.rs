@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::ProvidesRegistryState;
@@ -28,7 +28,7 @@ use raw_window_handle::{
 
 use std::collections::HashMap;
 use std::io::{BufReader, Read, Write};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;
@@ -644,13 +644,17 @@ impl CompositorHandler for AppState {
     fn scale_factor_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_factor: i32) {}
     fn transform_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_transform: wl_output::Transform) {}
     fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, surface: &wl_surface::WlSurface, _time: u32) {
-        // El compositor nos dice que podemos dibujar. Renderizamos el output correspondiente.
+        let mut target_name = None;
         for (name, state) in self.per_output.iter() {
             if &state.surface == surface {
-                self.render_output(name);
+                target_name = Some(name.clone());
                 break;
             }
         }
+        if let Some(name) = target_name {
+            self.render_output(&name);
+        }
+
     }
     fn surface_enter(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
     fn surface_leave(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
