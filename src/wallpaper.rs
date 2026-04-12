@@ -66,7 +66,7 @@ impl WallpaperAnalyzer {
     {
         thread::spawn(move || {
             let mut current_wallpaper: Option<WallpaperInfo> = None;
-            let check_interval = Duration::from_secs(2); // Revisar cada 2 segundos
+            let check_interval = Duration::from_secs(2);
             
             loop {
                 if let Some(new_wallpaper) = Self::get_current_wallpaper_info() {
@@ -79,7 +79,7 @@ impl WallpaperAnalyzer {
                     
                     if should_update {
                         log::info!("Wallpaper changed: {:?}", new_wallpaper.path);
-                        if let Some(colors) = Self::generate_gradient_colors_from_path(&new_wallpaper.path, 8) {
+                        if let Ok(colors) = Self::generate_gradient_colors_from_path(&new_wallpaper.path, 8) {
                             callback(colors);
                             current_wallpaper = Some(new_wallpaper);
                         } else {
@@ -246,14 +246,14 @@ impl WallpaperAnalyzer {
         Self::generate_gradient_colors_from_path(&wallpaper_path, num_colors)
     }
 
-    pub fn generate_gradient_colors_from_path(path: &PathBuf, num_colors: usize) -> Option<Vec<[f32; 4]>> {
+    pub fn generate_gradient_colors_from_path(path: &PathBuf, num_colors: usize) -> Result<Vec<[f32; 4]>> {
         log::info!("Analyzing wallpaper: {:?}", path);
 
         let img = match Self::load_image_from_path(path) {
             Ok(img) => img,
             Err(e) => {
                 log::warn!("Could not load wallpaper image: {}, using default colors", e);
-                return Some(Self::default_colors(num_colors));
+                return Ok(Self::default_colors(num_colors));
             }
         };
 
@@ -267,7 +267,7 @@ impl WallpaperAnalyzer {
             Ok(p) => p,
             Err(e) => {
                 log::warn!("Failed to extract color palette: {}, using default colors", e);
-                return Some(Self::default_colors(num_colors));
+                return Ok(Self::default_colors(num_colors));
             }
         };
 
@@ -303,6 +303,6 @@ impl WallpaperAnalyzer {
                 color[3]);
         }
 
-        Some(new_colors)
+        Ok(new_colors)
     }
 }
