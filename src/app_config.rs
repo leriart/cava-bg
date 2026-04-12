@@ -16,7 +16,8 @@ pub struct GeneralConfig {
     pub autosens: Option<bool>,
     pub sensitivity: Option<f32>,
     pub preferred_output: Option<String>,
-    pub dynamic_colors: Option<bool>, // Nueva opción: usar colores dinámicos del wallpaper
+    #[serde(default)] // si no existe, será false
+    pub dynamic_colors: bool,
 }
 
 #[derive(Serialize, Deserialize, Debug)]

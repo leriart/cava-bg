@@ -7,17 +7,12 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
-use std::time::{Duration, SystemTime};
+use std::sync::mpsc::Sender;
 use std::thread;
+use std::time::Duration;
 
 static PREVIOUS_COLORS: Lazy<Mutex<Vec<[f32; 4]>>> = Lazy::new(|| Mutex::new(Vec::new()));
 const COLOR_SMOOTHING_FACTOR: f32 = 0.7;
-
-#[derive(Clone)]
-pub struct WallpaperInfo {
-    pub path: PathBuf,
-    pub last_modified: SystemTime,
-}
 
 pub struct WallpaperAnalyzer;
 
@@ -48,56 +43,6 @@ impl WallpaperAnalyzer {
         }
 
         None
-    }
-
-    pub fn get_current_wallpaper_info() -> Option<WallpaperInfo> {
-        let path = Self::find_wallpaper()?;
-        let metadata = fs::metadata(&path).ok()?;
-        let last_modified = metadata.modified().ok()?;
-        Some(WallpaperInfo {
-            path,
-            last_modified,
-        })
-    }
-
-    pub fn start_wallpaper_monitor<F>(callback: F) -> thread::JoinHandle<()>
-    where
-        F: Fn(Vec<[f32; 4]>) + Send + 'static,
-    {
-        thread::spawn(move || {
-            let mut current_wallpaper: Option<WallpaperInfo> = None;
-            let check_interval = Duration::from_secs(2);
-            
-            loop {
-                if let Some(new_wallpaper) = Self::get_current_wallpaper_info() {
-                    let should_update = match &current_wallpaper {
-                        Some(old) => {
-                            old.path != new_wallpaper.path || old.last_modified != new_wallpaper.last_modified
-                        }
-                        None => true,
-                    };
-                    
-                    if should_update {
-                        log::info!("Wallpaper changed: {:?}", new_wallpaper.path);
-                        if let Ok(colors) = Self::generate_gradient_colors_from_path(&new_wallpaper.path, 8) {
-                            callback(colors);
-                            current_wallpaper = Some(new_wallpaper);
-                        } else {
-                            log::warn!("Failed to generate colors from new wallpaper, keeping old colors");
-                        }
-                    }
-                } else {
-                    if current_wallpaper.is_some() {
-                        log::warn!("Wallpaper disappeared, using default colors");
-                        let default_colors = Self::default_colors(8);
-                        callback(default_colors);
-                        current_wallpaper = None;
-                    }
-                }
-                
-                thread::sleep(check_interval);
-            }
-        })
     }
 
     fn from_ambxst() -> Option<PathBuf> {
@@ -243,13 +188,16 @@ impl WallpaperAnalyzer {
                 return Ok(Self::default_colors(num_colors));
             }
         };
-        Self::generate_gradient_colors_from_path(&wallpaper_path, num_colors)
-    }
 
-    pub fn generate_gradient_colors_from_path(path: &PathBuf, num_colors: usize) -> Result<Vec<[f32; 4]>> {
-        log::info!("Analyzing wallpaper: {:?}", path);
+        log::info!("Analyzing wallpaper: {:?}", wallpaper_path);
 
-        let img = Self::load_image_from_path(path)?;
+        let img = match Self::load_image_from_path(&wallpaper_path) {
+            Ok(img) => img,
+            Err(e) => {
+                log::warn!("Could not load wallpaper image: {}, using default colors", e);
+                return Ok(Self::default_colors(num_colors));
+            }
+        };
 
         let (width, height) = img.dimensions();
         log::debug!("Wallpaper dimensions: {}x{}", width, height);
@@ -293,5 +241,50 @@ impl WallpaperAnalyzer {
         }
 
         Ok(new_colors)
+    }
+
+    /// Inicia un hilo que monitorea cambios en el wallpaper y envía los nuevos colores
+    /// a través del canal `tx` cada vez que se detecta un cambio.
+    pub fn start_wallpaper_monitor(tx: Sender<Vec<[f32; 4]>>) {
+        thread::spawn(move || {
+            let mut last_path: Option<PathBuf> = None;
+            let mut last_modified: Option<std::time::SystemTime> = None;
+
+            loop {
+                if let Some(path) = Self::find_wallpaper() {
+                    let modified = fs::metadata(&path)
+                        .and_then(|m| m.modified())
+                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                    let changed = match (&last_path, &last_modified) {
+                        (Some(p), Some(t)) => p != &path || t != &modified,
+                        _ => true,
+                    };
+                    if changed {
+                        log::info!("Wallpaper changed to: {:?}", path);
+                        // Usamos 8 colores por defecto (se puede parametrizar después)
+                        if let Ok(colors) = Self::generate_gradient_colors(8) {
+                            if let Err(e) = tx.send(colors) {
+                                log::error!("Failed to send new colors: {}", e);
+                                break;
+                            }
+                        }
+                        last_path = Some(path);
+                        last_modified = Some(modified);
+                    }
+                } else {
+                    if last_path.is_some() {
+                        log::warn!("Wallpaper disappeared, using default colors");
+                        let default_colors = Self::default_colors(8);
+                        if let Err(e) = tx.send(default_colors) {
+                            log::error!("Failed to send default colors: {}", e);
+                            break;
+                        }
+                        last_path = None;
+                        last_modified = None;
+                    }
+                }
+                thread::sleep(Duration::from_secs(2));
+            }
+        });
     }
 }

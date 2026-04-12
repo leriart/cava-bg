@@ -32,7 +32,7 @@ use std::process::{Command, Stdio};
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Receiver};
 use std::time::Duration;
 
 use crate::app_config::{array_from_config_color, Config, CavaConfig, CavaGeneralConfig, CavaSmoothingConfig};
@@ -163,7 +163,7 @@ impl WaylandRenderer {
     }
 
     pub fn run(self) -> Result<()> {
-        info!("Starting cava-bg with wgpu backend");
+        info!("Starting wallpaper-cava with wgpu backend");
 
         // Spawn cava
         let cava_config_str = Self::build_cava_config(&self.config);
@@ -183,11 +183,12 @@ impl WaylandRenderer {
         }
 
         let cava_stdout = cmd.stdout.take().context("Failed to get cava stdout")?;
-        let cava_reader = BufReader::new(cava_stdout);
+        let mut cava_reader = BufReader::new(cava_stdout);
         let bar_count = self.config.bars.amount as usize;
 
-        // Obtener colores del gradiente: dinámicos o de la configuración
-        let use_dynamic = self.config.general.dynamic_colors.unwrap_or(true);
+        // ---- Colores dinámicos opcionales ----
+        let (color_tx, color_rx) = channel();
+        let use_dynamic = self.config.general.dynamic_colors;
         let initial_colors: Vec<[f32; 4]> = if use_dynamic {
             let num_colors = if !self.config.colors.is_empty() {
                 self.config.colors.len()
@@ -197,6 +198,8 @@ impl WaylandRenderer {
             match WallpaperAnalyzer::generate_gradient_colors(num_colors) {
                 Ok(colors) => {
                     info!("Using dynamic colors from wallpaper");
+                    // Iniciar monitor de cambios
+                    WallpaperAnalyzer::start_wallpaper_monitor(color_tx);
                     colors
                 }
                 Err(e) => {
@@ -212,19 +215,7 @@ impl WaylandRenderer {
                 .map(|c| array_from_config_color(c.clone()))
                 .collect()
         };
-
         let background_color = array_from_config_color(self.config.general.background_color.clone());
-
-        // Canal para recibir actualizaciones de colores del wallpaper (solo si es dinámico)
-        let (color_tx, color_rx) = channel();
-        if use_dynamic {
-            let tx = color_tx.clone();
-            std::thread::spawn(move || {
-                WallpaperAnalyzer::start_wallpaper_monitor(move |new_colors| {
-                    let _ = tx.send(new_colors);
-                });
-            });
-        }
 
         // Wayland connection
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
@@ -273,7 +264,7 @@ impl WaylandRenderer {
             if !state.running.load(Ordering::SeqCst) {
                 std::process::exit(0);
             }
-            // Verificar si hay nuevos colores del wallpaper
+            // Comprobar nuevos colores del wallpaper
             if let Ok(new_colors) = state.color_receiver.try_recv() {
                 info!("Updating gradient colors from wallpaper change");
                 state.colors = new_colors;
@@ -333,7 +324,7 @@ impl AppState {
             &self.qh,
             surface.clone(),
             Layer::Bottom,
-            Some("cava-bg"),
+            Some("wallpaper-cava"),
             Some(output),
         );
 
