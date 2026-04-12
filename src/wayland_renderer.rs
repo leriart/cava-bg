@@ -32,7 +32,6 @@ use std::process::{Command, Stdio};
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
 
 use crate::app_config::{array_from_config_color, Config, CavaConfig, CavaGeneralConfig, CavaSmoothingConfig};
@@ -68,6 +67,7 @@ struct Uniforms {
 
 @fragment
 fn fs_main(@builtin(position) coord: vec4<f32>) -> @location(0) vec4<f32> {
+    // Invertir Y para que el degradado vaya de abajo hacia arriba como en OpenGL
     let y = uniforms.window_size.y - coord.y;
     let height = uniforms.window_size.y;
     if (uniforms.colors_count == 1) {
@@ -185,12 +185,9 @@ impl WaylandRenderer {
         let cava_reader = BufReader::new(cava_stdout);
         let bar_count = self.config.bars.amount as usize;
 
-        // Canal para recibir actualizaciones de colores del wallpaper
-        let (color_tx, color_rx): (Sender<Vec<[f32; 4]>>, Receiver<Vec<[f32; 4]>>) = channel();
-
-        // Obtener colores iniciales
+        // Obtener colores del gradiente: dinámicos o de la configuración
         let use_dynamic = self.config.general.dynamic_colors.unwrap_or(true);
-        let initial_colors: Vec<[f32; 4]> = if use_dynamic {
+        let gradient_colors: Vec<[f32; 4]> = if use_dynamic {
             let num_colors = if !self.config.colors.is_empty() {
                 self.config.colors.len()
             } else {
@@ -214,14 +211,6 @@ impl WaylandRenderer {
                 .map(|c| array_from_config_color(c.clone()))
                 .collect()
         };
-
-        // Iniciar monitor de wallpaper si está activado
-        if use_dynamic {
-            let tx = color_tx.clone();
-            WallpaperAnalyzer::start_wallpaper_monitor(move |new_colors| {
-                let _ = tx.send(new_colors);
-            });
-        }
 
         let background_color = array_from_config_color(self.config.general.background_color.clone());
 
@@ -252,12 +241,11 @@ impl WaylandRenderer {
             bar_gap: self.config.bars.gap,
             preferred_output_name: self.config.general.preferred_output.clone(),
             cava_reader,
-            colors: initial_colors,
+            colors: gradient_colors,
             background_color,
             conn: conn.clone(),
             qh: qh.clone(),
             running: self.running,
-            color_receiver: color_rx,
         };
 
         // Enumerate existing outputs
@@ -272,20 +260,6 @@ impl WaylandRenderer {
             if !state.running.load(Ordering::SeqCst) {
                 std::process::exit(0);
             }
-            
-            // Verificar si hay nuevos colores del wallpaper
-            if let Ok(new_colors) = state.color_receiver.try_recv() {
-                info!("Updating gradient colors from wallpaper change");
-                state.colors = new_colors;
-                // Actualizar uniform buffers en todos los outputs
-                for output_state in state.per_output.values_mut() {
-                    if output_state.configured {
-                        let uniforms = Uniforms::new(&state.colors, output_state.width as f32, output_state.height as f32);
-                        output_state.wgpu_queue.write_buffer(&output_state.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
-                    }
-                }
-            }
-            
             state.draw();
         })?;
 
@@ -308,7 +282,6 @@ struct AppState {
     conn: Connection,
     qh: QueueHandle<Self>,
     running: Arc<AtomicBool>,
-    color_receiver: Receiver<Vec<[f32; 4]>>,
 }
 
 impl AppState {
@@ -651,7 +624,9 @@ impl CompositorHandler for AppState {
     fn scale_factor_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_factor: i32) {}
     fn transform_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_transform: wl_output::Transform) {}
 
-    fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {}
+    fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {
+        // El renderizado ya se hace en el timer
+    }
 
     fn surface_enter(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
     fn surface_leave(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
