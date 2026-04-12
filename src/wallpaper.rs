@@ -249,13 +249,7 @@ impl WallpaperAnalyzer {
     pub fn generate_gradient_colors_from_path(path: &PathBuf, num_colors: usize) -> Result<Vec<[f32; 4]>> {
         log::info!("Analyzing wallpaper: {:?}", path);
 
-        let img = match Self::load_image_from_path(path) {
-            Ok(img) => img,
-            Err(e) => {
-                log::warn!("Could not load wallpaper image: {}, using default colors", e);
-                return Ok(Self::default_colors(num_colors));
-            }
-        };
+        let img = Self::load_image_from_path(path)?;
 
         let (width, height) = img.dimensions();
         log::debug!("Wallpaper dimensions: {}x{}", width, height);
@@ -263,13 +257,8 @@ impl WallpaperAnalyzer {
         let rgb_img = img.to_rgb8();
         let pixels = rgb_img.as_raw();
 
-        let palette = match get_palette(pixels, ColorFormat::Rgb, 10, num_colors as u8) {
-            Ok(p) => p,
-            Err(e) => {
-                log::warn!("Failed to extract color palette: {}, using default colors", e);
-                return Ok(Self::default_colors(num_colors));
-            }
-        };
+        let palette = get_palette(pixels, ColorFormat::Rgb, 10, num_colors as u8)
+            .context("Failed to extract color palette")?;
 
         let mut new_colors: Vec<[f32; 4]> = palette
             .iter()

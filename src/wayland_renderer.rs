@@ -32,6 +32,7 @@ use std::process::{Command, Stdio};
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
 
 use crate::app_config::{array_from_config_color, Config, CavaConfig, CavaGeneralConfig, CavaSmoothingConfig};
@@ -187,7 +188,7 @@ impl WaylandRenderer {
 
         // Obtener colores del gradiente: dinámicos o de la configuración
         let use_dynamic = self.config.general.dynamic_colors.unwrap_or(true);
-        let gradient_colors: Vec<[f32; 4]> = if use_dynamic {
+        let initial_colors: Vec<[f32; 4]> = if use_dynamic {
             let num_colors = if !self.config.colors.is_empty() {
                 self.config.colors.len()
             } else {
@@ -213,6 +214,17 @@ impl WaylandRenderer {
         };
 
         let background_color = array_from_config_color(self.config.general.background_color.clone());
+
+        // Canal para recibir actualizaciones de colores del wallpaper (solo si es dinámico)
+        let (color_tx, color_rx) = channel();
+        if use_dynamic {
+            let tx = color_tx.clone();
+            std::thread::spawn(move || {
+                WallpaperAnalyzer::start_wallpaper_monitor(move |new_colors| {
+                    let _ = tx.send(new_colors);
+                });
+            });
+        }
 
         // Wayland connection
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
@@ -241,11 +253,12 @@ impl WaylandRenderer {
             bar_gap: self.config.bars.gap,
             preferred_output_name: self.config.general.preferred_output.clone(),
             cava_reader,
-            colors: gradient_colors,
+            colors: initial_colors,
             background_color,
             conn: conn.clone(),
             qh: qh.clone(),
             running: self.running,
+            color_receiver: color_rx,
         };
 
         // Enumerate existing outputs
@@ -259,6 +272,18 @@ impl WaylandRenderer {
         event_loop.run(Some(frame_duration), &mut app_state, |state| {
             if !state.running.load(Ordering::SeqCst) {
                 std::process::exit(0);
+            }
+            // Verificar si hay nuevos colores del wallpaper
+            if let Ok(new_colors) = state.color_receiver.try_recv() {
+                info!("Updating gradient colors from wallpaper change");
+                state.colors = new_colors;
+                // Actualizar uniform buffers en todos los outputs
+                for output_state in state.per_output.values_mut() {
+                    if output_state.configured {
+                        let uniforms = Uniforms::new(&state.colors, output_state.width as f32, output_state.height as f32);
+                        output_state.wgpu_queue.write_buffer(&output_state.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
+                    }
+                }
             }
             state.draw();
         })?;
@@ -282,6 +307,7 @@ struct AppState {
     conn: Connection,
     qh: QueueHandle<Self>,
     running: Arc<AtomicBool>,
+    color_receiver: Receiver<Vec<[f32; 4]>>,
 }
 
 impl AppState {
