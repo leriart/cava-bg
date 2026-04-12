@@ -7,9 +7,17 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
+use std::time::{Duration, SystemTime};
+use std::thread;
 
 static PREVIOUS_COLORS: Lazy<Mutex<Vec<[f32; 4]>>> = Lazy::new(|| Mutex::new(Vec::new()));
 const COLOR_SMOOTHING_FACTOR: f32 = 0.7;
+
+#[derive(Clone)]
+pub struct WallpaperInfo {
+    pub path: PathBuf,
+    pub last_modified: SystemTime,
+}
 
 pub struct WallpaperAnalyzer;
 
@@ -40,6 +48,56 @@ impl WallpaperAnalyzer {
         }
 
         None
+    }
+
+    pub fn get_current_wallpaper_info() -> Option<WallpaperInfo> {
+        let path = Self::find_wallpaper()?;
+        let metadata = fs::metadata(&path).ok()?;
+        let last_modified = metadata.modified().ok()?;
+        Some(WallpaperInfo {
+            path,
+            last_modified,
+        })
+    }
+
+    pub fn start_wallpaper_monitor<F>(callback: F) -> thread::JoinHandle<()>
+    where
+        F: Fn(Vec<[f32; 4]>) + Send + 'static,
+    {
+        thread::spawn(move || {
+            let mut current_wallpaper: Option<WallpaperInfo> = None;
+            let check_interval = Duration::from_secs(2); // Revisar cada 2 segundos
+            
+            loop {
+                if let Some(new_wallpaper) = Self::get_current_wallpaper_info() {
+                    let should_update = match &current_wallpaper {
+                        Some(old) => {
+                            old.path != new_wallpaper.path || old.last_modified != new_wallpaper.last_modified
+                        }
+                        None => true,
+                    };
+                    
+                    if should_update {
+                        log::info!("Wallpaper changed: {:?}", new_wallpaper.path);
+                        if let Some(colors) = Self::generate_gradient_colors_from_path(&new_wallpaper.path, 8) {
+                            callback(colors);
+                            current_wallpaper = Some(new_wallpaper);
+                        } else {
+                            log::warn!("Failed to generate colors from new wallpaper, keeping old colors");
+                        }
+                    }
+                } else {
+                    if current_wallpaper.is_some() {
+                        log::warn!("Wallpaper disappeared, using default colors");
+                        let default_colors = Self::default_colors(8);
+                        callback(default_colors);
+                        current_wallpaper = None;
+                    }
+                }
+                
+                thread::sleep(check_interval);
+            }
+        })
     }
 
     fn from_ambxst() -> Option<PathBuf> {
@@ -185,14 +243,17 @@ impl WallpaperAnalyzer {
                 return Ok(Self::default_colors(num_colors));
             }
         };
+        Self::generate_gradient_colors_from_path(&wallpaper_path, num_colors)
+    }
 
-        log::info!("Analyzing wallpaper: {:?}", wallpaper_path);
+    pub fn generate_gradient_colors_from_path(path: &PathBuf, num_colors: usize) -> Option<Vec<[f32; 4]>> {
+        log::info!("Analyzing wallpaper: {:?}", path);
 
-        let img = match Self::load_image_from_path(&wallpaper_path) {
+        let img = match Self::load_image_from_path(path) {
             Ok(img) => img,
             Err(e) => {
                 log::warn!("Could not load wallpaper image: {}, using default colors", e);
-                return Ok(Self::default_colors(num_colors));
+                return Some(Self::default_colors(num_colors));
             }
         };
 
@@ -202,8 +263,13 @@ impl WallpaperAnalyzer {
         let rgb_img = img.to_rgb8();
         let pixels = rgb_img.as_raw();
 
-        let palette = get_palette(pixels, ColorFormat::Rgb, 10, num_colors as u8)
-            .context("Failed to extract color palette")?;
+        let palette = match get_palette(pixels, ColorFormat::Rgb, 10, num_colors as u8) {
+            Ok(p) => p,
+            Err(e) => {
+                log::warn!("Failed to extract color palette: {}, using default colors", e);
+                return Some(Self::default_colors(num_colors));
+            }
+        };
 
         let mut new_colors: Vec<[f32; 4]> = palette
             .iter()
@@ -237,6 +303,6 @@ impl WallpaperAnalyzer {
                 color[3]);
         }
 
-        Ok(new_colors)
+        Some(new_colors)
     }
 }
