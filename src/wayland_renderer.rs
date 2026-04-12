@@ -41,48 +41,54 @@ use crate::wallpaper::WallpaperAnalyzer;
 const SHADER_WGSL: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
+    @location(1) uv: vec2<f32>,
 };
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
 };
 
 @vertex
 fn vs_main(in: VertexInput) -> VertexOutput {
     var out: VertexOutput;
     out.position = vec4<f32>(in.position, 0.0, 1.0);
+    out.uv = in.uv;
     return out;
 }
 
 struct Uniforms {
     gradient_colors: array<vec4<f32>, 32>,
-    colors_count: i32,
-    _padding1: i32,
-    _padding2: i32,
-    _padding3: i32,
+    params: vec4<f32>,      // x=colors_count, y=bar_alpha, z=unused, w=unused
     window_size: vec2<f32>,
-    _padding4: vec2<f32>,
+    _pad: vec2<f32>,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
 
 @fragment
-fn fs_main(@builtin(position) coord: vec4<f32>) -> @location(0) vec4<f32> {
-    // Invertir Y para que el degradado vaya de abajo hacia arriba como en OpenGL
+fn fs_main(@builtin(position) coord: vec4<f32>, @location(0) uv: vec2<f32>) -> @location(0) vec4<f32> {
     let y = uniforms.window_size.y - coord.y;
     let height = uniforms.window_size.y;
-    if (uniforms.colors_count == 1) {
-        return uniforms.gradient_colors[0];
+    let colors_count = i32(uniforms.params.x);
+    let bar_alpha = uniforms.params.y;
+    
+    var color: vec4<f32>;
+    if (colors_count == 1) {
+        color = uniforms.gradient_colors[0];
     } else {
-        let findex = (y * f32(uniforms.colors_count - 1)) / height;
+        let findex = (y * f32(colors_count - 1)) / height;
         let index = i32(findex);
         let step = findex - f32(index);
         var idx = index;
-        if (idx == uniforms.colors_count - 1) {
+        if (idx == colors_count - 1) {
             idx = idx - 1;
         }
-        return mix(uniforms.gradient_colors[idx], uniforms.gradient_colors[idx + 1], step);
+        color = mix(uniforms.gradient_colors[idx], uniforms.gradient_colors[idx + 1], step);
     }
+    
+    let alpha = color.a * bar_alpha;
+    return vec4<f32>(color.rgb, alpha);
 }
 "#;
 
@@ -90,24 +96,22 @@ fn fs_main(@builtin(position) coord: vec4<f32>) -> @location(0) vec4<f32> {
 #[derive(Debug, Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
 struct Uniforms {
     gradient_colors: [[f32; 4]; 32],
-    colors_count: i32,
-    _padding: [i32; 3],
+    params: [f32; 4],
     window_size: [f32; 2],
-    _pad2: [f32; 2],
+    _pad: [f32; 2],
 }
 
 impl Uniforms {
-    fn new(colors: &[[f32; 4]], width: f32, height: f32) -> Self {
+    fn new(colors: &[[f32; 4]], width: f32, height: f32, bar_alpha: f32) -> Self {
         let mut grad = [[0.0; 4]; 32];
         for (i, c) in colors.iter().enumerate().take(32) {
             grad[i] = *c;
         }
         Self {
             gradient_colors: grad,
-            colors_count: colors.len() as i32,
-            _padding: [0, 0, 0],
+            params: [colors.len() as f32, bar_alpha, 0.0, 0.0],
             window_size: [width, height],
-            _pad2: [0.0, 0.0],
+            _pad: [0.0, 0.0],
         }
     }
 }
@@ -163,9 +167,8 @@ impl WaylandRenderer {
     }
 
     pub fn run(self) -> Result<()> {
-        info!("Starting wallpaper-cava with wgpu backend");
+        info!("Starting cava-bg with wgpu backend (no rounding)");
 
-        // Spawn cava
         let cava_config_str = Self::build_cava_config(&self.config);
         debug!("cava config:\n{}", cava_config_str);
 
@@ -183,10 +186,10 @@ impl WaylandRenderer {
         }
 
         let cava_stdout = cmd.stdout.take().context("Failed to get cava stdout")?;
-        let mut cava_reader = BufReader::new(cava_stdout);
+        let cava_reader = BufReader::new(cava_stdout);
         let bar_count = self.config.bars.amount as usize;
+        let bar_alpha = self.config.bars.bar_alpha;
 
-        // ---- Colores dinámicos opcionales ----
         let (color_tx, color_rx) = channel();
         let use_dynamic = self.config.general.dynamic_colors;
         let initial_colors: Vec<[f32; 4]> = if use_dynamic {
@@ -198,7 +201,6 @@ impl WaylandRenderer {
             match WallpaperAnalyzer::generate_gradient_colors(num_colors) {
                 Ok(colors) => {
                     info!("Using dynamic colors from wallpaper");
-                    // Iniciar monitor de cambios
                     WallpaperAnalyzer::start_wallpaper_monitor(color_tx, num_colors);
                     colors
                 }
@@ -217,7 +219,6 @@ impl WaylandRenderer {
         };
         let background_color = array_from_config_color(self.config.general.background_color.clone());
 
-        // Wayland connection
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
         let (globals, event_queue) = registry_queue_init(&conn).context("Failed to init registry")?;
         let qh = event_queue.handle();
@@ -242,6 +243,7 @@ impl WaylandRenderer {
             per_output: HashMap::new(),
             bar_count,
             bar_gap: self.config.bars.gap,
+            bar_alpha,
             preferred_output_name: self.config.general.preferred_output.clone(),
             cava_reader,
             colors: initial_colors,
@@ -252,26 +254,22 @@ impl WaylandRenderer {
             color_receiver: color_rx,
         };
 
-        // Enumerate existing outputs
         for output in app_state.output_state.outputs() {
             if let Err(e) = app_state.ensure_output(&output) {
                 error!("Failed to create initial output: {}", e);
             }
         }
 
-        // Bucle principal con timer
         event_loop.run(Some(frame_duration), &mut app_state, |state| {
             if !state.running.load(Ordering::SeqCst) {
                 std::process::exit(0);
             }
-            // Comprobar nuevos colores del wallpaper
             if let Ok(new_colors) = state.color_receiver.try_recv() {
                 info!("Updating gradient colors from wallpaper change");
                 state.colors = new_colors;
-                // Actualizar uniform buffers en todos los outputs
                 for output_state in state.per_output.values_mut() {
                     if output_state.configured {
-                        let uniforms = Uniforms::new(&state.colors, output_state.width as f32, output_state.height as f32);
+                        let uniforms = Uniforms::new(&state.colors, output_state.width as f32, output_state.height as f32, state.bar_alpha);
                         output_state.wgpu_queue.write_buffer(&output_state.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
                     }
                 }
@@ -291,6 +289,7 @@ struct AppState {
     per_output: HashMap<String, PerOutputState>,
     bar_count: usize,
     bar_gap: f32,
+    bar_alpha: f32,
     preferred_output_name: Option<String>,
     cava_reader: BufReader<std::process::ChildStdout>,
     colors: Vec<[f32; 4]>,
@@ -324,7 +323,7 @@ impl AppState {
             &self.qh,
             surface.clone(),
             Layer::Bottom,
-            Some("wallpaper-cava"),
+            Some("cava-bg"),
             Some(output),
         );
 
@@ -337,7 +336,6 @@ impl AppState {
         layer_surface.set_exclusive_zone(-1);
         surface.commit();
 
-        // Crear superficie WGPU
         let wl_display = self.conn.display().id().as_ptr();
         let wl_surface_ptr = surface.id().as_ptr();
 
@@ -393,25 +391,25 @@ impl AppState {
             source: wgpu::ShaderSource::Wgsl(SHADER_WGSL.into()),
         });
 
-        let mut indices = Vec::with_capacity(self.bar_count * 6);
+        let mut all_indices = Vec::with_capacity(self.bar_count * 6);
         for i in 0..self.bar_count {
             let base = (i * 4) as u16;
-            indices.extend_from_slice(&[base, base + 1, base + 2, base + 1, base + 2, base + 3]);
+            all_indices.extend_from_slice(&[base, base+1, base+2, base+1, base+3, base+2]);
         }
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Index Buffer"),
-            contents: bytemuck::cast_slice(&indices),
+            contents: bytemuck::cast_slice(&all_indices),
             usage: wgpu::BufferUsages::INDEX,
         });
 
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Vertex Buffer"),
-            size: (self.bar_count * 8 * std::mem::size_of::<f32>()) as u64,
+            size: (self.bar_count * 4 * 4 * std::mem::size_of::<f32>()) as u64,
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
 
-        let uniforms = Uniforms::new(&self.colors, width as f32, height as f32);
+        let uniforms = Uniforms::new(&self.colors, width as f32, height as f32, self.bar_alpha);
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Uniform Buffer"),
             contents: bytemuck::cast_slice(&[uniforms]),
@@ -454,13 +452,20 @@ impl AppState {
                 module: &shader,
                 entry_point: "vs_main",
                 buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: (2 * std::mem::size_of::<f32>()) as u64,
+                    array_stride: (4 * std::mem::size_of::<f32>()) as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &[wgpu::VertexAttribute {
-                        format: wgpu::VertexFormat::Float32x2,
-                        offset: 0,
-                        shader_location: 0,
-                    }],
+                    attributes: &[
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: (2 * std::mem::size_of::<f32>()) as u64,
+                            shader_location: 1,
+                        },
+                    ],
                 }],
             },
             fragment: Some(wgpu::FragmentState {
@@ -525,19 +530,16 @@ impl AppState {
 
         let bar_width = 2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
         let bar_gap_width = bar_width * self.bar_gap;
-        let mut vertices = vec![0.0f32; self.bar_count * 8];
+
+        let mut vertices = Vec::with_capacity(self.bar_count * 16);
         for i in 0..self.bar_count {
             let h = 2.0 * bar_heights[i] - 1.0;
             let x0 = bar_gap_width * i as f32 + bar_width * i as f32 - 1.0;
             let x1 = bar_gap_width * i as f32 + bar_width * (i + 1) as f32 - 1.0;
-            vertices[i * 8] = x0;
-            vertices[i * 8 + 1] = h;
-            vertices[i * 8 + 2] = x1;
-            vertices[i * 8 + 3] = h;
-            vertices[i * 8 + 4] = x0;
-            vertices[i * 8 + 5] = -1.0;
-            vertices[i * 8 + 6] = x1;
-            vertices[i * 8 + 7] = -1.0;
+            vertices.extend_from_slice(&[x0, -1.0, 0.0, 0.0]);
+            vertices.extend_from_slice(&[x0, h,     0.0, 1.0]);
+            vertices.extend_from_slice(&[x1, -1.0, 1.0, 0.0]);
+            vertices.extend_from_slice(&[x1, h,     1.0, 1.0]);
         }
 
         for state in self.per_output.values_mut() {
@@ -597,7 +599,6 @@ impl AppState {
 }
 
 // --- Wayland Handlers ---
-
 impl OutputHandler for AppState {
     fn output_state(&mut self) -> &mut OutputState {
         &mut self.output_state
@@ -673,7 +674,7 @@ impl LayerShellHandler for AppState {
                 state.wgpu_config.height = height;
                 state.wgpu_surface.configure(&state.wgpu_device, &state.wgpu_config);
 
-                let uniforms = Uniforms::new(&self.colors, width as f32, height as f32);
+                let uniforms = Uniforms::new(&self.colors, width as f32, height as f32, self.bar_alpha);
                 state.wgpu_queue.write_buffer(&state.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
 
                 state.configured = true;

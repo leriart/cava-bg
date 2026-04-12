@@ -1,23 +1,80 @@
+# =============================================================================
+# cava-bg configuration file
+# =============================================================================
+#
+# This file controls the appearance and behavior of the cava-bg audio visualizer.
+# After editing, restart cava-bg for changes to take effect.
+#
+# For more information, visit: https://github.com/leriart/cava-bg
+#
+
+# -----------------------------------------------------------------------------
+# General settings
+# -----------------------------------------------------------------------------
 [general]
+# Framerate of the visualization (frames per second). Higher = smoother but more CPU usage.
+# Default: 60
 framerate = 60
+
+# Automatically extract colors from your current wallpaper.
+# Set to false to use manually defined colors in the [colors] section.
 dynamic_colors = true
 
+# Corner radius of the entire layer window (in pixels). 0 = square corners.
+# Works only if the background is not fully transparent. Useful for rounded overlays.
+corner_radius = 0.0
+
+# Background color of the layer. Use alpha = 0.0 for complete transparency.
 [general.background_color]
 hex = "#000000"
 alpha = 0.0
 
+# Uncomment to let cava auto-adjust sensitivity (recommended for most users)
+# autosens = true
+# Uncomment to set a fixed sensitivity (0-200). Disables autosens.
+# sensitivity = 100
+# Uncomment to show only on a specific monitor (get name via `hyprctl monitors` or `wlr-randr`)
+# preferred_output = "DP-1"
+
+# -----------------------------------------------------------------------------
+# Bars settings
+# -----------------------------------------------------------------------------
 [bars]
+# Number of bars to display. More bars = finer resolution but more GPU load.
 amount = 76
-gap = 0.10000000149011612
 
+# Gap between bars as a fraction of bar width. 0.1 = gap is 10% of bar width.
+gap = 0.1
+
+# Opacity of the bars (0.0 = fully transparent, 1.0 = fully opaque).
+bar_alpha = 0.7
+
+# Roundness of the top edge of each bar (0.0 = square, 0.5 = fully rounded/semicircle).
+# Works well between 0.2 and 0.4.
+bar_roundness = 0.3
+
+# -----------------------------------------------------------------------------
+# Colors (only used when dynamic_colors = false)
+# -----------------------------------------------------------------------------
 [colors]
-gradient_color_4 = "#89b4fa"
-gradient_color_2 = "#89dceb"
-gradient_color_8 = "#f38ba8"
-gradient_color_7 = "#eba0ac"
-gradient_color_6 = "#f5c2e7"
-gradient_color_5 = "#cba6f7"
-gradient_color_1 = "#94e2d5"
-gradient_color_3 = "#74c7ec"
+# Each entry defines a color in the gradient (from bottom to top).
+# You can add or remove entries; the number of colors determines gradient steps.
+gradient_color_1 = "#94e2d5"   # Teal
+gradient_color_2 = "#89dceb"   # Sky
+gradient_color_3 = "#74c7ec"   # Sapphire
+gradient_color_4 = "#89b4fa"   # Blue
+gradient_color_5 = "#cba6f7"   # Mauve
+gradient_color_6 = "#f5c2e7"   # Pink
+gradient_color_7 = "#eba0ac"   # Red
+gradient_color_8 = "#f38ba8"   # Maroon
 
+# -----------------------------------------------------------------------------
+# Smoothing (passed directly to cava)
+# -----------------------------------------------------------------------------
 [smoothing]
+# Uncomment to enable Monstercat smoothing (0 = off, 0.5 = medium, 1 = very smooth)
+# monstercat = 0.5
+# Uncomment to enable waves (requires cava compiled from GitHub)
+# waves = 0
+# Uncomment to set noise reduction (0 = fast/noisy, 1 = slow/smooth)
+# noise_reduction = 0.77

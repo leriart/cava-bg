@@ -18,13 +18,21 @@ pub struct GeneralConfig {
     pub preferred_output: Option<String>,
     #[serde(default)]
     pub dynamic_colors: bool,
+    #[serde(default = "default_corner_radius")]
+    pub corner_radius: f32,
 }
+
+fn default_corner_radius() -> f32 { 0.0 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct BarConfig {
     pub amount: u32,
     pub gap: f32,
+    #[serde(default = "default_bar_alpha")]
+    pub bar_alpha: f32,
 }
+
+fn default_bar_alpha() -> f32 { 1.0 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SmoothingConfig {
