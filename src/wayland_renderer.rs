@@ -68,7 +68,7 @@ struct Uniforms {
 
 @fragment
 fn fs_main(@builtin(position) coord: vec4<f32>) -> @location(0) vec4<f32> {
-    // Invertir Y para que coincida con gl_FragCoord.y (origen abajo)
+    // Invertir Y: en WGSL (0,0) es arriba-izquierda, en OpenGL (0,0) es abajo-izquierda
     let y = uniforms.window_size.y - coord.y;
     let height = uniforms.window_size.y;
     if (uniforms.colors_count == 1) {
@@ -149,6 +149,7 @@ impl WaylandRenderer {
         }
     }
 
+    /// Construye la configuración de cava en formato INI tal como lo hacía el main.rs original.
     fn build_cava_config(config: &Config) -> String {
         let mut ini = String::new();
         ini.push_str("[general]\n");
@@ -178,9 +179,10 @@ impl WaylandRenderer {
     }
 
     pub fn run(self) -> Result<()> {
-        info!("Iniciando renderizador Wayland con WGPU (calco wallpaper-cava)");
+        info!("Iniciando renderizador Wayland con WGPU (calco de wallpaper-cava)");
         std::env::set_var("EGL_PLATFORM", "wayland");
 
+        // 1. Lanzar cava con la configuración generada
         let cava_config_str = Self::build_cava_config(&self.config);
         debug!("Configuración de cava:\n{}", cava_config_str);
 
@@ -204,6 +206,7 @@ impl WaylandRenderer {
         let bar_count = self.config.bars.amount as usize;
         info!("cava backend iniciado, leyendo {} barras", bar_count);
 
+        // 2. Conexión Wayland
         let conn = Connection::connect_to_env().context("Failed to connect to Wayland")?;
         let (globals, event_queue) = registry_queue_init(&conn).context("Failed to init registry")?;
         let qh = event_queue.handle();
@@ -248,10 +251,11 @@ impl WaylandRenderer {
             qh: qh.clone(),
         };
 
-        // Event loop con timeout periódico. En cada tick se ejecuta state.draw()
+        // 3. Ejecutar el event loop con timeout periódico.
+        // En cada tick SOLO solicitamos un frame callback, sin renderizar.
         event_loop
             .run(Some(frame_duration), &mut app_state, |state| {
-                state.draw();
+                state.request_frames();
             })
             .context("Event loop failed")?;
 
@@ -296,6 +300,7 @@ impl AppState {
         info!("Creando superficie para output {}", name);
 
         let surface = self.compositor.create_surface(&self.qh);
+        // Usar Layer::Bottom para estar por encima de los fondos de pantalla background
         let layer_surface = self.layer_shell.create_layer_surface(
             &self.qh,
             surface.clone(),
@@ -479,17 +484,30 @@ impl AppState {
         Ok(())
     }
 
+    /// Solicita un frame callback para todos los outputs configurados.
+    /// Este método se llama periódicamente desde el timer del event loop.
+    fn request_frames(&mut self) {
+        if !self.running.load(Ordering::SeqCst) {
+            info!("Apagando graceful...");
+            std::process::exit(0);
+        }
+
+        for state in self.per_output.values_mut() {
+            if state.configured {
+                state.surface.frame(&self.qh, state.surface.clone());
+            }
+        }
+    }
+
+    /// Renderiza un output específico. Este método es llamado desde `CompositorHandler::frame`
+    /// cuando el compositor nos indica que la superficie está lista.
     fn render_output(&mut self, name: &str) {
         let state = match self.per_output.get_mut(name) {
             Some(s) if s.configured => s,
-            Some(_) => {
-                debug!("Output {} no configurado aún", name);
-                return;
-            }
-            None => return,
+            _ => return,
         };
 
-        // Actualizar colores
+        // Actualizar colores desde el watcher (si hay nuevos)
         if let Ok(guard) = self.color_rx.lock() {
             if let Ok(new_colors) = guard.try_recv() {
                 info!("Actualizando colores del degradado ({} colores)", new_colors.len());
@@ -499,7 +517,7 @@ impl AppState {
             }
         }
 
-        // Leer datos de audio
+        // Leer datos de audio de cava
         let mut cava_buffer: Vec<u8> = vec![0; self.bar_count * 2];
         let mut bar_heights = vec![0.0; self.bar_count];
         if self.cava_reader.read_exact(&mut cava_buffer).is_ok() {
@@ -508,7 +526,7 @@ impl AppState {
                 bar_heights[i] = (num as f32) / 65530.0;
             }
         } else {
-            // Fallback silencioso: onda sinusoidal
+            // Fallback: onda de prueba silenciosa (solo para no congelarse)
             let phase = (std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
@@ -519,7 +537,7 @@ impl AppState {
             }
         }
 
-        // Calcular vértices (misma lógica que original)
+        // Calcular vértices (misma lógica que el original)
         let bar_width = 2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
         let bar_gap_width = bar_width * self.bar_gap;
         let mut vertices = vec![0.0f32; self.bar_count * 8];
@@ -577,22 +595,6 @@ impl AppState {
         }
         state.wgpu_queue.submit(std::iter::once(encoder.finish()));
         frame.present();
-
-        // Solicitar siguiente frame callback (sincronización)
-        state.surface.frame(&self.qh, state.surface.clone());
-    }
-
-    pub fn draw(&mut self) {
-        if !self.running.load(Ordering::SeqCst) {
-            info!("Apagando graceful...");
-            std::process::exit(0);
-        }
-
-        let names: Vec<String> = self.per_output.keys().cloned().collect();
-        for name in names {
-            // En el original, draw() se llama desde el timer y renderiza inmediatamente
-            self.render_output(&name);
-        }
     }
 }
 
@@ -640,9 +642,21 @@ impl ProvidesRegistryState for AppState {
 impl CompositorHandler for AppState {
     fn scale_factor_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_factor: i32) {}
     fn transform_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_transform: wl_output::Transform) {}
-    fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {
-        // No se hace nada; el renderizado ocurre en draw() vía timer
+
+    fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, surface: &wl_surface::WlSurface, _time: u32) {
+        // Encontrar el nombre del output correspondiente a esta superficie
+        let mut target_name = None;
+        for (name, state) in self.per_output.iter() {
+            if &state.surface == surface {
+                target_name = Some(name.clone());
+                break;
+            }
+        }
+        if let Some(name) = target_name {
+            self.render_output(&name);
+        }
     }
+
     fn surface_enter(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
     fn surface_leave(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
 }
@@ -682,6 +696,7 @@ impl LayerShellHandler for AppState {
             }
         }
         if let Some(name) = target_name {
+            // Solicitar el primer frame
             if let Some(state) = self.per_output.get_mut(&name) {
                 state.surface.frame(&self.qh, state.surface.clone());
             }
