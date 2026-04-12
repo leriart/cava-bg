@@ -6,6 +6,7 @@ use smithay_client_toolkit::registry::ProvidesRegistryState;
 use smithay_client_toolkit::shell::wlr_layer::{
     Anchor, Layer, LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
 };
+use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     output::{OutputHandler, OutputState},
@@ -201,10 +202,8 @@ impl WaylandRenderer {
             qh: qh.clone(),
         };
 
-        // El callback se ejecutará periódicamente según frame_duration
         event_loop
             .run(Some(frame_duration), &mut app_state, |state| {
-                // En cada tick del timer, intentamos dibujar
                 state.draw();
             })
             .context("Event loop failed")?;
@@ -548,7 +547,6 @@ impl AppState {
         let names: Vec<String> = self.per_output.keys().cloned().collect();
         for name in names {
             let state = self.per_output.get_mut(&name).unwrap();
-            // Si no hay un frame pendiente, solicitamos uno nuevo
             if !state.pending_frame && state.configured {
                 state.pending_frame = true;
                 state.surface.frame(&self.qh, state.surface.clone());
@@ -603,15 +601,6 @@ impl CompositorHandler for AppState {
     fn transform_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_transform: wl_output::Transform) {}
     fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, surface: &wl_surface::WlSurface, _time: u32) {
         // Buscar el output correspondiente a esta superficie y renderizar
-        for state in self.per_output.values_mut() {
-            if &state.surface == surface {
-                self.render_output(&state.layer_surface.wl_surface().id().to_string()); // Necesitamos una forma mejor de identificar, pero funciona porque la superficie es única.
-                // En realidad, podemos iterar y buscar por la superficie
-                break;
-            }
-        }
-        // Forma correcta: buscar por nombre usando un mapa inverso o iterando.
-        // Como simplificación, podemos iterar y renderizar el que coincida.
         let mut target_name = None;
         for (name, state) in self.per_output.iter() {
             if &state.surface == surface {
