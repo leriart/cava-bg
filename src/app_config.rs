@@ -16,7 +16,7 @@ pub struct GeneralConfig {
     pub autosens: Option<bool>,
     pub sensitivity: Option<f32>,
     pub preferred_output: Option<String>,
-    #[serde(default)] // si no existe, será false
+    #[serde(default)]
     pub dynamic_colors: bool,
 }
 

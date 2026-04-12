@@ -1,7 +1,7 @@
 mod app_config;
 mod cli_help;
 mod wayland_renderer;
-mod wallpaper;  
+mod wallpaper;
 
 use anyhow::{Context, Result};
 use log::info;
@@ -17,9 +17,7 @@ use app_config::{Config, GeneralConfig, BarConfig, SmoothingConfig, ConfigColor}
 use cli_help::print_help;
 use wayland_renderer::WaylandRenderer;
 
-/// Crea un archivo de configuración por defecto en la ruta especificada.
 fn create_default_config(path: &PathBuf) -> Result<()> {
-    // Crear el directorio padre si no existe
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -31,7 +29,7 @@ fn create_default_config(path: &PathBuf) -> Result<()> {
             autosens: Some(true),
             sensitivity: None,
             preferred_output: None,
-            dynamic_colors: true,  
+            dynamic_colors: true,
         },
         bars: BarConfig {
             amount: 32,
@@ -64,11 +62,9 @@ fn main() -> Result<()> {
         PathBuf::from(&args[2])
     } else if args.len() == 1 {
         let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-        let default_path = PathBuf::from(format!("{}/.config/wallpaper-cava/config.toml", home));
+        let default_path = PathBuf::from(format!("{}/.config/cava-bg/config.toml", home));
         if !default_path.exists() {
-            // Crear configuración por defecto si no existe
-            create_default_config(&default_path)
-                .with_context(|| format!("Failed to create default config at {:?}", default_path))?;
+            create_default_config(&default_path)?;
         }
         default_path
     } else {
@@ -76,13 +72,10 @@ fn main() -> Result<()> {
         exit(0);
     };
 
-        // (dentro de main, después de cargar la configuración)
     let config_str = fs::read_to_string(&config_path)
         .with_context(|| format!("Unable to read config file: {:?}", config_path))?;
     let config: Config = toml::from_str(&config_str)
         .with_context(|| format!("Error parsing config: {:?}", config_path))?;
-
-
 
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
@@ -91,7 +84,7 @@ fn main() -> Result<()> {
     })
     .expect("Error setting Ctrl-C handler");
 
-    info!("Starting wallpaper-cava with wgpu backend");
+    info!("Starting cava-bg with wgpu backend");
     let renderer = WaylandRenderer::new(config, running);
     renderer.run()?;
 
