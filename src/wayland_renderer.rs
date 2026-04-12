@@ -35,7 +35,6 @@ use std::time::Duration;
 
 use crate::app_config::{array_from_config_color, Config};
 
-// Shader WGSL que replica el comportamiento del fragment shader GLSL original
 const SHADER_WGSL: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -125,6 +124,7 @@ struct PerOutputState {
     height: u32,
     configured: bool,
     background_color: [f32; 4],
+    pending_frame: bool,   // Indica si ya hay un frame callback en espera
     frame_count: u64,
 }
 
@@ -201,11 +201,10 @@ impl WaylandRenderer {
             qh: qh.clone(),
         };
 
+        // Usamos el timeout para solicitar frames periódicamente, como el original
         event_loop
             .run(Some(frame_duration), &mut app_state, |state| {
-                // Este closure se ejecuta periódicamente según frame_duration.
-                // Igual que el original, solicitamos un frame callback y dibujamos.
-                state.draw();
+                state.request_frames();
             })
             .context("Event loop failed")?;
 
@@ -309,14 +308,9 @@ impl AppState {
         let mut surface_config = wgpu_surface
             .get_default_config(&adapter, width, height)
             .unwrap();
-        surface_config.present_mode = wgpu::PresentMode::Fifo;
+        surface_config.present_mode = wgpu::PresentMode::Fifo; // VSync
         let caps = wgpu_surface.get_capabilities(&adapter);
-        surface_config.alpha_mode = caps
-            .alpha_modes
-            .iter()
-            .find(|m| **m != wgpu::CompositeAlphaMode::Opaque)
-            .copied()
-            .unwrap_or(wgpu::CompositeAlphaMode::Auto);
+        surface_config.alpha_mode = wgpu::CompositeAlphaMode::PreMultiplied;
         wgpu_surface.configure(&device, &surface_config);
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -411,7 +405,7 @@ impl AppState {
 
         let static_surface = unsafe { std::mem::transmute::<_, wgpu::Surface<'static>>(wgpu_surface) };
 
-        let state = PerOutputState {
+        let mut state = PerOutputState {
             surface,
             layer_surface,
             wgpu_surface: static_surface,
@@ -427,22 +421,23 @@ impl AppState {
             height,
             configured: false,
             background_color: self.background_color,
+            pending_frame: false,
             frame_count: 0,
         };
+
+        // Iniciar el ciclo de frames después de que configure sea llamado,
+        // pero aquí aún no está configurado, así que no hacemos nada.
 
         self.per_output.insert(name.clone(), state);
         info!("Superficie WGPU creada para {}: {}x{}", name, width, height);
         Ok(())
     }
 
-    fn draw_output(&mut self, name: &str) {
+    // Esta función se llama cuando el compositor nos dice que podemos dibujar (frame callback)
+    fn render_output(&mut self, name: &str) {
         let state = match self.per_output.get_mut(name) {
             Some(s) if s.configured => s,
-            Some(_) => {
-                debug!("Output {} no configurado aún", name);
-                return;
-            }
-            None => return,
+            _ => return,
         };
 
         // Actualizar colores desde el watcher (si hay nuevos)
@@ -459,7 +454,6 @@ impl AppState {
         let mut bar_heights = vec![0.0; self.bar_count];
         if let Ok(new_heights) = self.audio_rx.try_recv() {
             bar_heights = new_heights;
-            debug!("Usando datos reales de audio: {} barras", bar_heights.len());
         } else {
             // Modo de prueba: onda sinusoidal
             let phase = (std::time::SystemTime::now()
@@ -475,7 +469,7 @@ impl AppState {
             }
         }
 
-        // Calcular vértices (misma lógica que el original)
+        // Calcular vértices
         let bar_width = 2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
         let bar_gap_width = bar_width * self.bar_gap;
         let mut vertices = vec![0.0f32; self.bar_count * 8];
@@ -535,26 +529,21 @@ impl AppState {
         frame.present();
 
         state.frame_count += 1;
-        // Solicitar el siguiente frame callback para mantener el ciclo (igual que el original)
-        state.surface.frame(&self.qh, state.surface.clone());
+        state.pending_frame = false; // Frame completado
     }
 
-    pub fn draw(&mut self) {
+    // Se llama periódicamente desde el timer del event loop
+    pub fn request_frames(&mut self) {
         if !self.running.load(Ordering::SeqCst) {
             info!("Apagando graceful...");
             std::process::exit(0);
         }
 
-        let names: Vec<String> = self.per_output.keys().cloned().collect();
-        for name in names {
-            // Igual que el original: en cada iteración del timer, solicitamos un frame callback
-            // y renderizamos inmediatamente.
-            if let Some(state) = self.per_output.get_mut(&name) {
-                if state.configured {
-                    state.surface.frame(&self.qh, state.surface.clone());
-                }
+        for state in self.per_output.values_mut() {
+            if state.configured && !state.pending_frame {
+                state.pending_frame = true;
+                state.surface.frame(&self.qh, state.surface.clone());
             }
-            self.draw_output(&name);
         }
     }
 }
@@ -603,9 +592,18 @@ impl ProvidesRegistryState for AppState {
 impl CompositorHandler for AppState {
     fn scale_factor_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_factor: i32) {}
     fn transform_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_transform: wl_output::Transform) {}
-    fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {
-        // En el original, el callback frame solo se usa para que el compositor nos notifique,
-        // pero el renderizado ya se hizo en draw(). Aquí no necesitamos hacer nada adicional.
+    fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, surface: &wl_surface::WlSurface, _time: u32) {
+        // Buscar el output correspondiente a esta superficie y renderizar
+        let mut target_name = None;
+        for (name, state) in self.per_output.iter() {
+            if &state.surface == surface {
+                target_name = Some(name.clone());
+                break;
+            }
+        }
+        if let Some(name) = target_name {
+            self.render_output(&name);
+        }
     }
     fn surface_enter(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
     fn surface_leave(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
@@ -646,11 +644,13 @@ impl LayerShellHandler for AppState {
             }
         }
         if let Some(name) = target_name {
-            // Iniciar el ciclo de frames (igual que el original)
+            // Iniciar el ciclo de frames
             if let Some(state) = self.per_output.get_mut(&name) {
+                state.pending_frame = true;
                 state.surface.frame(&self.qh, state.surface.clone());
             }
-            self.draw_output(&name);
+            // También podemos renderizar inmediatamente el primer frame
+            self.render_output(&name);
         }
     }
 }
