@@ -3,13 +3,14 @@ use color_thief::{get_palette, ColorFormat};
 use image::{self, GenericImageView};
 use log;
 use once_cell::sync::Lazy;
+use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
 use std::sync::mpsc::Sender;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 static PREVIOUS_COLORS: Lazy<Mutex<Vec<[f32; 4]>>> = Lazy::new(|| Mutex::new(Vec::new()));
 const COLOR_SMOOTHING_FACTOR: f32 = 0.7;
@@ -17,76 +18,162 @@ const COLOR_SMOOTHING_FACTOR: f32 = 0.7;
 pub struct WallpaperAnalyzer;
 
 impl WallpaperAnalyzer {
+    /// Encuentra la ruta del wallpaper actual.
     pub fn find_wallpaper() -> Option<PathBuf> {
-        // 1. ambxst
-        if let Some(path) = Self::from_ambxst() {
-            log::info!("Detected wallpaper via ambxst: {:?}", path);
-            return Some(path);
-        }
+        // Lista de detectores con nombre y función
+        let detectors: &[(&str, fn() -> Option<PathBuf>)] = &[
+            ("hyprpaper", Self::from_hyprpaper),
+            ("awww", Self::from_awww),
+            ("swww", Self::from_swww),
+            ("mpvpaper", Self::from_mpvpaper),
+            ("wpaperd", Self::from_wpaperd),
+            ("waypaper", Self::from_waypaper),
+            ("swaybg", Self::from_swaybg),
+            ("ambxst", Self::from_ambxst),
+        ];
 
-        // 2. mpvpaper
-        if let Some(path) = Self::from_mpvpaper() {
-            log::info!("Detected wallpaper via mpvpaper: {:?}", path);
-            return Some(path);
+        for (name, detector) in detectors {
+            if let Some(path) = detector() {
+                if path.exists() {
+                    log::info!("Detected wallpaper via {}: {}", name, path.display());
+                    return Some(path);
+                }
+            }
         }
-
-        // 3. Waypaper
-        if let Some(path) = Self::from_waypaper() {
-            log::info!("Detected wallpaper via Waypaper: {:?}", path);
-            return Some(path);
-        }
-
-        // 4. swaybg
-        if let Some(path) = Self::from_swaybg() {
-            log::info!("Detected wallpaper via swaybg: {:?}", path);
-            return Some(path);
-        }
-
         None
     }
 
-    fn from_ambxst() -> Option<PathBuf> {
-        let home = dirs::home_dir()?;
-        let cache_path = home.join(".cache/ambxst/wallpapers.json");
-        log::debug!("Looking for ambxst config at: {:?}", cache_path);
-        if !cache_path.exists() {
-            log::debug!("ambxst config file not found");
+    // --- hyprpaper ---
+    fn from_hyprpaper() -> Option<PathBuf> {
+        let config_path = dirs::home_dir()?.join(".config/hypr/hyprpaper.conf");
+        log::debug!("Looking for hyprpaper config at: {:?}", config_path);
+        if !config_path.exists() {
             return None;
         }
-        let content = fs::read_to_string(cache_path).ok()?;
-        log::debug!("ambxst config content: {}", content);
 
-        let tag = "currentWall";
-        if let Some(start) = content.find(tag) {
-            let after_tag = &content[start + tag.len()..];
-            if let Some(colon_pos) = after_tag.find(':') {
-                let after_colon = &after_tag[colon_pos + 1..];
-                if let Some(quote_start) = after_colon.find('"') {
-                    let after_quote = &after_colon[quote_start + 1..];
-                    if let Some(quote_end) = after_quote.find('"') {
-                        let path_str = &after_quote[..quote_end];
-                        let path = PathBuf::from(path_str);
-                        log::debug!("Extracted path from ambxst: {:?}", path);
+        let content = fs::read_to_string(config_path).ok()?;
+        for line in content.lines() {
+            let line = line.trim();
+            if line.starts_with("wallpaper") {
+                if let Some((_, value)) = line.split_once('=') {
+                    let parts: Vec<&str> = value.split(',').collect();
+                    if parts.len() >= 2 {
+                        let path_str = parts[1].trim().trim_matches(|c| c == '"' || c == '\'').to_string();
+                        let path = PathBuf::from(&path_str);
                         if path.exists() {
                             return Some(path);
-                        } else {
-                            log::debug!("Path from ambxst does not exist: {:?}", path);
                         }
                     }
                 }
             }
         }
-        log::warn!("Could not extract currentWall from ambxst config");
         None
     }
 
+    // --- awww (nuevo, sucesor de swww) ---
+    fn from_awww() -> Option<PathBuf> {
+        // Método 1: usar comando query --json
+        let output = Command::new("awww")
+            .arg("query")
+            .arg("--json")
+            .output()
+            .ok()?;
+        if output.status.success() {
+            if let Ok(json_str) = String::from_utf8(output.stdout) {
+                if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                    if let Some(image_path) = json_value.get("image").and_then(|v| v.as_str()) {
+                        let path = PathBuf::from(image_path);
+                        if path.exists() {
+                            return Some(path);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Método 2: revisar caché
+        let version = env!("CARGO_PKG_VERSION");
+        let cache_dir = dirs::cache_dir()?.join("awww").join(version);
+        log::debug!("Looking for awww cache at: {:?}", cache_dir);
+        if cache_dir.exists() {
+            if let Ok(entries) = fs::read_dir(&cache_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Some(ext) = path.extension() {
+                        if ext == "awww" {
+                            if let Ok(target) = fs::read_link(&path) {
+                                if target.exists() {
+                                    return Some(target);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    // --- swww (original) ---
+    fn from_swww() -> Option<PathBuf> {
+        // Método 1: usar comando query --json
+        let output = Command::new("swww")
+            .arg("query")
+            .arg("--json")
+            .output()
+            .ok()?;
+        if output.status.success() {
+            if let Ok(json_str) = String::from_utf8(output.stdout) {
+                if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                    if let Some(image_path) = json_value.get("image").and_then(|v| v.as_str()) {
+                        let path = PathBuf::from(image_path);
+                        if path.exists() {
+                            return Some(path);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Método 2: revisar caché
+        let version = env!("CARGO_PKG_VERSION");
+        let cache_dir = dirs::cache_dir()?.join("swww").join(version);
+        log::debug!("Looking for swww cache at: {:?}", cache_dir);
+        if cache_dir.exists() {
+            if let Ok(entries) = fs::read_dir(&cache_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if let Some(ext) = path.extension() {
+                        if ext == "swww" {
+                            if let Ok(target) = fs::read_link(&path) {
+                                if target.exists() {
+                                    return Some(target);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    // --- mpvpaper (mejorado) ---
     fn from_mpvpaper() -> Option<PathBuf> {
         let output = Command::new("pgrep").arg("-a").arg("mpvpaper").output().ok()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            for part in parts.iter().rev() {
-                let path = PathBuf::from(part);
+            for (i, part) in parts.iter().enumerate() {
+                if *part == "--mpv" && i + 1 < parts.len() {
+                    let path = PathBuf::from(parts[i + 1]);
+                    if path.exists() {
+                        return Some(path);
+                    }
+                }
+            }
+            if let Some(last) = parts.last() {
+                let path = PathBuf::from(last);
                 if path.exists() && path.is_file() {
                     return Some(path);
                 }
@@ -95,6 +182,31 @@ impl WallpaperAnalyzer {
         None
     }
 
+    // --- wpaperd ---
+    fn from_wpaperd() -> Option<PathBuf> {
+        let config_path = dirs::home_dir()?.join(".config/wpaperd/wpaperd.toml");
+        log::debug!("Looking for wpaperd config at: {:?}", config_path);
+        if !config_path.exists() {
+            return None;
+        }
+
+        let content = fs::read_to_string(config_path).ok()?;
+        for line in content.lines() {
+            let line = line.trim();
+            if line.starts_with("path") {
+                if let Some((_, value)) = line.split_once('=') {
+                    let path_str = value.trim().trim_matches(|c| c == '"' || c == '\'').to_string();
+                    let path = PathBuf::from(&path_str);
+                    if path.exists() {
+                        return Some(path);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    // --- swaybg ---
     fn from_swaybg() -> Option<PathBuf> {
         let output = Command::new("pgrep").arg("-a").arg("swaybg").output().ok()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
@@ -112,6 +224,7 @@ impl WallpaperAnalyzer {
         None
     }
 
+    // --- waypaper ---
     fn from_waypaper() -> Option<PathBuf> {
         let config_path = dirs::config_dir()?.join("waypaper").join("config.ini");
         if !config_path.exists() {
@@ -126,6 +239,35 @@ impl WallpaperAnalyzer {
                     let path = PathBuf::from(&path_str);
                     if path.exists() {
                         return Some(path);
+                    }
+                }
+            }
+        }
+        None
+    }
+
+    // --- ambxst ---
+    fn from_ambxst() -> Option<PathBuf> {
+        let home = dirs::home_dir()?;
+        let cache_path = home.join(".cache/ambxst/wallpapers.json");
+        log::debug!("Looking for ambxst config at: {:?}", cache_path);
+        if !cache_path.exists() {
+            return None;
+        }
+        let content = fs::read_to_string(cache_path).ok()?;
+        let tag = "currentWall";
+        if let Some(start) = content.find(tag) {
+            let after_tag = &content[start + tag.len()..];
+            if let Some(colon_pos) = after_tag.find(':') {
+                let after_colon = &after_tag[colon_pos + 1..];
+                if let Some(quote_start) = after_colon.find('"') {
+                    let after_quote = &after_colon[quote_start + 1..];
+                    if let Some(quote_end) = after_quote.find('"') {
+                        let path_str = &after_quote[..quote_end];
+                        let path = PathBuf::from(path_str);
+                        if path.exists() {
+                            return Some(path);
+                        }
                     }
                 }
             }
@@ -243,17 +385,16 @@ impl WallpaperAnalyzer {
         Ok(new_colors)
     }
 
-
     pub fn start_wallpaper_monitor(tx: Sender<Vec<[f32; 4]>>, num_colors: usize) {
         thread::spawn(move || {
             let mut last_path: Option<PathBuf> = None;
-            let mut last_modified: Option<std::time::SystemTime> = None;
+            let mut last_modified: Option<SystemTime> = None;
 
             loop {
                 if let Some(path) = Self::find_wallpaper() {
                     let modified = fs::metadata(&path)
                         .and_then(|m| m.modified())
-                        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                        .unwrap_or(SystemTime::UNIX_EPOCH);
                     let changed = match (&last_path, &last_modified) {
                         (Some(p), Some(t)) => p != &path || t != &modified,
                         _ => true,

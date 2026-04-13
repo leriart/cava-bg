@@ -302,7 +302,13 @@ struct AppState {
 
 impl AppState {
     fn ensure_output(&mut self, output: &wl_output::WlOutput) -> Result<()> {
-        let info = self.output_state.info(output).context("Failed to get output info")?;
+        let info = match self.output_state.info(output) {
+            Some(info) => info,
+            None => {
+                debug!("Output info not yet available, skipping surface creation");
+                return Ok(());
+            }
+        };
         let name = info.name.clone().unwrap_or_else(|| "unknown".to_string());
 
         if self.per_output.contains_key(&name) {
