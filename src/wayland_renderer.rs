@@ -6,6 +6,7 @@ use smithay_client_toolkit::registry::ProvidesRegistryState;
 use smithay_client_toolkit::shell::wlr_layer::{
     Anchor, Layer, LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
 };
+
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     output::{OutputHandler, OutputState},
@@ -32,8 +33,10 @@ use std::process::{Command, Stdio};
 use std::ptr::NonNull;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::thread;
 use std::sync::mpsc::{channel, Receiver};
 use std::time::Duration;
+
 
 use crate::app_config::{array_from_config_color, Config, CavaConfig, CavaGeneralConfig, CavaSmoothingConfig};
 use crate::wallpaper::WallpaperAnalyzer;
@@ -166,6 +169,7 @@ impl WaylandRenderer {
         toml::to_string(&cava_config).unwrap()
     }
 
+
     pub fn run(self) -> Result<()> {
         info!("Starting cava-bg with wgpu backend (no rounding)");
 
@@ -185,14 +189,43 @@ impl WaylandRenderer {
             stdin.flush()?;
         }
 
+        let (_framerate_tx, framerate_rx) = channel::<f64>();
+
         let cava_stdout = cmd.stdout.take().context("Failed to get cava stdout")?;
-        let cava_reader = BufReader::new(cava_stdout);
+
         let bar_count = self.config.bars.amount as usize;
         let bar_alpha = self.config.bars.bar_alpha;
 
-        let (color_tx, color_rx) = channel();
+        // Canal para enviar datos de audio decodificados
+        let (cava_tx, cava_rx): (std::sync::mpsc::Sender<Vec<f32>>, Receiver<Vec<f32>>) = channel();
+
+        // Hilo para leer datos de cava sin bloquear el render loop
+        thread::spawn(move || {
+            let mut reader = BufReader::new(cava_stdout);
+            let mut buffer = vec![0u8; bar_count * 2];
+            loop {
+                match reader.read_exact(&mut buffer) {
+                    Ok(()) => {
+                        let mut bar_heights = vec![0.0f32; bar_count];
+                        for (i, chunk) in buffer.chunks_exact(2).enumerate() {
+                            let num = u16::from_le_bytes([chunk[0], chunk[1]]);
+                            bar_heights[i] = (num as f32) / 65530.0;
+                        }
+                        if cava_tx.send(bar_heights).is_err() {
+                            error!("Receiver dropped, stopping cava reader thread");
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        error!("Error reading cava data: {}", e);
+                        std::thread::sleep(std::time::Duration::from_millis(10));
+                    }
+                }
+            }
+        });
+
         let use_dynamic = self.config.general.dynamic_colors;
-        let initial_colors: Vec<[f32; 4]> = if use_dynamic {
+        let (initial_colors, color_receiver) = if use_dynamic {
             let num_colors = if !self.config.colors.is_empty() {
                 self.config.colors.len()
             } else {
@@ -201,21 +234,26 @@ impl WaylandRenderer {
             match WallpaperAnalyzer::generate_gradient_colors(num_colors) {
                 Ok(colors) => {
                     info!("Using dynamic colors from wallpaper");
+                    let (color_tx, color_rx) = channel();
                     WallpaperAnalyzer::start_wallpaper_monitor(color_tx, num_colors);
-                    colors
+                    (colors, color_rx)
                 }
                 Err(e) => {
                     error!("Failed to generate colors from wallpaper: {}, using config colors", e);
-                    self.config.colors.values()
+                    let colors: Vec<[f32; 4]> = self.config.colors.values()
                         .map(|c| array_from_config_color(c.clone()))
-                        .collect()
+                        .collect();
+                    let (_dummy_tx, dummy_rx) = channel::<Vec<[f32; 4]>>();
+                    (colors, dummy_rx)
                 }
             }
         } else {
             info!("Using static colors from config");
-            self.config.colors.values()
+            let colors: Vec<[f32; 4]> = self.config.colors.values()
                 .map(|c| array_from_config_color(c.clone()))
-                .collect()
+                .collect();
+            let (_dummy_tx, dummy_rx) = channel::<Vec<[f32; 4]>>();
+            (colors, dummy_rx)
         };
         let background_color = array_from_config_color(self.config.general.background_color.clone());
 
@@ -233,8 +271,6 @@ impl WaylandRenderer {
         let compositor = CompositorState::bind(&globals, &qh).context("wl_compositor not available")?;
         let layer_shell = LayerShell::bind(&globals, &qh).context("layer shell not available")?;
 
-        let frame_duration = Duration::from_secs(1) / self.config.general.framerate;
-
         let mut app_state = AppState {
             registry_state: RegistryState::new(&globals),
             output_state: OutputState::new(&globals, &qh),
@@ -245,14 +281,20 @@ impl WaylandRenderer {
             bar_gap: self.config.bars.gap,
             bar_alpha,
             preferred_output_name: self.config.general.preferred_output.clone(),
-            cava_reader,
+            cava_data_receiver: cava_rx,
+            current_bar_heights: vec![0.0; bar_count],
+            last_cava_data: None,
+            cava_frame_counter: 0,
             colors: initial_colors,
             background_color,
             conn: conn.clone(),
             qh: qh.clone(),
             running: self.running,
-            color_receiver: color_rx,
+            color_receiver,
+            framerate: self.config.general.framerate as f64,
+            framerate_receiver: framerate_rx,
         };
+        let frame_duration = Duration::from_secs_f64(1.0 / app_state.framerate);
 
         for output in app_state.output_state.outputs() {
             if let Err(e) = app_state.ensure_output(&output) {
@@ -261,9 +303,16 @@ impl WaylandRenderer {
         }
 
         event_loop.run(Some(frame_duration), &mut app_state, |state| {
+            if let Ok(new_framerate) = state.framerate_receiver.try_recv() {
+                state.framerate = new_framerate;
+                info!("Framerate updated dynamically to {}", new_framerate);
+            }
+
+
             if !state.running.load(Ordering::SeqCst) {
                 std::process::exit(0);
             }
+
             if let Ok(new_colors) = state.color_receiver.try_recv() {
                 info!("Updating gradient colors from wallpaper change");
                 state.colors = new_colors;
@@ -291,13 +340,18 @@ struct AppState {
     bar_gap: f32,
     bar_alpha: f32,
     preferred_output_name: Option<String>,
-    cava_reader: BufReader<std::process::ChildStdout>,
+    cava_data_receiver: Receiver<Vec<f32>>,
+    current_bar_heights: Vec<f32>,
+    last_cava_data: Option<Vec<f32>>,
+    cava_frame_counter: usize,
     colors: Vec<[f32; 4]>,
     background_color: [f32; 4],
     conn: Connection,
     qh: QueueHandle<Self>,
     running: Arc<AtomicBool>,
     color_receiver: Receiver<Vec<[f32; 4]>>,
+    framerate: f64,
+    framerate_receiver: Receiver<f64>,
 }
 
 impl AppState {
@@ -369,6 +423,10 @@ impl AppState {
         }))
         .context("Failed to find suitable GPU adapter")?;
 
+        let adapter_info = adapter.get_info();
+        info!("Selected GPU adapter: {} (vendor: 0x{:x}, device: 0x{:x}), backend: {:?}", 
+            adapter_info.name, adapter_info.vendor, adapter_info.device, adapter_info.backend);
+
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
                 label: None,
@@ -378,6 +436,25 @@ impl AppState {
             None,
         ))
         .context("Failed to create device")?;
+
+        let surface_caps = wgpu_surface.get_capabilities(&adapter);
+        let surface_format = surface_caps.formats.iter()
+            .copied()
+            .find(|f| matches!(f, wgpu::TextureFormat::Bgra8UnormSrgb | wgpu::TextureFormat::Rgba8UnormSrgb))
+            .unwrap_or(surface_caps.formats[0]);
+
+        let surface_config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: surface_format,
+            width,
+            height,
+            present_mode: wgpu::PresentMode::Fifo,
+            alpha_mode: wgpu::CompositeAlphaMode::Auto,
+            view_formats: vec![surface_format],
+            desired_maximum_frame_latency: 0,
+        };
+
+        wgpu_surface.configure(&device, &surface_config);
 
         let mut surface_config = wgpu_surface
             .get_default_config(&adapter, width, height)
@@ -489,12 +566,12 @@ impl AppState {
             multiview: None,
         });
 
-        let static_surface: wgpu::Surface<'static> = unsafe { std::mem::transmute(wgpu_surface) };
+        let wgpu_surface_static: wgpu::Surface<'static> = unsafe { std::mem::transmute(wgpu_surface) };
 
         let state = PerOutputState {
             surface,
             layer_surface,
-            wgpu_surface: static_surface,
+            wgpu_surface: wgpu_surface_static,
             wgpu_device: device,
             wgpu_queue: queue,
             wgpu_config: surface_config,
@@ -514,32 +591,23 @@ impl AppState {
         Ok(())
     }
 
-    fn read_cava_data(&mut self) -> Vec<f32> {
-        let mut cava_buffer = vec![0u8; self.bar_count * 2];
-        let mut bar_heights = vec![0.0f32; self.bar_count];
-        match self.cava_reader.read_exact(&mut cava_buffer) {
-            Ok(()) => {
-                for (i, chunk) in cava_buffer.chunks_exact(2).enumerate() {
-                    let num = u16::from_le_bytes([chunk[0], chunk[1]]);
-                    bar_heights[i] = (num as f32) / 65530.0;
-                }
-            }
-            Err(e) => {
-                error!("Failed to read from cava: {}", e);
-            }
-        }
-        bar_heights
-    }
-
     fn draw(&mut self) {
-        let bar_heights = self.read_cava_data();
+        while let Ok(new_heights) = self.cava_data_receiver.try_recv() {
+            self.last_cava_data = Some(new_heights);
+            self.cava_frame_counter += 1;
+        }
+
+        // Usar siempre el último dato disponible
+        if let Some(ref heights) = self.last_cava_data {
+            self.current_bar_heights = heights.clone();
+        }
 
         let bar_width = 2.0 / (self.bar_count as f32 + (self.bar_count as f32 - 1.0) * self.bar_gap);
         let bar_gap_width = bar_width * self.bar_gap;
 
         let mut vertices = Vec::with_capacity(self.bar_count * 16);
         for i in 0..self.bar_count {
-            let h = 2.0 * bar_heights[i] - 1.0;
+            let h = 2.0 * self.current_bar_heights[i] - 1.0;
             let x0 = bar_gap_width * i as f32 + bar_width * i as f32 - 1.0;
             let x1 = bar_gap_width * i as f32 + bar_width * (i + 1) as f32 - 1.0;
             vertices.extend_from_slice(&[x0, -1.0, 0.0, 0.0]);
