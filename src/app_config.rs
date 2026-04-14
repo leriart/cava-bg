@@ -7,6 +7,8 @@ pub struct Config {
     pub bars: BarConfig,
     pub colors: HashMap<String, ConfigColor>,
     pub smoothing: SmoothingConfig,
+    #[serde(default)]
+    pub hidden_image: Option<HiddenImageConfig>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -76,6 +78,62 @@ pub struct CavaSmoothingConfig {
     pub noise_reduction: Option<f32>,
 }
 
+// --- Configuración de imagen oculta ---
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct HiddenImageConfig {
+    /// Si true, usa el wallpaper actual como imagen base (ignora path)
+    #[serde(default)]
+    pub use_wallpaper: bool,
+    /// Ruta a una imagen fija (solo si use_wallpaper = false)
+    pub path: Option<String>,
+    /// Efecto a aplicar sobre la imagen revelada
+    #[serde(default)]
+    pub effect: HiddenImageEffect,
+    /// Modo de mezcla (por ahora solo "Reveal")
+    #[serde(default)]
+    pub blend_mode: BlendMode,
+    /// Directorio que contiene las versiones "xray" de las imágenes (mismo nombre que wallpaper)
+    pub xray_images_dir: Option<String>,
+    /// Directorio donde se almacenan los wallpapers (opcional, para búsqueda adicional)
+    pub wallpapers_dir: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+pub enum HiddenImageEffect {
+    None,
+    Grayscale,
+    Invert,
+    Sepia,
+    #[serde(rename = "palette")]
+    Palette(PaletteType),
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+pub enum PaletteType {
+    Catppuccin,
+    Nord,
+    Gruvbox,
+    Solarized,
+}
+
+impl Default for HiddenImageEffect {
+    fn default() -> Self {
+        HiddenImageEffect::None
+    }
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+pub enum BlendMode {
+    Reveal,
+}
+
+impl Default for BlendMode {
+    fn default() -> Self {
+        BlendMode::Reveal
+    }
+}
+
+// --- Funciones auxiliares existentes ---
 pub fn color_from_hex(hex: String, a: f32) -> [f32; 4] {
     let r = u8::from_str_radix(&hex[1..3], 16).unwrap() as f32 / 255f32;
     let g = u8::from_str_radix(&hex[3..5], 16).unwrap() as f32 / 255f32;

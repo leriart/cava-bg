@@ -3,6 +3,7 @@ mod cli_help;
 mod wayland_renderer;
 mod wallpaper;
 
+#[allow(unused_imports)]
 use anyhow::{Context, Result};
 use log::info;
 use std::env;
@@ -55,15 +56,11 @@ fn kill_existing_instance() -> Result<()> {
     Err(anyhow::anyhow!("No PID file found or process not running."))
 }
 
-/// Crea un archivo de configuración por defecto en la ruta especificada.
-/// El archivo incluye comentarios explicativos en inglés.
 fn create_default_config(path: &PathBuf) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
 
-    // Usamos un delimitador de cadena raw con tres almohadillas para evitar conflictos
-    // con las secuencias "# que aparecen en el contenido.
     let default_config_str = r###"# =============================================================================
 # cava-bg configuration file
 # =============================================================================
@@ -140,6 +137,35 @@ gradient_color_8 = "#f38ba8"   # Maroon
 # waves = 0
 # Uncomment to set noise reduction (0 = fast/noisy, 1 = slow/smooth)
 # noise_reduction = 0.77
+# -----------------------------------------------------------------------------
+# Hidden Image (optional)
+# -----------------------------------------------------------------------------
+# Uncomment the following block to reveal a hidden image/pattern behind the bars.
+# The image stays fixed to the screen; only the bars reveal it as they move.
+#
+# [hidden_image]
+# # Set to true to automatically use the current wallpaper as the hidden image.
+# # If true, the 'path' option is ignored.
+# use_wallpaper = false
+#
+# # Path to a fixed image file (only used if use_wallpaper = false)
+# path = "/home/user/Pictures/my_secret_image.png"
+#
+# # Effect to apply on the revealed image. Options:
+# #   "None", "Grayscale", "Invert", "Sepia", "Palette"
+# # For Palette, specify a scheme: { Palette = "Catppuccin" }
+# effect = "Grayscale"
+#
+# # Blend mode (currently only "Reveal" is supported)
+# blend_mode = "Reveal"
+#
+# # Optional: Directory containing "xray" versions of wallpapers.
+# # When use_wallpaper = true, if a file with the same name exists in this directory,
+# # it will be used as the hidden image instead of the actual wallpaper.
+# xray_images_dir = "/home/user/Pictures/xray"
+#
+# # Optional: Directory where wallpapers are stored (can help detection)
+# wallpapers_dir = "/home/user/Pictures/wallpapers"
 "###;
 
     fs::write(path, default_config_str)?;

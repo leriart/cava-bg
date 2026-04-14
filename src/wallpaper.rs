@@ -385,6 +385,7 @@ impl WallpaperAnalyzer {
         Ok(new_colors)
     }
 
+    /// Inicia un hilo que monitorea cambios en el wallpaper y envía nuevos colores a través del canal.
     pub fn start_wallpaper_monitor(tx: Sender<Vec<[f32; 4]>>, num_colors: usize) {
         thread::spawn(move || {
             let mut last_path: Option<PathBuf> = None;
@@ -419,6 +420,26 @@ impl WallpaperAnalyzer {
                     let _ = tx.send(default_colors);
                     last_path = None;
                     last_modified = None;
+                }
+                thread::sleep(Duration::from_secs(2));
+            }
+        });
+    }
+
+    /// Inicia un hilo que monitorea cambios en la ruta del wallpaper y envía la nueva ruta a través del canal.
+    /// Esto es útil para recargar la imagen oculta cuando `use_wallpaper = true`.
+    pub fn start_wallpaper_path_monitor(tx: Sender<Option<PathBuf>>) {
+        thread::spawn(move || {
+            let mut last_path: Option<PathBuf> = None;
+            loop {
+                let current_path = Self::find_wallpaper();
+                if current_path != last_path {
+                    log::debug!("Wallpaper path changed: {:?}", current_path);
+                    if let Err(e) = tx.send(current_path.clone()) {
+                        log::error!("Failed to send wallpaper path: {}", e);
+                        break;
+                    }
+                    last_path = current_path;
                 }
                 thread::sleep(Duration::from_secs(2));
             }
