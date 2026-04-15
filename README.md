@@ -73,15 +73,27 @@ cava-bg kill
 
 ### Supported Wallpaper Tools
 
-- **hyprpaper** – reads `~/.config/hypr/hyprpaper.conf`
-- **awww** – uses `awww query --json` or cache directory (`~/.cache/awww/`)
-- **swww** – uses `swww query --json` or cache directory (`~/.cache/swww/`)
-- **mpvpaper** – detects running `mpvpaper` process (looks for `--mpv` argument or the last argument)
-- **wpaperd** – reads `~/.config/wpaperd/wpaperd.toml`
-- **waypaper** – reads `~/.config/waypaper/config.ini`
-- **swaybg** – detects `swaybg -i` command line
-- **ambxst** – reads `~/.cache/ambxst/wallpapers.json`
+## Wallpaper Managers
+- swww
+- hyprpaper
+- wpaperd
+- swaybg
+- mpvpaper
+- awww
 
+## Hyprland Shells/Dotfiles
+- ambxst
+
+## Desktop Environments
+- GNOME (Wayland)
+- KDE Plasma (Wayland)
+- Cinnamon
+- Budgie
+- XFCE
+- MATE
+- LXQt
+- Deepin
+- Enlightenment
 
 ## Acknowledgments
 
