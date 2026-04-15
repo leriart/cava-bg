@@ -47,11 +47,7 @@ amount = 76
 gap = 0.1
 
 # Opacity of the bars (0.0 = fully transparent, 1.0 = fully opaque).
-bar_alpha = 0.7
-
-# Roundness of the top edge of each bar (0.0 = square, 0.5 = fully rounded/semicircle).
-# Works well between 0.2 and 0.4.
-bar_roundness = 0.3
+bar_alpha = 0.9
 
 # -----------------------------------------------------------------------------
 # Colors (only used when dynamic_colors = false)
@@ -73,8 +69,37 @@ gradient_color_8 = "#f38ba8"   # Maroon
 # -----------------------------------------------------------------------------
 [smoothing]
 # Uncomment to enable Monstercat smoothing (0 = off, 0.5 = medium, 1 = very smooth)
-# monstercat = 0.5
+# monstercat = 1
 # Uncomment to enable waves (requires cava compiled from GitHub)
-# waves = 0
+# waves = 3
 # Uncomment to set noise reduction (0 = fast/noisy, 1 = slow/smooth)
 # noise_reduction = 0.77
+# -----------------------------------------------------------------------------
+# Hidden Image (optional)
+# -----------------------------------------------------------------------------
+# Uncomment the following block to reveal a hidden image/pattern behind the bars.
+# The image stays fixed to the screen; only the bars reveal it as they move.
+#
+[hidden_image]
+# # Set to true to automatically use the current wallpaper as the hidden image.
+# # If true, the 'path' option is ignored.
+# use_wallpaper = true
+#
+# # Path to a fixed image file (only used if use_wallpaper = false)
+# path = "/home/user/Pictures/my_secret_image.png"
+#
+# # Effect to apply on the revealed image. Options:
+# #   "None", "Grayscale", "Invert", "Sepia", "Palette"
+# # For Palette, specify a scheme: { Palette = "Catppuccin" }
+# effect = "Grayscale"
+#
+# # Blend mode (currently only "Reveal" is supported)
+# blend_mode = "Reveal"
+#
+# # Optional: Directory containing "xray" versions of wallpapers.
+# # When use_wallpaper = true, if a file with the same name exists in this directory,
+# # it will be used as the hidden image instead of the actual wallpaper.
+# xray_images_dir = "/home/user/Images/Xray"
+#
+# # Optional: Directory where wallpapers are stored (can help detection)
+# wallpapers_dir = "/home/user/Wallpapers/Xray"
