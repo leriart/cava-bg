@@ -39,7 +39,7 @@ urlencoding = "2.1"
 maintainer = "Leriart"
 copyright = "2026, Leriart"
 license-file = ["LICENSE", "0"]
-depends = "libc6, libwayland-client0, cava"
+depends = "libc6, wayland, cava"
 extended-description = """\
 cava-bg is an audio visualizer for Wayland that is drawn as a background layer. 
 Supports multiple desktop environments and window managers.
@@ -62,7 +62,7 @@ description = "cava-bg draws audio bars over the wallpaper in Wayland environmen
 
 [package.metadata.generate-rpm.requires]
 cava = "*"
-libwayland-client = "*"
+wayland = "*"
 
 [[package.metadata.generate-rpm.assets]]
 source = "target/release/cava-bg"
@@ -70,4 +70,4 @@ dest = "/usr/bin/cava-bg"
 mode = "755"
 
 [package.metadata.aur]
-depends = ["cava", "libwayland-client"]
+depends = ["cava", "wayland"]
