@@ -1,7 +1,12 @@
 [package]
 name = "cava-bg"
-version = "0.3.0"
+version = "0.1.9"
 edition = "2021"
+license = "MIT"
+description = "Audio visualizer for Wayland"
+authors = ["Leriart"]
+repository = "https://github.com/leriart/cava-bg"
+homepage = "https://github.com/leriart/cava-bg"
 
 [dependencies]
 anyhow = "1.0"
@@ -28,3 +33,41 @@ raw-window-handle = "0.6"
 libc = "0.2"
 serde_json = "1.0"
 urlencoding = "2.1"
+
+
+[package.metadata.deb]
+maintainer = "Leriart"
+copyright = "2026, Leriart"
+license-file = ["LICENSE", "0"]
+depends = "libc6, libwayland-client0, cava"
+extended-description = """\
+cava-bg is an audio visualizer for Wayland that is drawn as a background layer. 
+Supports multiple desktop environments and window managers.
+"""
+section = "sound"
+priority = "optional"
+assets = [
+    ["target/release/cava-bg", "/usr/bin/cava-bg", "755"],
+    ["README.md", "/usr/share/doc/cava-bg/README.md", "644"],
+]
+
+
+[package.metadata.generate-rpm]
+license = "MIT"
+release = "1"
+packager = "Leriart"
+summary = "Audio visualizer for Wayland"
+description = "cava-bg draws audio bars over the wallpaper in Wayland environments."
+
+
+[package.metadata.generate-rpm.requires]
+cava = "*"
+libwayland-client = "*"
+
+[[package.metadata.generate-rpm.assets]]
+source = "target/release/cava-bg"
+dest = "/usr/bin/cava-bg"
+mode = "755"
+
+[package.metadata.aur]
+depends = ["cava", "libwayland-client"]
