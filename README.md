@@ -71,8 +71,6 @@ cava-bg kill
 - **wgpu rendering** – A full‑screen quad is drawn for each bar. A fragment shader interpolates the gradient vertically. The uniform buffer is updated whenever the wallpaper colors change.
 - **Wallpaper monitoring** – Every 2 seconds the wallpaper path is rechecked; if it changed, a new palette is generated and sent to the render thread.
 
-### Supported Wallpaper Tools
-
 ## Wallpaper Managers
 - swww
 - hyprpaper
