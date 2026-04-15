@@ -44,6 +44,7 @@ use crate::app_config::{
 };
 use crate::wallpaper::WallpaperAnalyzer;
 
+// Shader con crop PreserveAspectCrop
 const SHADER_WGSL: &str = r#"
 struct VertexInput {
     @location(0) position: vec2<f32>,
@@ -67,9 +68,10 @@ fn vs_main(in: VertexInput) -> VertexOutput {
 
 struct Uniforms {
     gradient_colors: array<vec4<f32>, 32>,
-    params: vec4<f32>,      // x: colors_count, y: bar_alpha, z: use_hidden_image, w: effect_type
+    params: vec4<f32>,
     window_size: vec2<f32>,
-    _pad: vec2<f32>,
+    texture_size: vec2<f32>,
+    _pad: vec4<f32>,
 }
 
 @group(0) @binding(0) var<uniform> uniforms: Uniforms;
@@ -106,6 +108,34 @@ fn apply_effect(color: vec3<f32>, effect: i32) -> vec3<f32> {
     }
 }
 
+// Calcula UVs con PreserveAspectCrop
+fn compute_crop_uv(world_pos: vec2<f32>) -> vec2<f32> {
+    let screen_ratio = uniforms.window_size.x / uniforms.window_size.y;
+    let tex_ratio = uniforms.texture_size.x / uniforms.texture_size.y;
+    
+    var scale_factor: f32;
+    var uv: vec2<f32>;
+    
+    if (tex_ratio > screen_ratio) {
+        // Textura más ancha: se ajusta a altura, se recorta en ancho
+        scale_factor = uniforms.window_size.y / uniforms.texture_size.y;
+        let scaled_width = uniforms.texture_size.x * scale_factor;
+        let offset_x = (uniforms.window_size.x - scaled_width) * 0.5;
+        uv.x = (world_pos.x * uniforms.window_size.x - offset_x) / scaled_width;
+        uv.y = world_pos.y;
+    } else {
+        // Textura más alta: se ajusta a ancho, se recorta en alto
+        scale_factor = uniforms.window_size.x / uniforms.texture_size.x;
+        let scaled_height = uniforms.texture_size.y * scale_factor;
+        let offset_y = (uniforms.window_size.y - scaled_height) * 0.5;
+        uv.x = world_pos.x;
+        uv.y = (world_pos.y * uniforms.window_size.y - offset_y) / scaled_height;
+    }
+    
+    uv.y = 1.0 - uv.y; // Invertir Y
+    return uv;
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let y = uniforms.window_size.y - in.position.y;
@@ -129,8 +159,8 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     
     var final_color = base_color;
     if (use_hidden_image) {
-        let uv_corrected = vec2<f32>(in.world_pos.x, 1.0 - in.world_pos.y);
-        let tex_color = textureSample(hidden_texture, hidden_sampler, uv_corrected);
+        let uv = compute_crop_uv(in.world_pos);
+        let tex_color = textureSample(hidden_texture, hidden_sampler, uv);
         let processed_rgb = apply_effect(tex_color.rgb, effect_type);
         final_color = vec4<f32>(processed_rgb, tex_color.a);
     }
@@ -146,23 +176,8 @@ struct Uniforms {
     gradient_colors: [[f32; 4]; 32],
     params: [f32; 4],
     window_size: [f32; 2],
-    _pad: [f32; 2],
-}
-
-fn resolve_xray_path(wallpaper_path: &PathBuf, config: &Option<HiddenImageConfig>) -> Option<PathBuf> {
-    if let Some(cfg) = config {
-        if let Some(xray_dir) = &cfg.xray_images_dir {
-            let xray_dir_path = PathBuf::from(xray_dir);
-            if let Some(file_name) = wallpaper_path.file_name() {
-                let xray_path = xray_dir_path.join(file_name);
-                if xray_path.exists() {
-                    info!("Found xray image: {:?}", xray_path);
-                    return Some(xray_path);
-                }
-            }
-        }
-    }
-    None
+    texture_size: [f32; 2],
+    _pad: [f32; 4],
 }
 
 impl Uniforms {
@@ -173,6 +188,8 @@ impl Uniforms {
         bar_alpha: f32,
         use_hidden_image: bool,
         effect: HiddenImageEffect,
+        tex_width: f32,
+        tex_height: f32,
     ) -> Self {
         let mut grad = [[0.0; 4]; 32];
         for (i, c) in colors.iter().enumerate().take(32) {
@@ -195,7 +212,8 @@ impl Uniforms {
                 effect_code as f32,
             ],
             window_size: [width, height],
-            _pad: [0.0, 0.0],
+            texture_size: [tex_width, tex_height],
+            _pad: [0.0; 4],
         }
     }
 }
@@ -208,7 +226,7 @@ struct PerOutputState {
     wgpu_queue: wgpu::Queue,
     wgpu_config: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
-    bind_group0: wgpu::BindGroup,
+    bind_group0: wgpu::BindGroup, // bind group 0 (uniforms)
     uniform_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
@@ -216,9 +234,11 @@ struct PerOutputState {
     height: u32,
     configured: bool,
     background_color: [f32; 4],
-    hidden_image_bind_group: wgpu::BindGroup,
+    // Nuevos campos para imagen oculta
+    hidden_image_bind_group: wgpu::BindGroup, // bind group 1 (siempre existe)
     _hidden_image_texture: Option<wgpu::Texture>,
     _hidden_image_view: Option<wgpu::TextureView>,
+    hidden_texture_size: (u32, u32), // NUEVO: almacenar dimensiones de la textura
 }
 
 pub struct WaylandRenderer {
@@ -257,15 +277,17 @@ impl WaylandRenderer {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         path: &PathBuf,
-    ) -> Result<(wgpu::Texture, wgpu::TextureView)> {
+    ) -> Result<(wgpu::Texture, wgpu::TextureView, u32, u32)> {
         let img = image::open(path)
             .with_context(|| format!("Failed to open hidden image: {:?}", path))?;
         let rgba = img.to_rgba8();
         let dimensions = rgba.dimensions();
+        let width = dimensions.0;
+        let height = dimensions.1;
 
         let texture_size = wgpu::Extent3d {
-            width: dimensions.0,
-            height: dimensions.1,
+            width,
+            height,
             depth_or_array_layers: 1,
         };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
@@ -289,14 +311,14 @@ impl WaylandRenderer {
             &rgba,
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: Some(4 * dimensions.0),
-                rows_per_image: Some(dimensions.1),
+                bytes_per_row: Some(4 * width),
+                rows_per_image: Some(height),
             },
             texture_size,
         );
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        Ok((texture, view))
+        Ok((texture, view, width, height))
     }
 
     pub fn run(self) -> Result<()> {
@@ -462,6 +484,8 @@ impl WaylandRenderer {
                             state.bar_alpha,
                             state.use_hidden_image,
                             state.hidden_image_config.as_ref().map(|c| c.effect).unwrap_or_default(),
+                            output_state.hidden_texture_size.0 as f32,
+                            output_state.hidden_texture_size.1 as f32,
                         );
                         output_state.wgpu_queue.write_buffer(&output_state.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
                     }
@@ -472,20 +496,38 @@ impl WaylandRenderer {
                 if let Ok(Some(new_path)) = state.wallpaper_path_receiver.try_recv() {
                     info!("Wallpaper changed to {:?}", new_path);
                     state.current_wallpaper_path = Some(new_path.clone());
-                    
+
                     let xray_path = resolve_xray_path(&new_path, &state.hidden_image_config);
                     let load_path = xray_path.as_ref().unwrap_or(&new_path);
-                    
+
                     let mut outputs_to_update = Vec::new();
                     for output_state in state.per_output.values_mut() {
                         if output_state.configured {
                             outputs_to_update.push(output_state);
                         }
                     }
+
                     for output_state in outputs_to_update {
+                        // Actualizar la textura (esto también guarda el nuevo tamaño en output_state.hidden_texture_size)
                         if let Err(e) = AppState::update_hidden_image_texture(output_state, load_path) {
                             error!("Failed to update hidden image texture: {}", e);
+                            continue;
                         }
+
+                        // --- CORRECCIÓN: Actualizar el uniform buffer con las nuevas dimensiones ---
+                        let effect = state.hidden_image_config.as_ref().map(|c| c.effect).unwrap_or_default();
+                        let uniforms = Uniforms::new(
+                            &state.colors,
+                            output_state.width as f32,
+                            output_state.height as f32,
+                            state.bar_alpha,
+                            state.use_hidden_image,
+                            effect,
+                            output_state.hidden_texture_size.0 as f32,
+                            output_state.hidden_texture_size.1 as f32,
+                        );
+                        output_state.wgpu_queue.write_buffer(&output_state.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
+                        // -------------------------------------------------------------------------
                     }
                 }
             }
@@ -495,6 +537,24 @@ impl WaylandRenderer {
 
         Ok(())
     }
+}
+
+/// Dada la ruta de un wallpaper y la configuración, devuelve la ruta de la versión "xray"
+/// si existe un archivo con el mismo nombre en el directorio `xray_images_dir`.
+fn resolve_xray_path(wallpaper_path: &PathBuf, config: &Option<HiddenImageConfig>) -> Option<PathBuf> {
+    if let Some(cfg) = config {
+        if let Some(xray_dir) = &cfg.xray_images_dir {
+            let xray_dir_path = PathBuf::from(xray_dir);
+            if let Some(file_name) = wallpaper_path.file_name() {
+                let xray_path = xray_dir_path.join(file_name);
+                if xray_path.exists() {
+                    info!("Found xray image: {:?}", xray_path);
+                    return Some(xray_path);
+                }
+            }
+        }
+    }
+    None
 }
 
 struct AppState {
@@ -523,11 +583,11 @@ struct AppState {
     use_hidden_image: bool,
     use_wallpaper_image: bool,
     wallpaper_path_receiver: Receiver<Option<PathBuf>>,
-    current_wallpaper_path: Option<PathBuf>, 
+    current_wallpaper_path: Option<PathBuf>,
 }
 
 impl AppState {
-    fn create_dummy_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> (wgpu::Texture, wgpu::TextureView) {
+    fn create_dummy_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> (wgpu::Texture, wgpu::TextureView, u32, u32) {
         let texture_size = wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Dummy Hidden Image"),
@@ -552,7 +612,7 @@ impl AppState {
             texture_size,
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        (texture, view)
+        (texture, view, 1, 1)
     }
 
     fn load_or_dummy_texture(
@@ -561,20 +621,19 @@ impl AppState {
         config: &Option<HiddenImageConfig>,
         use_wallpaper: bool,
         wallpaper_path: Option<&PathBuf>,
-    ) -> (wgpu::Texture, wgpu::TextureView) {
+    ) -> (wgpu::Texture, wgpu::TextureView, u32, u32) {
         if use_wallpaper {
             if let Some(path) = wallpaper_path {
-                // Intentar cargar versión xray primero
                 let xray_path = resolve_xray_path(path, config);
                 let load_path = xray_path.as_ref().unwrap_or(path);
                 match WaylandRenderer::load_hidden_image(device, queue, load_path) {
-                    Ok((t, v)) => {
+                    Ok((t, v, w, h)) => {
                         if xray_path.is_some() {
-                            info!("Loaded xray image: {:?}", load_path);
+                            info!("Loaded xray image: {:?} ({}x{})", load_path, w, h);
                         } else {
-                            info!("Loaded wallpaper as hidden image: {:?}", path);
+                            info!("Loaded wallpaper as hidden image: {:?} ({}x{})", path, w, h);
                         }
-                        (t, v)
+                        (t, v, w, h)
                     }
                     Err(e) => {
                         warn!("Failed to load image {:?}: {}, using dummy", load_path, e);
@@ -586,14 +645,13 @@ impl AppState {
                 Self::create_dummy_texture(device, queue)
             }
         } else {
-            // Imagen fija (path en config)
             if let Some(img_config) = config {
                 if let Some(path_str) = &img_config.path {
                     let path = PathBuf::from(path_str);
                     match WaylandRenderer::load_hidden_image(device, queue, &path) {
-                        Ok((t, v)) => {
-                            info!("Loaded hidden image: {}", path_str);
-                            (t, v)
+                        Ok((t, v, w, h)) => {
+                            info!("Loaded hidden image: {} ({}x{})", path_str, w, h);
+                            (t, v, w, h)
                         }
                         Err(e) => {
                             warn!("Failed to load hidden image: {}, using dummy", e);
@@ -611,7 +669,7 @@ impl AppState {
     }
 
     fn update_hidden_image_texture(output_state: &mut PerOutputState, path: &PathBuf) -> Result<()> {
-        let (new_texture, new_view) = WaylandRenderer::load_hidden_image(
+        let (new_texture, new_view, width, height) = WaylandRenderer::load_hidden_image(
             &output_state.wgpu_device, &output_state.wgpu_queue, path
         )?;
 
@@ -659,6 +717,8 @@ impl AppState {
         output_state._hidden_image_texture = Some(new_texture);
         output_state._hidden_image_view = Some(new_view);
         output_state.hidden_image_bind_group = new_bind_group;
+        output_state.hidden_texture_size = (width, height);
+
         Ok(())
     }
 
@@ -727,7 +787,6 @@ impl AppState {
             .find(|f| matches!(f, wgpu::TextureFormat::Bgra8UnormSrgb | wgpu::TextureFormat::Rgba8UnormSrgb))
             .unwrap_or(surface_caps.formats[0]);
 
-        // Forzar modo alpha para transparencia
         let alpha_mode = wgpu::CompositeAlphaMode::PreMultiplied;
 
         let surface_config = wgpu::SurfaceConfiguration {
@@ -742,8 +801,12 @@ impl AppState {
         };
         wgpu_surface.configure(&device, &surface_config);
 
-        let (hidden_texture, hidden_image_view) = Self::load_or_dummy_texture(
-            &device, &queue, &self.hidden_image_config, self.use_wallpaper_image, self.current_wallpaper_path.as_ref()
+        let (hidden_texture, hidden_image_view, tex_width, tex_height) = Self::load_or_dummy_texture(
+            &device,
+            &queue,
+            &self.hidden_image_config,
+            self.use_wallpaper_image,
+            self.current_wallpaper_path.as_ref(),
         );
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -812,7 +875,14 @@ impl AppState {
 
         let effect = self.hidden_image_config.as_ref().map(|c| c.effect).unwrap_or_default();
         let uniforms = Uniforms::new(
-            &self.colors, width as f32, height as f32, self.bar_alpha, self.use_hidden_image, effect
+            &self.colors,
+            width as f32,
+            height as f32,
+            self.bar_alpha,
+            self.use_hidden_image,
+            effect,
+            tex_width as f32,
+            tex_height as f32,
         );
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Uniform Buffer"),
@@ -897,6 +967,7 @@ impl AppState {
             hidden_image_bind_group,
             _hidden_image_texture: Some(hidden_texture),
             _hidden_image_view: Some(hidden_image_view),
+            hidden_texture_size: (tex_width, tex_height),
         };
 
         self.per_output.insert(name.clone(), state);
@@ -945,7 +1016,6 @@ impl AppState {
             let mut encoder = state.wgpu_device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
             {
                 let mut bg = state.background_color;
-                // Forzar alpha 0 si estamos usando imagen oculta, para asegurar transparencia total del fondo
                 if self.use_hidden_image && bg[3] > 0.0 {
                     warn!("background_color alpha is {}, forcing to 0.0 for hidden image mode", bg[3]);
                     bg[3] = 0.0;
@@ -978,7 +1048,7 @@ impl AppState {
     }
 }
 
-// --- Wayland Handlers ---
+// --- Wayland Handlers (sin cambios significativos) ---
 impl OutputHandler for AppState {
     fn output_state(&mut self) -> &mut OutputState { &mut self.output_state }
     fn new_output(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
@@ -1027,7 +1097,14 @@ impl LayerShellHandler for AppState {
                 state.wgpu_surface.configure(&state.wgpu_device, &state.wgpu_config);
                 let effect = self.hidden_image_config.as_ref().map(|c| c.effect).unwrap_or_default();
                 let uniforms = Uniforms::new(
-                    &self.colors, width as f32, height as f32, self.bar_alpha, self.use_hidden_image, effect
+                    &self.colors,
+                    width as f32,
+                    height as f32,
+                    self.bar_alpha,
+                    self.use_hidden_image,
+                    effect,
+                    state.hidden_texture_size.0 as f32,
+                    state.hidden_texture_size.1 as f32,
                 );
                 state.wgpu_queue.write_buffer(&state.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
                 state.configured = true;
