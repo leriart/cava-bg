@@ -20,13 +20,32 @@ A high-performance audio visualizer for Wayland compositors (Hyprland, Sway, Riv
 ## Installation
 
 ### Arch Linux (AUR)
+####  Using yay
+```bash
+yay -S cava-bg
+```
+#### Using paru
+```bash
+paru -S cava-bg
+```
+### Debian/Ubuntu (DEB packages)
+
+Download the .deb package from the releases section and install it with:
 
 ```bash
-# Using yay
-yay -S cava-bg
+sudo dpkg -i cava-bg_<version>_amd64.deb
+sudo apt-get install -f  # To fix dependencies if needed
+```
+### Fedora(RPM packages)
 
-# Using paru
-paru -S cava-bg
+#### Download the .rpm package from the releases section and install it with:
+
+```bash
+sudo rpm -i cava-bg-<version>.rpm
+```
+#### or using dnf
+```bash
+sudo dnf install cava-bg-<version>.rpm
 ```
 
 ### From Source
@@ -35,6 +54,14 @@ paru -S cava-bg
 ```bash
 # Arch Linux
 sudo pacman -S cava rustup wayland wayland-protocols libxkbcommon mesa libglvnd
+```
+```bash
+# Debian/Ubuntu
+sudo apt install cava rustc cargo libwayland-dev wayland-protocols libxkbcommon-dev libgl1-mesa-dev libglvnd-dev
+```
+```bash
+# Fedora
+sudo dnf install cava rust cargo wayland-devel wayland-protocols-devel libxkbcommon-devel mesa-libGL-devel libglvnd-devel
 ```
 
 2. **Build and Install:**
