@@ -24,6 +24,9 @@
 ### Static Color Mode (Fallback or Manual)
 If `dynamic_colors = false`, the visualizer uses user-defined colors from the `[colors]` section of the configuration file. Each color can be defined as a simple hex string (`"#rrggbb"`) or as an object containing both hex and alpha values.
 
+[Example Simple.webm](https://github.com/user-attachments/assets/0214f1a2-a1ca-4e2a-a886-5fca98f7394f)
+
+
 ### Flexible TOML Configuration
 - **Default file path:** `~/.config/cava-bg/config.toml`
 - **Key options include:**
