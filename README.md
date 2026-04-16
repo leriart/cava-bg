@@ -1,6 +1,10 @@
-# cava-bg - Native CAVA Visualizer for Wayland
+# <p align="center">cava-bg - Native CAVA Visualizer for Wayland</p>
 
-A high-performance audio visualizer for Wayland compositors (Hyprland, Sway, River, etc.) that displays real-time CAVA audio bars as a transparent overlay over your wallpaper, with automatic color extraction and dynamic updates when your wallpaper changes.
+<p align="center">
+  <img src="multimedia/Example%20Xray2.gif">
+</p>
+
+**cava-bg** is a modern, lightweight, and highly customizable visualizer that turns any Wayland desktop into a dynamic audio experience. Designed for users who want seamless wallpaper integration without sacrificing performance, it features real-time color adaptation to your wallpaper and a unique "hidden image" reveal mode, making it the perfect choice for stylized desktop setups.
 
 ![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange.svg)
 ![Wayland](https://img.shields.io/badge/Wayland-Native-green.svg)
@@ -16,6 +20,31 @@ A high-performance audio visualizer for Wayland compositors (Hyprland, Sway, Riv
 - **Lightweight** – Spawns a single `cava` process and renders at your specified framerate
 - **Multi‑output support** – Works on multiple monitors; can target a specific output
 - **Kill command** – `cava-bg kill` stops any running instance
+
+### Static Color Mode (Fallback or Manual)
+If `dynamic_colors = false`, the visualizer uses user-defined colors from the `[colors]` section of the configuration file. Each color can be defined as a simple hex string (`"#rrggbb"`) or as an object containing both hex and alpha values.
+
+### Flexible TOML Configuration
+- **Default file path:** `~/.config/cava-bg/config.toml`
+- **Key options include:**
+    - `framerate`: Frames per second.
+    - `amount`: Total number of vertical bars.
+    - `gap`: Spacing between bars (as a fraction of bar width).
+    - `bar_alpha`: Transparency level for the bars.
+    - `corner_radius`: Corner rounding for the window (useful if the background isn't fully transparent).
+    - `autosens` / `sensitivity`: CAVA sensitivity controls.
+    - `preferred_output`: Target monitor name (e.g., "DP-1").
+    - `background_color`: Background color for the overlay layer (fully transparent by default).
+
+### Hidden Image Support
+Displays a fixed image that is "revealed" by the bars as they move up and down.
+- **Reveal Modes:** Currently supports `Reveal`.
+- **Image Effects:** Apply filters to the revealed image such as `None`, `Grayscale`, `Invert`, `Sepia`, or predefined color palettes (`Catppuccin`, `Nord`, `Gruvbox`, `Solarized`).
+- **Advanced Features:** You can use your current wallpaper as the hidden image or enable an automatic "x-ray" search in a specific directory to find stylized versions of your wallpaper for special visual effects.
+
+<p align="center">
+  <img src="multimedia/Example%20Xray1.gif" alt="Xray Effect Example">
+</p>
 
 ## Installation
 
