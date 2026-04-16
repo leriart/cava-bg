@@ -20,7 +20,7 @@ pub struct WallpaperAnalyzer;
 impl WallpaperAnalyzer {
     pub fn find_wallpaper() -> Option<PathBuf> {
         let modern_wallpaper_daemons: &[(&str, fn() -> Option<PathBuf>)] = &[
-            ("swww", Self::from_swww), // Probablemente el más común
+            ("swww", Self::from_swww),
             ("hyprpaper", Self::from_hyprpaper),
             ("wpaperd", Self::from_wpaperd),
         ];
@@ -43,7 +43,7 @@ impl WallpaperAnalyzer {
         let desktop_detectors: &[(&str, fn() -> Option<PathBuf>)] = &[
             ("gnome", Self::from_gnome),
             ("kde", Self::from_plasma),
-            ("plasma", Self::from_plasma), // Por si acaso
+            ("plasma", Self::from_plasma),
             ("cinnamon", Self::from_cinnamon),
             ("budgie", Self::from_budgie),
             ("xfce", Self::from_xfce),
@@ -85,24 +85,24 @@ impl WallpaperAnalyzer {
     }
 
     fn from_swww() -> Option<PathBuf> {
-        let output = Command::new("swww")
-            .arg("query")
-            .output()
-            .ok()?;
-
-        if output.status.success() {
-            if let Ok(stdout) = String::from_utf8(output.stdout) {
-                for line in stdout.lines() {
-                    if let Some((_, path_str)) = line.split_once(": ") {
-                        let path = PathBuf::from(path_str);
-                        if path.exists() {
-                            return Some(path);
+        // Método principal: swww query
+        if let Ok(output) = Command::new("swww").arg("query").output() {
+            if output.status.success() {
+                if let Ok(stdout) = String::from_utf8(output.stdout) {
+                    for line in stdout.lines() {
+                        // Formato típico: "DP-1: /path/to/image.jpg"
+                        if let Some((_, path_str)) = line.split_once(": ") {
+                            let path = PathBuf::from(path_str.trim());
+                            if path.exists() {
+                                return Some(path);
+                            }
                         }
                     }
                 }
             }
         }
 
+        // Fallback: caché de swww
         let cache_dir = dirs::cache_dir()?.join("swww");
         if cache_dir.exists() {
             if let Ok(entries) = fs::read_dir(&cache_dir) {
@@ -124,11 +124,14 @@ impl WallpaperAnalyzer {
     }
 
     fn from_hyprpaper() -> Option<PathBuf> {
-        if let Ok(output) = Command::new("hyprctl").arg("hyprpaper").arg("listloaded").output() {
+        // Método principal: hyprctl hyprpaper listloaded
+        if let Ok(output) = Command::new("hyprctl")
+            .args(["hyprpaper", "listloaded"])
+            .output()
+        {
             if output.status.success() {
                 if let Ok(stdout) = String::from_utf8(output.stdout) {
-                    // El formato es una línea por imagen
-                    if let Some(line) = stdout.lines().next() {
+                    for line in stdout.lines() {
                         let path = PathBuf::from(line.trim());
                         if path.exists() {
                             return Some(path);
@@ -138,6 +141,7 @@ impl WallpaperAnalyzer {
             }
         }
 
+        // Fallback: archivo de configuración de hyprpaper
         let config_path = dirs::home_dir()?.join(".config/hypr/hyprpaper.conf");
         if config_path.exists() {
             if let Ok(content) = fs::read_to_string(config_path) {
@@ -162,30 +166,24 @@ impl WallpaperAnalyzer {
     }
 
     fn from_wpaperd() -> Option<PathBuf> {
-        let output = Command::new("wpaperctl")
-            .arg("list")
-            .output()
-            .ok()?;
-
-        if output.status.success() {
-            if let Ok(stdout) = String::from_utf8(output.stdout) {
-                // La salida es algo como: "DP-1: /path/to/image.jpg"
-                for line in stdout.lines() {
-                    if let Some((_, path_str)) = line.split_once(": ") {
-                        let path = PathBuf::from(path_str);
-                        if path.exists() {
-                            return Some(path);
+        if let Ok(output) = Command::new("wpaperctl").arg("list").output() {
+            if output.status.success() {
+                if let Ok(stdout) = String::from_utf8(output.stdout) {
+                    for line in stdout.lines() {
+                        if let Some((_, path_str)) = line.split_once(": ") {
+                            let path = PathBuf::from(path_str.trim());
+                            if path.exists() {
+                                return Some(path);
+                            }
                         }
                     }
                 }
             }
         }
 
-        // Fallback: leer el archivo de configuración
         let config_path = dirs::home_dir()?.join(".config/wpaperd/config.toml");
         if config_path.exists() {
             if let Ok(content) = fs::read_to_string(config_path) {
-                // Buscar líneas como: path = "/path/to/wallpaper"
                 for line in content.lines() {
                     let line = line.trim();
                     if line.starts_with("path") {
@@ -227,20 +225,27 @@ impl WallpaperAnalyzer {
     }
 
     fn from_plasma() -> Option<PathBuf> {
-        let output = Command::new("qdbus")
-            .args(["org.kde.plasmashell", "/PlasmaShell", "org.kde.PlasmaShell.wallpaper", "0"])
+        // Método con qdbus (puede requerir paquetes adicionales)
+        if let Ok(output) = Command::new("qdbus")
+            .args([
+                "org.kde.plasmashell",
+                "/PlasmaShell",
+                "org.kde.PlasmaShell.wallpaper",
+                "0",
+            ])
             .output()
-            .ok()?;
-        if output.status.success() {
-            if let Ok(stdout) = String::from_utf8(output.stdout) {
-                for line in stdout.lines() {
-                    if line.starts_with("Image: ") {
-                        let uri = &line[7..].trim();
-                        if let Some(path) = uri.strip_prefix("file://") {
-                            let decoded_path = urlencoding::decode(path).ok()?.to_string();
-                            let path_buf = PathBuf::from(decoded_path);
-                            if path_buf.exists() {
-                                return Some(path_buf);
+        {
+            if output.status.success() {
+                if let Ok(stdout) = String::from_utf8(output.stdout) {
+                    for line in stdout.lines() {
+                        if line.starts_with("Image: ") {
+                            let uri = &line[7..].trim();
+                            if let Some(path) = uri.strip_prefix("file://") {
+                                let decoded_path = urlencoding::decode(path).ok()?.to_string();
+                                let path_buf = PathBuf::from(decoded_path);
+                                if path_buf.exists() {
+                                    return Some(path_buf);
+                                }
                             }
                         }
                     }
@@ -248,7 +253,9 @@ impl WallpaperAnalyzer {
             }
         }
 
-        let config_path = dirs::home_dir()?.join(".config/plasma-org.kde.plasma.desktop-appletsrc");
+        // Fallback: archivo de configuración
+        let config_path =
+            dirs::home_dir()?.join(".config/plasma-org.kde.plasma.desktop-appletsrc");
         if config_path.exists() {
             if let Ok(content) = fs::read_to_string(config_path) {
                 for line in content.lines() {
@@ -293,17 +300,26 @@ impl WallpaperAnalyzer {
     }
 
     fn from_xfce() -> Option<PathBuf> {
-        let output = Command::new("xfconf-query")
-            .args(["-c", "xfce4-desktop", "-p", "/backdrop/screen0/monitor0/image-path"])
-            .output()
-            .ok()?;
-        if output.status.success() {
-            if let Ok(path_str) = String::from_utf8(output.stdout) {
-                let path_str = path_str.trim();
-                if !path_str.is_empty() {
-                    let path = PathBuf::from(path_str);
-                    if path.exists() {
-                        return Some(path);
+        // Primero intentar con xfconf-query para el monitor actual
+        let monitors = ["monitor0", "monitor1", "monitor2"];
+        for mon in monitors {
+            let output = Command::new("xfconf-query")
+                .args([
+                    "-c",
+                    "xfce4-desktop",
+                    "-p",
+                    &format!("/backdrop/screen0/{}/image-path", mon),
+                ])
+                .output()
+                .ok()?;
+            if output.status.success() {
+                if let Ok(path_str) = String::from_utf8(output.stdout) {
+                    let path_str = path_str.trim();
+                    if !path_str.is_empty() {
+                        let path = PathBuf::from(path_str);
+                        if path.exists() {
+                            return Some(path);
+                        }
                     }
                 }
             }
@@ -361,20 +377,26 @@ impl WallpaperAnalyzer {
     }
 
     fn from_deepin() -> Option<PathBuf> {
-        let output = Command::new("dbus-send")
-            .args(["--print-reply", "--dest=com.deepin.daemon.Appearance", "/com/deepin/daemon/Appearance", "com.deepin.daemon.Appearance.GetCurrentWallpaper"])
+        if let Ok(output) = Command::new("dbus-send")
+            .args([
+                "--print-reply",
+                "--dest=com.deepin.daemon.Appearance",
+                "/com/deepin/daemon/Appearance",
+                "com.deepin.daemon.Appearance.GetCurrentWallpaper",
+            ])
             .output()
-            .ok()?;
-        if output.status.success() {
-            if let Ok(stdout) = String::from_utf8(output.stdout) {
-                for line in stdout.lines() {
-                    if line.contains("string") {
-                        if let Some(start) = line.find('"') {
-                            if let Some(end) = line.rfind('"') {
-                                let path_str = &line[start+1..end];
-                                let path = PathBuf::from(path_str);
-                                if path.exists() {
-                                    return Some(path);
+        {
+            if output.status.success() {
+                if let Ok(stdout) = String::from_utf8(output.stdout) {
+                    for line in stdout.lines() {
+                        if line.contains("string") {
+                            if let Some(start) = line.find('"') {
+                                if let Some(end) = line.rfind('"') {
+                                    let path_str = &line[start + 1..end];
+                                    let path = PathBuf::from(path_str);
+                                    if path.exists() {
+                                        return Some(path);
+                                    }
                                 }
                             }
                         }
@@ -416,16 +438,29 @@ impl WallpaperAnalyzer {
     }
 
     fn from_swaybg() -> Option<PathBuf> {
+        // Buscar proceso swaybg con pgrep y parsear argumentos
         let output = Command::new("pgrep").arg("-a").arg("swaybg").output().ok()?;
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
+            // Formato: "12345 swaybg -i /path/to/image -m fill"
             if let Some(idx) = line.find("-i") {
                 let rest = &line[idx + 2..].trim();
-                if let Some(path_str) = rest.split_whitespace().next() {
-                    let path = PathBuf::from(path_str);
-                    if path.exists() {
-                        return Some(path);
+                // Manejar rutas con espacios: tomar hasta el siguiente argumento que empiece con '-'
+                let mut path_str = String::new();
+                let mut in_quotes = false;
+                for ch in rest.chars() {
+                    if ch == '"' {
+                        in_quotes = !in_quotes;
+                    } else if !in_quotes && ch == '-' && path_str.ends_with(' ') {
+                        break;
+                    } else {
+                        path_str.push(ch);
                     }
+                }
+                let path_str = path_str.trim();
+                let path = PathBuf::from(path_str);
+                if path.exists() {
+                    return Some(path);
                 }
             }
         }
@@ -437,18 +472,13 @@ impl WallpaperAnalyzer {
         let stdout = String::from_utf8_lossy(&output.stdout);
         for line in stdout.lines() {
             let parts: Vec<&str> = line.split_whitespace().collect();
-            for (i, part) in parts.iter().enumerate() {
-                if *part == "--mpv" && i + 1 < parts.len() {
-                    let path = PathBuf::from(parts[i + 1]);
-                    if path.exists() {
+            // Buscar el último argumento que parezca una ruta de archivo (no empiece con '-')
+            for part in parts.iter().rev() {
+                if !part.starts_with('-') {
+                    let path = PathBuf::from(part);
+                    if path.exists() && path.is_file() {
                         return Some(path);
                     }
-                }
-            }
-            if let Some(last) = parts.last() {
-                let path = PathBuf::from(last);
-                if path.exists() && path.is_file() {
-                    return Some(path);
                 }
             }
         }
@@ -456,18 +486,15 @@ impl WallpaperAnalyzer {
     }
 
     fn from_awww() -> Option<PathBuf> {
-        let output = Command::new("awww")
-            .arg("query")
-            .arg("--json")
-            .output()
-            .ok()?;
-        if output.status.success() {
-            if let Ok(json_str) = String::from_utf8(output.stdout) {
-                if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                    if let Some(image_path) = json_value.get("image").and_then(|v| v.as_str()) {
-                        let path = PathBuf::from(image_path);
-                        if path.exists() {
-                            return Some(path);
+        if let Ok(output) = Command::new("awww").arg("query").arg("--json").output() {
+            if output.status.success() {
+                if let Ok(json_str) = String::from_utf8(output.stdout) {
+                    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&json_str) {
+                        if let Some(image_path) = json_value.get("image").and_then(|v| v.as_str()) {
+                            let path = PathBuf::from(image_path);
+                            if path.exists() {
+                                return Some(path);
+                            }
                         }
                     }
                 }
@@ -494,7 +521,6 @@ impl WallpaperAnalyzer {
         None
     }
 
-    //SHELLS
     fn from_ambxst() -> Option<PathBuf> {
         let home = dirs::home_dir()?;
         let cache_path = home.join(".cache/ambxst/wallpapers.json");
@@ -503,6 +529,7 @@ impl WallpaperAnalyzer {
             return None;
         }
         let content = fs::read_to_string(cache_path).ok()?;
+        // Parseo simple: buscar "currentWall": "ruta"
         let tag = "currentWall";
         if let Some(start) = content.find(tag) {
             let after_tag = &content[start + tag.len()..];
@@ -524,7 +551,8 @@ impl WallpaperAnalyzer {
     }
 
     fn load_image_from_path(path: &PathBuf) -> Result<image::DynamicImage> {
-        let ext = path.extension()
+        let ext = path
+            .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_lowercase();
@@ -532,12 +560,20 @@ impl WallpaperAnalyzer {
         if matches!(ext.as_str(), "mp4" | "mkv" | "webm" | "avi" | "mov") {
             let temp_frame = std::env::temp_dir().join("cava_bg_temp_frame.png");
             let status = Command::new("ffmpeg")
-                .args(["-i", path.to_str().unwrap(), "-vframes", "1", "-q:v", "2", temp_frame.to_str().unwrap(), "-y"])
+                .args([
+                    "-i",
+                    path.to_str().unwrap(),
+                    "-vframes",
+                    "1",
+                    "-q:v",
+                    "2",
+                    temp_frame.to_str().unwrap(),
+                    "-y",
+                ])
                 .status();
             if let Ok(status) = status {
                 if status.success() {
-                    let img = image::open(&temp_frame)
-                        .context("Failed to open video frame")?;
+                    let img = image::open(&temp_frame).context("Failed to open video frame")?;
                     let _ = fs::remove_file(temp_frame);
                     return Ok(img);
                 }
@@ -622,12 +658,14 @@ impl WallpaperAnalyzer {
 
         log::info!("New gradient colors:");
         for (i, color) in new_colors.iter().enumerate() {
-            log::info!("  Color {}: #{:02x}{:02x}{:02x} (alpha: {:.2})",
-                i+1,
-                (color[0]*255.0) as u8,
-                (color[1]*255.0) as u8,
-                (color[2]*255.0) as u8,
-                color[3]);
+            log::info!(
+                "  Color {}: #{:02x}{:02x}{:02x} (alpha: {:.2})",
+                i + 1,
+                (color[0] * 255.0) as u8,
+                (color[1] * 255.0) as u8,
+                (color[2] * 255.0) as u8,
+                color[3]
+            );
         }
 
         Ok(new_colors)

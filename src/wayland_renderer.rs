@@ -3,6 +3,8 @@ use log::{debug, error, info, warn};
 use smithay_client_toolkit::reexports::calloop::EventLoop;
 use smithay_client_toolkit::reexports::calloop_wayland_source::WaylandSource;
 use smithay_client_toolkit::registry::ProvidesRegistryState;
+use smithay_client_toolkit::shell::WaylandSurface;
+use smithay_client_toolkit::shell::wlr_layer::KeyboardInteractivity;
 use smithay_client_toolkit::shell::wlr_layer::{
     Anchor, Layer, LayerShell, LayerShellHandler, LayerSurface, LayerSurfaceConfigure,
 };
@@ -40,7 +42,7 @@ use std::path::PathBuf;
 
 use crate::app_config::{
     array_from_config_color, Config, CavaConfig, CavaGeneralConfig, CavaSmoothingConfig,
-    HiddenImageConfig, HiddenImageEffect, PaletteType
+    HiddenImageConfig, HiddenImageEffect, PaletteType,
 };
 use crate::wallpaper::WallpaperAnalyzer;
 
@@ -226,7 +228,7 @@ struct PerOutputState {
     wgpu_queue: wgpu::Queue,
     wgpu_config: wgpu::SurfaceConfiguration,
     render_pipeline: wgpu::RenderPipeline,
-    bind_group0: wgpu::BindGroup, // bind group 0 (uniforms)
+    bind_group0: wgpu::BindGroup,
     uniform_buffer: wgpu::Buffer,
     vertex_buffer: wgpu::Buffer,
     index_buffer: wgpu::Buffer,
@@ -234,11 +236,10 @@ struct PerOutputState {
     height: u32,
     configured: bool,
     background_color: [f32; 4],
-    // Nuevos campos para imagen oculta
-    hidden_image_bind_group: wgpu::BindGroup, // bind group 1 (siempre existe)
+    hidden_image_bind_group: wgpu::BindGroup,
     _hidden_image_texture: Option<wgpu::Texture>,
     _hidden_image_view: Option<wgpu::TextureView>,
-    hidden_texture_size: (u32, u32), // NUEVO: almacenar dimensiones de la textura
+    hidden_texture_size: (u32, u32),
 }
 
 pub struct WaylandRenderer {
@@ -357,7 +358,9 @@ impl WaylandRenderer {
                             let num = u16::from_le_bytes([chunk[0], chunk[1]]);
                             bar_heights[i] = (num as f32) / 65530.0;
                         }
-                        if cava_tx.send(bar_heights).is_err() { break; }
+                        if cava_tx.send(bar_heights).is_err() {
+                            break;
+                        }
                     }
                     Err(e) => {
                         error!("Error reading cava data: {}", e);
@@ -369,7 +372,11 @@ impl WaylandRenderer {
 
         let use_dynamic = self.config.general.dynamic_colors;
         let (initial_colors, color_receiver) = if use_dynamic {
-            let num_colors = if !self.config.colors.is_empty() { self.config.colors.len() } else { 8 };
+            let num_colors = if !self.config.colors.is_empty() {
+                self.config.colors.len()
+            } else {
+                8
+            };
             match WallpaperAnalyzer::generate_gradient_colors(num_colors) {
                 Ok(colors) => {
                     info!("Using dynamic colors from wallpaper");
@@ -379,26 +386,41 @@ impl WaylandRenderer {
                 }
                 Err(e) => {
                     error!("Failed to generate colors: {}, using config colors", e);
-                    let colors: Vec<[f32; 4]> = self.config.colors.values()
-                        .map(|c| array_from_config_color(c.clone())).collect();
+                    let colors: Vec<[f32; 4]> = self
+                        .config
+                        .colors
+                        .values()
+                        .map(|c| array_from_config_color(c.clone()))
+                        .collect();
                     let (_dummy_tx, dummy_rx) = channel::<Vec<[f32; 4]>>();
                     (colors, dummy_rx)
                 }
             }
         } else {
             info!("Using static colors from config");
-            let colors: Vec<[f32; 4]> = self.config.colors.values()
-                .map(|c| array_from_config_color(c.clone())).collect();
+            let colors: Vec<[f32; 4]> = self
+                .config
+                .colors
+                .values()
+                .map(|c| array_from_config_color(c.clone()))
+                .collect();
             let (_dummy_tx, dummy_rx) = channel::<Vec<[f32; 4]>>();
             (colors, dummy_rx)
         };
-        let background_color = array_from_config_color(self.config.general.background_color.clone());
+        let background_color =
+            array_from_config_color(self.config.general.background_color.clone());
 
         let hidden_image_config = self.config.hidden_image.clone();
         let use_hidden_image = hidden_image_config.is_some();
-        let use_wallpaper_image = hidden_image_config.as_ref().map(|c| c.use_wallpaper).unwrap_or(false);
+        let use_wallpaper_image = hidden_image_config
+            .as_ref()
+            .map(|c| c.use_wallpaper)
+            .unwrap_or(false);
 
-        let (_wallpaper_path_tx, wallpaper_path_rx): (Option<Sender<Option<PathBuf>>>, Receiver<Option<PathBuf>>) = if use_wallpaper_image {
+        let (_wallpaper_path_tx, wallpaper_path_rx): (
+            Option<Sender<Option<PathBuf>>>,
+            Receiver<Option<PathBuf>>,
+        ) = if use_wallpaper_image {
             let (tx, rx) = channel();
             let tx_clone = tx.clone();
             WallpaperAnalyzer::start_wallpaper_path_monitor(tx);
@@ -412,12 +434,15 @@ impl WaylandRenderer {
         let (globals, event_queue) = registry_queue_init(&conn).context("Failed to init registry")?;
         let qh = event_queue.handle();
 
-        let mut event_loop: EventLoop<AppState> = EventLoop::try_new().context("Failed to create event loop")?;
+        let mut event_loop: EventLoop<AppState> =
+            EventLoop::try_new().context("Failed to create event loop")?;
         let loop_handle = event_loop.handle();
-        WaylandSource::new(conn.clone(), event_queue).insert(loop_handle)
+        WaylandSource::new(conn.clone(), event_queue)
+            .insert(loop_handle)
             .map_err(|e| anyhow::anyhow!("Wayland source error: {:?}", e))?;
 
-        let compositor = CompositorState::bind(&globals, &qh).context("wl_compositor not available")?;
+        let compositor =
+            CompositorState::bind(&globals, &qh).context("wl_compositor not available")?;
         let layer_shell = LayerShell::bind(&globals, &qh).context("layer shell not available")?;
 
         let initial_wallpaper_path = if use_wallpaper_image {
@@ -483,11 +508,19 @@ impl WaylandRenderer {
                             output_state.height as f32,
                             state.bar_alpha,
                             state.use_hidden_image,
-                            state.hidden_image_config.as_ref().map(|c| c.effect).unwrap_or_default(),
+                            state
+                                .hidden_image_config
+                                .as_ref()
+                                .map(|c| c.effect)
+                                .unwrap_or_default(),
                             output_state.hidden_texture_size.0 as f32,
                             output_state.hidden_texture_size.1 as f32,
                         );
-                        output_state.wgpu_queue.write_buffer(&output_state.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
+                        output_state.wgpu_queue.write_buffer(
+                            &output_state.uniform_buffer,
+                            0,
+                            bytemuck::cast_slice(&[uniforms]),
+                        );
                     }
                 }
             }
@@ -508,14 +541,17 @@ impl WaylandRenderer {
                     }
 
                     for output_state in outputs_to_update {
-                        // Actualizar la textura (esto también guarda el nuevo tamaño en output_state.hidden_texture_size)
-                        if let Err(e) = AppState::update_hidden_image_texture(output_state, load_path) {
+                        if let Err(e) = AppState::update_hidden_image_texture(output_state, load_path)
+                        {
                             error!("Failed to update hidden image texture: {}", e);
                             continue;
                         }
 
-                        // --- CORRECCIÓN: Actualizar el uniform buffer con las nuevas dimensiones ---
-                        let effect = state.hidden_image_config.as_ref().map(|c| c.effect).unwrap_or_default();
+                        let effect = state
+                            .hidden_image_config
+                            .as_ref()
+                            .map(|c| c.effect)
+                            .unwrap_or_default();
                         let uniforms = Uniforms::new(
                             &state.colors,
                             output_state.width as f32,
@@ -526,8 +562,11 @@ impl WaylandRenderer {
                             output_state.hidden_texture_size.0 as f32,
                             output_state.hidden_texture_size.1 as f32,
                         );
-                        output_state.wgpu_queue.write_buffer(&output_state.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
-                        // -------------------------------------------------------------------------
+                        output_state.wgpu_queue.write_buffer(
+                            &output_state.uniform_buffer,
+                            0,
+                            bytemuck::cast_slice(&[uniforms]),
+                        );
                     }
                 }
             }
@@ -539,8 +578,6 @@ impl WaylandRenderer {
     }
 }
 
-/// Dada la ruta de un wallpaper y la configuración, devuelve la ruta de la versión "xray"
-/// si existe un archivo con el mismo nombre en el directorio `xray_images_dir`.
 fn resolve_xray_path(wallpaper_path: &PathBuf, config: &Option<HiddenImageConfig>) -> Option<PathBuf> {
     if let Some(cfg) = config {
         if let Some(xray_dir) = &cfg.xray_images_dir {
@@ -587,8 +624,15 @@ struct AppState {
 }
 
 impl AppState {
-    fn create_dummy_texture(device: &wgpu::Device, queue: &wgpu::Queue) -> (wgpu::Texture, wgpu::TextureView, u32, u32) {
-        let texture_size = wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 };
+    fn create_dummy_texture(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> (wgpu::Texture, wgpu::TextureView, u32, u32) {
+        let texture_size = wgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        };
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("Dummy Hidden Image"),
             size: texture_size,
@@ -608,7 +652,11 @@ impl AppState {
                 aspect: wgpu::TextureAspect::All,
             },
             &transparent_pixel,
-            wgpu::ImageDataLayout { offset: 0, bytes_per_row: Some(4), rows_per_image: Some(1) },
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(4),
+                rows_per_image: Some(1),
+            },
             texture_size,
         );
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
@@ -668,10 +716,12 @@ impl AppState {
         }
     }
 
-    fn update_hidden_image_texture(output_state: &mut PerOutputState, path: &PathBuf) -> Result<()> {
-        let (new_texture, new_view, width, height) = WaylandRenderer::load_hidden_image(
-            &output_state.wgpu_device, &output_state.wgpu_queue, path
-        )?;
+    fn update_hidden_image_texture(
+        output_state: &mut PerOutputState,
+        path: &PathBuf,
+    ) -> Result<()> {
+        let (new_texture, new_view, width, height) =
+            WaylandRenderer::load_hidden_image(&output_state.wgpu_device, &output_state.wgpu_queue, path)?;
 
         let sampler = output_state.wgpu_device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -683,34 +733,42 @@ impl AppState {
             ..Default::default()
         });
 
-        let bind_group_layout = output_state.wgpu_device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("Hidden Image Bind Group Layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+        let bind_group_layout = output_state
+            .wgpu_device
+            .create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("Hidden Image Bind Group Layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
-        });
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
 
         let new_bind_group = output_state.wgpu_device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Hidden Image Bind Group"),
             layout: &bind_group_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&new_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&new_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
             ],
         });
 
@@ -725,20 +783,36 @@ impl AppState {
     fn ensure_output(&mut self, output: &wl_output::WlOutput) -> Result<()> {
         let info = match self.output_state.info(output) {
             Some(info) => info,
-            None => { debug!("Output info not yet available"); return Ok(()); }
+            None => {
+                debug!("Output info not yet available");
+                return Ok(());
+            }
         };
         let name = info.name.clone().unwrap_or_else(|| "unknown".to_string());
 
-        if self.per_output.contains_key(&name) { return Ok(()); }
+        if self.per_output.contains_key(&name) {
+            return Ok(());
+        }
         if let Some(ref pref) = self.preferred_output_name {
-            if &name != pref { debug!("Skipping output {} (preferred is {})", name, pref); return Ok(()); }
+            if &name != pref {
+                debug!("Skipping output {} (preferred is {})", name, pref);
+                return Ok(());
+            }
         }
 
         info!("Creating surface for output {}", name);
         let surface = self.compositor.create_surface(&self.qh);
         let layer_surface = self.layer_shell.create_layer_surface(
-            &self.qh, surface.clone(), Layer::Bottom, Some("cava-bg"), Some(output),
+            &self.qh,
+            surface.clone(),
+            Layer::Bottom,
+            Some("cava-bg"),
+            Some(output),
         );
+
+        // Permitir clics a través (input passthrough)
+        layer_surface.set_input_region(None);
+        layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
 
         let logical_size = info.logical_size.unwrap_or((1920, 1080));
         let width = logical_size.0 as u32;
@@ -764,13 +838,15 @@ impl AppState {
                 raw_display_handle: raw_display,
                 raw_window_handle: raw_window,
             })
-        }.context("Failed to create WGPU surface")?;
+        }
+        .context("Failed to create WGPU surface")?;
 
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: Some(&wgpu_surface),
             force_fallback_adapter: false,
-        })).context("Failed to find suitable GPU adapter")?;
+        }))
+        .context("Failed to find suitable GPU adapter")?;
 
         let (device, queue) = pollster::block_on(adapter.request_device(
             &wgpu::DeviceDescriptor {
@@ -779,12 +855,20 @@ impl AppState {
                 required_limits: wgpu::Limits::default(),
             },
             None,
-        )).context("Failed to create device")?;
+        ))
+        .context("Failed to create device")?;
 
         let surface_caps = wgpu_surface.get_capabilities(&adapter);
-        let surface_format = surface_caps.formats.iter()
+        let surface_format = surface_caps
+            .formats
+            .iter()
             .copied()
-            .find(|f| matches!(f, wgpu::TextureFormat::Bgra8UnormSrgb | wgpu::TextureFormat::Rgba8UnormSrgb))
+            .find(|f| {
+                matches!(
+                    f,
+                    wgpu::TextureFormat::Bgra8UnormSrgb | wgpu::TextureFormat::Rgba8UnormSrgb
+                )
+            })
             .unwrap_or(surface_caps.formats[0]);
 
         let alpha_mode = wgpu::CompositeAlphaMode::PreMultiplied;
@@ -845,8 +929,14 @@ impl AppState {
             label: Some("Hidden Image Bind Group"),
             layout: &bind_group_layout1,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&hidden_image_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&hidden_image_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&sampler),
+                },
             ],
         });
 
@@ -858,7 +948,7 @@ impl AppState {
         let mut all_indices = Vec::with_capacity(self.bar_count * 6);
         for i in 0..self.bar_count {
             let base = (i * 4) as u16;
-            all_indices.extend_from_slice(&[base, base+1, base+2, base+1, base+3, base+2]);
+            all_indices.extend_from_slice(&[base, base + 1, base + 2, base + 1, base + 3, base + 2]);
         }
         let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Index Buffer"),
@@ -873,7 +963,11 @@ impl AppState {
             mapped_at_creation: false,
         });
 
-        let effect = self.hidden_image_config.as_ref().map(|c| c.effect).unwrap_or_default();
+        let effect = self
+            .hidden_image_config
+            .as_ref()
+            .map(|c| c.effect)
+            .unwrap_or_default();
         let uniforms = Uniforms::new(
             &self.colors,
             width as f32,
@@ -907,7 +1001,10 @@ impl AppState {
         let bind_group0 = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Uniform Bind Group"),
             layout: &bind_group_layout0,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: uniform_buffer.as_entire_binding() }],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -926,8 +1023,16 @@ impl AppState {
                     array_stride: (4 * std::mem::size_of::<f32>()) as u64,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 0, shader_location: 0 },
-                        wgpu::VertexAttribute { format: wgpu::VertexFormat::Float32x2, offset: 8, shader_location: 1 },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 0,
+                            shader_location: 0,
+                        },
+                        wgpu::VertexAttribute {
+                            format: wgpu::VertexFormat::Float32x2,
+                            offset: 8,
+                            shader_location: 1,
+                        },
                     ],
                 }],
             },
@@ -993,31 +1098,47 @@ impl AppState {
             let x0 = bar_gap_width * i as f32 + bar_width * i as f32 - 1.0;
             let x1 = bar_gap_width * i as f32 + bar_width * (i + 1) as f32 - 1.0;
             vertices.extend_from_slice(&[x0, -1.0, 0.0, 0.0]);
-            vertices.extend_from_slice(&[x0, h,     0.0, 1.0]);
+            vertices.extend_from_slice(&[x0, h, 0.0, 1.0]);
             vertices.extend_from_slice(&[x1, -1.0, 1.0, 0.0]);
-            vertices.extend_from_slice(&[x1, h,     1.0, 1.0]);
+            vertices.extend_from_slice(&[x1, h, 1.0, 1.0]);
         }
 
         for state in self.per_output.values_mut() {
-            if !state.configured { continue; }
+            if !state.configured {
+                continue;
+            }
 
-            state.wgpu_queue.write_buffer(&state.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
+            state
+                .wgpu_queue
+                .write_buffer(&state.vertex_buffer, 0, bytemuck::cast_slice(&vertices));
 
             let frame = match state.wgpu_surface.get_current_texture() {
                 Ok(f) => f,
                 Err(wgpu::SurfaceError::Lost) => {
-                    state.wgpu_surface.configure(&state.wgpu_device, &state.wgpu_config);
+                    state
+                        .wgpu_surface
+                        .configure(&state.wgpu_device, &state.wgpu_config);
                     continue;
                 }
-                Err(e) => { error!("Surface error: {:?}", e); continue; }
+                Err(e) => {
+                    error!("Surface error: {:?}", e);
+                    continue;
+                }
             };
 
-            let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-            let mut encoder = state.wgpu_device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+            let view = frame
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            let mut encoder = state
+                .wgpu_device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
             {
                 let mut bg = state.background_color;
                 if self.use_hidden_image && bg[3] > 0.0 {
-                    warn!("background_color alpha is {}, forcing to 0.0 for hidden image mode", bg[3]);
+                    warn!(
+                        "background_color alpha is {}, forcing to 0.0 for hidden image mode",
+                        bg[3]
+                    );
                     bg[3] = 0.0;
                 }
                 let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1026,7 +1147,12 @@ impl AppState {
                         view: &view,
                         resolve_target: None,
                         ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color { r: bg[0] as f64, g: bg[1] as f64, b: bg[2] as f64, a: bg[3] as f64 }),
+                            load: wgpu::LoadOp::Clear(wgpu::Color {
+                                r: bg[0] as f64,
+                                g: bg[1] as f64,
+                                b: bg[2] as f64,
+                                a: bg[3] as f64,
+                            }),
                             store: wgpu::StoreOp::Store,
                         },
                     })],
@@ -1048,19 +1174,43 @@ impl AppState {
     }
 }
 
-// --- Wayland Handlers (sin cambios significativos) ---
+// --- Wayland Handlers ---
 impl OutputHandler for AppState {
-    fn output_state(&mut self) -> &mut OutputState { &mut self.output_state }
-    fn new_output(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
-        if let Err(e) = self.ensure_output(&output) { error!("Failed to create output: {}", e); }
+    fn output_state(&mut self) -> &mut OutputState {
+        &mut self.output_state
     }
-    fn update_output(&mut self, conn: &Connection, qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
+    fn new_output(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        output: wl_output::WlOutput,
+    ) {
+        if let Err(e) = self.ensure_output(&output) {
+            error!("Failed to create output: {}", e);
+        }
+    }
+    fn update_output(
+        &mut self,
+        conn: &Connection,
+        qh: &QueueHandle<Self>,
+        output: wl_output::WlOutput,
+    ) {
         self.new_output(conn, qh, output);
     }
-    fn output_destroyed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, output: wl_output::WlOutput) {
-        let info = match self.output_state.info(&output) { Some(i) => i, None => return };
+    fn output_destroyed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        output: wl_output::WlOutput,
+    ) {
+        let info = match self.output_state.info(&output) {
+            Some(i) => i,
+            None => return,
+        };
         let name = info.name.unwrap_or_else(|| "unknown".to_string());
-        if self.per_output.remove(&name).is_some() { info!("Output {} removed", name); }
+        if self.per_output.remove(&name).is_some() {
+            info!("Output {} removed", name);
+        }
     }
 }
 
@@ -1070,32 +1220,84 @@ delegate_registry!(AppState);
 delegate_layer!(AppState);
 
 impl ProvidesRegistryState for AppState {
-    fn registry(&mut self) -> &mut RegistryState { &mut self.registry_state }
+    fn registry(&mut self) -> &mut RegistryState {
+        &mut self.registry_state
+    }
     registry_handlers![];
 }
 
 impl CompositorHandler for AppState {
-    fn scale_factor_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_factor: i32) {}
-    fn transform_changed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _new_transform: wl_output::Transform) {}
-    fn frame(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _time: u32) {}
-    fn surface_enter(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
-    fn surface_leave(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _surface: &wl_surface::WlSurface, _output: &wl_output::WlOutput) {}
+    fn scale_factor_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _new_factor: i32,
+    ) {
+    }
+    fn transform_changed(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _new_transform: wl_output::Transform,
+    ) {
+    }
+    fn frame(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _time: u32,
+    ) {
+    }
+    fn surface_enter(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _output: &wl_output::WlOutput,
+    ) {
+    }
+    fn surface_leave(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        _surface: &wl_surface::WlSurface,
+        _output: &wl_output::WlOutput,
+    ) {
+    }
 }
 
 impl LayerShellHandler for AppState {
     fn closed(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _layer: &LayerSurface) {}
-    fn configure(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, layer: &LayerSurface, configure: LayerSurfaceConfigure, _serial: u32) {
+    fn configure(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+        layer: &LayerSurface,
+        configure: LayerSurfaceConfigure,
+        _serial: u32,
+    ) {
         for (name, state) in self.per_output.iter_mut() {
             if &state.layer_surface == layer {
                 let width = configure.new_size.0;
                 let height = configure.new_size.1;
-                if width == state.width && height == state.height && state.configured { return; }
+                if width == state.width && height == state.height && state.configured {
+                    return;
+                }
                 state.width = width;
                 state.height = height;
                 state.wgpu_config.width = width;
                 state.wgpu_config.height = height;
-                state.wgpu_surface.configure(&state.wgpu_device, &state.wgpu_config);
-                let effect = self.hidden_image_config.as_ref().map(|c| c.effect).unwrap_or_default();
+                state
+                    .wgpu_surface
+                    .configure(&state.wgpu_device, &state.wgpu_config);
+                let effect = self
+                    .hidden_image_config
+                    .as_ref()
+                    .map(|c| c.effect)
+                    .unwrap_or_default();
                 let uniforms = Uniforms::new(
                     &self.colors,
                     width as f32,
@@ -1106,7 +1308,9 @@ impl LayerShellHandler for AppState {
                     state.hidden_texture_size.0 as f32,
                     state.hidden_texture_size.1 as f32,
                 );
-                state.wgpu_queue.write_buffer(&state.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
+                state
+                    .wgpu_queue
+                    .write_buffer(&state.uniform_buffer, 0, bytemuck::cast_slice(&[uniforms]));
                 state.configured = true;
                 info!("Output {} configured: {}x{}", name, width, height);
                 break;
