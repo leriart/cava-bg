@@ -460,6 +460,7 @@ impl WaylandRenderer {
             bar_count,
             bar_gap: self.config.bars.gap,
             bar_alpha,
+            height_scale: self.config.bars.height_scale,
             preferred_output_name: self.config.general.preferred_output.clone(),
             cava_data_receiver: cava_rx,
             current_bar_heights: vec![0.0; bar_count],
@@ -603,6 +604,7 @@ struct AppState {
     bar_count: usize,
     bar_gap: f32,
     bar_alpha: f32,
+    height_scale: f32,
     preferred_output_name: Option<String>,
     cava_data_receiver: Receiver<Vec<f32>>,
     current_bar_heights: Vec<f32>,
@@ -1094,7 +1096,8 @@ impl AppState {
         let bar_gap_width = bar_width * self.bar_gap;
         let mut vertices = Vec::with_capacity(self.bar_count * 16);
         for i in 0..self.bar_count {
-            let h = 2.0 * self.current_bar_heights[i] - 1.0;
+            let scaled_height = self.current_bar_heights[i] * self.height_scale;
+            let h = 2.0 * scaled_height - 1.0;
             let x0 = bar_gap_width * i as f32 + bar_width * i as f32 - 1.0;
             let x1 = bar_gap_width * i as f32 + bar_width * (i + 1) as f32 - 1.0;
             vertices.extend_from_slice(&[x0, -1.0, 0.0, 0.0]);

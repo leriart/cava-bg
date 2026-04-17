@@ -32,9 +32,12 @@ pub struct BarConfig {
     pub gap: f32,
     #[serde(default = "default_bar_alpha")]
     pub bar_alpha: f32,
+    #[serde(default = "default_height_scale")]
+    pub height_scale: f32,
 }
 
 fn default_bar_alpha() -> f32 { 1.0 }
+fn default_height_scale() -> f32 { 1.0 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SmoothingConfig {

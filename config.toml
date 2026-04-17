@@ -47,7 +47,11 @@ amount = 76
 gap = 0.1
 
 # Opacity of the bars (0.0 = fully transparent, 1.0 = fully opaque).
-bar_alpha = 0.9
+bar_alpha = 0.7
+
+# Scale factor for bar height (0.0 to 1.0). 1.0 = full screen height.
+# Lower values keep bars confined to the bottom portion of the screen.
+height_scale = 1.0
 
 # -----------------------------------------------------------------------------
 # Colors (only used when dynamic_colors = false)

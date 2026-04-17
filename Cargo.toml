@@ -1,6 +1,6 @@
 [package]
 name = "cava-bg"
-version = "0.1.9"
+version = "0.2.0"
 edition = "2021"
 license = "MIT"
 description = "Audio visualizer for Wayland"
@@ -71,3 +71,11 @@ mode = "755"
 
 [package.metadata.aur]
 depends = ["cava", "wayland"]
+[package.metadata.rpm]
+package = "cava-bg"
+
+[package.metadata.rpm.cargo]
+buildflags = ["--release"]
+
+[package.metadata.rpm.targets]
+cava-bg = { path = "/usr/bin/cava-bg" }
