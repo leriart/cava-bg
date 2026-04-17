@@ -32,6 +32,7 @@ If `dynamic_colors = false`, the visualizer uses user-defined colors from the `[
     - `gap`: Spacing between bars (as a fraction of bar width).
     - `bar_alpha`: Transparency level for the bars.
     - `corner_radius`: Corner rounding for the window (useful if the background isn't fully transparent).
+    - `height_scale`: Allows bars to stay within a fraction of screen height.
     - `autosens` / `sensitivity`: CAVA sensitivity controls.
     - `preferred_output`: Target monitor name (e.g., "DP-1").
     - `background_color`: Background color for the overlay layer (fully transparent by default).
