@@ -486,6 +486,24 @@ impl WallpaperAnalyzer {
     }
 
     fn from_awww() -> Option<PathBuf> {
+        if let Ok(output) = Command::new("awww").arg("query").output() {
+            if output.status.success() {
+                if let Ok(stdout) = String::from_utf8(output.stdout) {
+                    for line in stdout.lines() {
+                        // Buscar "image: " en la línea
+                        if let Some(idx) = line.find("image: ") {
+                            let path_str = line[idx + 7..].trim();
+                            let path = PathBuf::from(path_str);
+                            if path.exists() {
+                                log::debug!("Detected awww wallpaper via text: {}", path.display());
+                                return Some(path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if let Ok(output) = Command::new("awww").arg("query").arg("--json").output() {
             if output.status.success() {
                 if let Ok(json_str) = String::from_utf8(output.stdout) {
@@ -493,6 +511,7 @@ impl WallpaperAnalyzer {
                         if let Some(image_path) = json_value.get("image").and_then(|v| v.as_str()) {
                             let path = PathBuf::from(image_path);
                             if path.exists() {
+                                log::debug!("Detected awww wallpaper via JSON: {}", path.display());
                                 return Some(path);
                             }
                         }
@@ -510,6 +529,7 @@ impl WallpaperAnalyzer {
                         if ext == "awww" {
                             if let Ok(target) = fs::read_link(&path) {
                                 if target.exists() {
+                                    log::debug!("Detected awww wallpaper via cache symlink: {}", target.display());
                                     return Some(target);
                                 }
                             }
@@ -518,6 +538,7 @@ impl WallpaperAnalyzer {
                 }
             }
         }
+
         None
     }
 
