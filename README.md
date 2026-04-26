@@ -196,8 +196,6 @@ cava-bg uses a flexible TOML configuration file. The default configuration is cr
 
 For custom and fallback color palettes, see the `[colors]` block.
 
-[Example Simple.webm](https://github.com/user-attachments/assets/4bb512ac-20aa-481f-be9f-94050b2d798a)
-
 ## How It Works
 
 - **Wallpaper detection** – Automatically monitors tools like awww, mpvpaper, hyprpaper, swaybg, swww, waypaper, and more.
