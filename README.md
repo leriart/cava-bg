@@ -1,7 +1,7 @@
 # <p align="center">cava-bg - Native CAVA Visualizer for Wayland</p>
 
 <p align="center">
-  <img src="multimedia/Example%20Xray2.gif">
+  <img src="multimedia/Cava-BG.gif" width="100%">
 </p>
 
 <p align="center">
@@ -57,7 +57,7 @@ Displays a fixed or animated layer that is "revealed" by the bars as they move u
 - **Advanced Features:** You can use your current wallpaper as the hidden image or enable an automatic "x-ray" search in a specific directory to find stylized versions of your wallpaper (`basename.*` and `basename_reveal.*`) for special visual effects, for both x-rays and parallax layers.
 
 <p align="center">
-  <img src="multimedia/Example%20Xray1.gif" alt="Xray Effect Example">
+  <img src="multimedia/Example%20Xray1.gif" alt="Xray Effect Example" width="100%">
 </p>
 
 ### Multi-layer Parallax System
@@ -68,7 +68,7 @@ Create a 3D depth effect by moving independent layers at different speeds.
 - **Performance:** Lazy loading of assets, pausing on idle mode, disabling under high load.
 
 <p align="center">
-  <img src="multimedia/Example%20Parallax.gif" alt="Parallax Examples">
+  <img src="multimedia/Example%20Parallax.gif" alt="Parallax Examples" width="100%">
 </p>
 
 ### GUI Configuration Interface
