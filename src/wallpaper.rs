@@ -1,574 +1,88 @@
+#![allow(dead_code)]
+
 use anyhow::{Context, Result};
 use color_thief::{get_palette, ColorFormat};
 use image::{self, GenericImageView};
-use log;
 use once_cell::sync::Lazy;
-use std::env;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::Mutex;
 use std::sync::mpsc::Sender;
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, SystemTime};
 
+use crate::app_config::ColorExtractionMode;
+use crate::wallpaper_detector;
+
 static PREVIOUS_COLORS: Lazy<Mutex<Vec<[f32; 4]>>> = Lazy::new(|| Mutex::new(Vec::new()));
 const COLOR_SMOOTHING_FACTOR: f32 = 0.7;
+
+#[derive(Debug, Clone)]
+pub struct WallpaperPlaybackInfo {
+    pub media_path: PathBuf,
+    pub daemon_name: String,
+    pub process_pid: i32,
+    pub elapsed_seconds: f64,
+}
 
 pub struct WallpaperAnalyzer;
 
 impl WallpaperAnalyzer {
     pub fn find_wallpaper() -> Option<PathBuf> {
-        let modern_wallpaper_daemons: &[(&str, fn() -> Option<PathBuf>)] = &[
-            ("swww", Self::from_swww),
-            ("hyprpaper", Self::from_hyprpaper),
-            ("wpaperd", Self::from_wpaperd),
-        ];
-
-        for (name, detector) in modern_wallpaper_daemons {
-            if let Some(path) = detector() {
-                if path.exists() {
-                    log::info!("Detected wallpaper via {}: {}", name, path.display());
-                    return Some(path);
-                }
-            }
-        }
-
-        let desktop_env = env::var("XDG_CURRENT_DESKTOP")
-            .unwrap_or_else(|_| env::var("DESKTOP_SESSION").unwrap_or_default())
-            .to_lowercase();
-
-        log::debug!("Detected desktop environment: {}", desktop_env);
-
-        let desktop_detectors: &[(&str, fn() -> Option<PathBuf>)] = &[
-            ("gnome", Self::from_gnome),
-            ("kde", Self::from_plasma),
-            ("plasma", Self::from_plasma),
-            ("cinnamon", Self::from_cinnamon),
-            ("budgie", Self::from_budgie),
-            ("xfce", Self::from_xfce),
-            ("mate", Self::from_mate),
-            ("lxqt", Self::from_lxqt),
-            ("deepin", Self::from_deepin),
-            ("enlightenment", Self::from_enlightenment),
-        ];
-
-        for (de_name, detector) in desktop_detectors {
-            if desktop_env.contains(de_name) {
-                if let Some(path) = detector() {
-                    if path.exists() {
-                        log::info!("Detected wallpaper via {}: {}", de_name, path.display());
-                        return Some(path);
-                    }
-                }
-            }
-        }
-
-        let fallback_detectors: &[(&str, fn() -> Option<PathBuf>)] = &[
-            ("swaybg", Self::from_swaybg),
-            ("mpvpaper", Self::from_mpvpaper),
-            ("awww", Self::from_awww),
-            ("ambxst", Self::from_ambxst),
-        ];
-
-        for (name, detector) in fallback_detectors {
-            if let Some(path) = detector() {
-                if path.exists() {
-                    log::info!("Detected wallpaper via {}: {}", name, path.display());
-                    return Some(path);
-                }
-            }
-        }
-
-        log::warn!("Could not detect wallpaper using any known method.");
-        None
+        wallpaper_detector::get_current_wallpaper()
     }
 
-    fn from_swww() -> Option<PathBuf> {
-        // Método principal: swww query
-        if let Ok(output) = Command::new("swww").arg("query").output() {
-            if output.status.success() {
-                if let Ok(stdout) = String::from_utf8(output.stdout) {
-                    for line in stdout.lines() {
-                        // Formato típico: "DP-1: /path/to/image.jpg"
-                        if let Some((_, path_str)) = line.split_once(": ") {
-                            let path = PathBuf::from(path_str.trim());
-                            if path.exists() {
-                                return Some(path);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fallback: caché de swww
-        let cache_dir = dirs::cache_dir()?.join("swww");
-        if cache_dir.exists() {
-            if let Ok(entries) = fs::read_dir(&cache_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if let Some(ext) = path.extension() {
-                        if ext == "swww" {
-                            if let Ok(target) = fs::read_link(&path) {
-                                if target.exists() {
-                                    return Some(target);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        None
+    pub fn detect_playback_info() -> Option<WallpaperPlaybackInfo> {
+        Self::detect_from_mpvpaper()
     }
 
-    fn from_hyprpaper() -> Option<PathBuf> {
-        // Método principal: hyprctl hyprpaper listloaded
-        if let Ok(output) = Command::new("hyprctl")
-            .args(["hyprpaper", "listloaded"])
-            .output()
-        {
-            if output.status.success() {
-                if let Ok(stdout) = String::from_utf8(output.stdout) {
-                    for line in stdout.lines() {
-                        let path = PathBuf::from(line.trim());
-                        if path.exists() {
-                            return Some(path);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fallback: archivo de configuración de hyprpaper
-        let config_path = dirs::home_dir()?.join(".config/hypr/hyprpaper.conf");
-        if config_path.exists() {
-            if let Ok(content) = fs::read_to_string(config_path) {
-                for line in content.lines() {
-                    let line = line.trim();
-                    if line.starts_with("wallpaper") {
-                        if let Some((_, value)) = line.split_once('=') {
-                            let parts: Vec<&str> = value.split(',').collect();
-                            if parts.len() >= 2 {
-                                let path_str = parts[1].trim().trim_matches(|c| c == '"' || c == '\'');
-                                let path = PathBuf::from(path_str);
-                                if path.exists() {
-                                    return Some(path);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    fn from_wpaperd() -> Option<PathBuf> {
-        if let Ok(output) = Command::new("wpaperctl").arg("list").output() {
-            if output.status.success() {
-                if let Ok(stdout) = String::from_utf8(output.stdout) {
-                    for line in stdout.lines() {
-                        if let Some((_, path_str)) = line.split_once(": ") {
-                            let path = PathBuf::from(path_str.trim());
-                            if path.exists() {
-                                return Some(path);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let config_path = dirs::home_dir()?.join(".config/wpaperd/config.toml");
-        if config_path.exists() {
-            if let Ok(content) = fs::read_to_string(config_path) {
-                for line in content.lines() {
-                    let line = line.trim();
-                    if line.starts_with("path") {
-                        if let Some((_, value)) = line.split_once('=') {
-                            let path_str = value.trim().trim_matches(|c| c == '"' || c == '\'');
-                            let path = PathBuf::from(path_str);
-                            if path.exists() {
-                                return Some(path);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    fn from_gnome() -> Option<PathBuf> {
-        let keys = ["picture-uri", "picture-uri-dark"];
-        for key in keys {
-            let output = Command::new("gsettings")
-                .args(["get", "org.gnome.desktop.background", key])
-                .output()
-                .ok()?;
-            if output.status.success() {
-                if let Ok(uri) = String::from_utf8(output.stdout) {
-                    let uri = uri.trim().trim_matches('\'');
-                    if let Some(path) = uri.strip_prefix("file://") {
-                        let decoded_path = urlencoding::decode(path).ok()?.to_string();
-                        let path_buf = PathBuf::from(decoded_path);
-                        if path_buf.exists() {
-                            return Some(path_buf);
-                        }
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    fn from_plasma() -> Option<PathBuf> {
-        // Método con qdbus (puede requerir paquetes adicionales)
-        if let Ok(output) = Command::new("qdbus")
-            .args([
-                "org.kde.plasmashell",
-                "/PlasmaShell",
-                "org.kde.PlasmaShell.wallpaper",
-                "0",
-            ])
-            .output()
-        {
-            if output.status.success() {
-                if let Ok(stdout) = String::from_utf8(output.stdout) {
-                    for line in stdout.lines() {
-                        if line.starts_with("Image: ") {
-                            let uri = &line[7..].trim();
-                            if let Some(path) = uri.strip_prefix("file://") {
-                                let decoded_path = urlencoding::decode(path).ok()?.to_string();
-                                let path_buf = PathBuf::from(decoded_path);
-                                if path_buf.exists() {
-                                    return Some(path_buf);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Fallback: archivo de configuración
-        let config_path =
-            dirs::home_dir()?.join(".config/plasma-org.kde.plasma.desktop-appletsrc");
-        if config_path.exists() {
-            if let Ok(content) = fs::read_to_string(config_path) {
-                for line in content.lines() {
-                    if line.starts_with("Image=") {
-                        let uri = &line[6..].trim();
-                        if let Some(path) = uri.strip_prefix("file://") {
-                            let decoded_path = urlencoding::decode(path).ok()?.to_string();
-                            let path_buf = PathBuf::from(decoded_path);
-                            if path_buf.exists() {
-                                return Some(path_buf);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    fn from_cinnamon() -> Option<PathBuf> {
-        let output = Command::new("gsettings")
-            .args(["get", "org.cinnamon.desktop.background", "picture-uri"])
+    fn detect_from_mpvpaper() -> Option<WallpaperPlaybackInfo> {
+        let output = Command::new("pgrep")
+            .arg("-a")
+            .arg("mpvpaper")
             .output()
             .ok()?;
-        if output.status.success() {
-            if let Ok(uri) = String::from_utf8(output.stdout) {
-                let uri = uri.trim().trim_matches('\'');
-                if let Some(path) = uri.strip_prefix("file://") {
-                    let decoded_path = urlencoding::decode(path).ok()?.to_string();
-                    let path_buf = PathBuf::from(decoded_path);
-                    if path_buf.exists() {
-                        return Some(path_buf);
-                    }
-                }
-            }
-        }
-        None
-    }
 
-    fn from_budgie() -> Option<PathBuf> {
-        Self::from_gnome()
-    }
-
-    fn from_xfce() -> Option<PathBuf> {
-        // Primero intentar con xfconf-query para el monitor actual
-        let monitors = ["monitor0", "monitor1", "monitor2"];
-        for mon in monitors {
-            let output = Command::new("xfconf-query")
-                .args([
-                    "-c",
-                    "xfce4-desktop",
-                    "-p",
-                    &format!("/backdrop/screen0/{}/image-path", mon),
-                ])
-                .output()
-                .ok()?;
-            if output.status.success() {
-                if let Ok(path_str) = String::from_utf8(output.stdout) {
-                    let path_str = path_str.trim();
-                    if !path_str.is_empty() {
-                        let path = PathBuf::from(path_str);
-                        if path.exists() {
-                            return Some(path);
-                        }
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    fn from_mate() -> Option<PathBuf> {
-        let output = Command::new("gsettings")
-            .args(["get", "org.mate.background", "picture-filename"])
-            .output()
-            .ok()?;
-        if output.status.success() {
-            if let Ok(path_str) = String::from_utf8(output.stdout) {
-                let path_str = path_str.trim().trim_matches('\'');
-                let path = PathBuf::from(path_str);
-                if path.exists() {
-                    return Some(path);
-                }
-            }
-        }
-
-        let output = Command::new("dconf")
-            .args(["read", "/org/mate/desktop/background/picture-filename"])
-            .output()
-            .ok()?;
-        if output.status.success() {
-            if let Ok(path_str) = String::from_utf8(output.stdout) {
-                let path_str = path_str.trim().trim_matches('\'');
-                let path = PathBuf::from(path_str);
-                if path.exists() {
-                    return Some(path);
-                }
-            }
-        }
-        None
-    }
-
-    fn from_lxqt() -> Option<PathBuf> {
-        let config_path = dirs::home_dir()?.join(".config/pcmanfm-qt/lxqt/settings.conf");
-        if config_path.exists() {
-            if let Ok(content) = fs::read_to_string(config_path) {
-                for line in content.lines() {
-                    if line.starts_with("wallpaper=") {
-                        let path_str = &line[10..].trim();
-                        let path = PathBuf::from(path_str);
-                        if path.exists() {
-                            return Some(path);
-                        }
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    fn from_deepin() -> Option<PathBuf> {
-        if let Ok(output) = Command::new("dbus-send")
-            .args([
-                "--print-reply",
-                "--dest=com.deepin.daemon.Appearance",
-                "/com/deepin/daemon/Appearance",
-                "com.deepin.daemon.Appearance.GetCurrentWallpaper",
-            ])
-            .output()
-        {
-            if output.status.success() {
-                if let Ok(stdout) = String::from_utf8(output.stdout) {
-                    for line in stdout.lines() {
-                        if line.contains("string") {
-                            if let Some(start) = line.find('"') {
-                                if let Some(end) = line.rfind('"') {
-                                    let path_str = &line[start + 1..end];
-                                    let path = PathBuf::from(path_str);
-                                    if path.exists() {
-                                        return Some(path);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let deepin_wallpaper_dir = PathBuf::from("/usr/share/wallpapers/deepin");
-        if deepin_wallpaper_dir.exists() {
-            if let Ok(entries) = fs::read_dir(deepin_wallpaper_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file() {
-                        return Some(path);
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    fn from_enlightenment() -> Option<PathBuf> {
-        let config_path = dirs::home_dir()?.join(".e/e/config/standard/e.cfg");
-        if config_path.exists() {
-            if let Ok(content) = fs::read_to_string(config_path) {
-                for line in content.lines() {
-                    if line.starts_with("wallpaper_path=") {
-                        let path_str = &line[15..].trim();
-                        let path = PathBuf::from(path_str);
-                        if path.exists() {
-                            return Some(path);
-                        }
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    fn from_swaybg() -> Option<PathBuf> {
-        // Buscar proceso swaybg con pgrep y parsear argumentos
-        let output = Command::new("pgrep").arg("-a").arg("swaybg").output().ok()?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            // Formato: "12345 swaybg -i /path/to/image -m fill"
-            if let Some(idx) = line.find("-i") {
-                let rest = &line[idx + 2..].trim();
-                // Manejar rutas con espacios: tomar hasta el siguiente argumento que empiece con '-'
-                let mut path_str = String::new();
-                let mut in_quotes = false;
-                for ch in rest.chars() {
-                    if ch == '"' {
-                        in_quotes = !in_quotes;
-                    } else if !in_quotes && ch == '-' && path_str.ends_with(' ') {
-                        break;
-                    } else {
-                        path_str.push(ch);
-                    }
-                }
-                let path_str = path_str.trim();
-                let path = PathBuf::from(path_str);
-                if path.exists() {
-                    return Some(path);
-                }
-            }
-        }
-        None
-    }
-
-    fn from_mpvpaper() -> Option<PathBuf> {
-        let output = Command::new("pgrep").arg("-a").arg("mpvpaper").output().ok()?;
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        for line in stdout.lines() {
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            // Buscar el último argumento que parezca una ruta de archivo (no empiece con '-')
-            for part in parts.iter().rev() {
-                if !part.starts_with('-') {
-                    let path = PathBuf::from(part);
-                    if path.exists() && path.is_file() {
-                        return Some(path);
-                    }
-                }
-            }
-        }
-        None
-    }
-
-    fn from_awww() -> Option<PathBuf> {
-        if let Ok(output) = Command::new("awww").arg("query").output() {
-            if output.status.success() {
-                if let Ok(stdout) = String::from_utf8(output.stdout) {
-                    for line in stdout.lines() {
-                        // Buscar "image: " en la línea
-                        if let Some(idx) = line.find("image: ") {
-                            let path_str = line[idx + 7..].trim();
-                            let path = PathBuf::from(path_str);
-                            if path.exists() {
-                                log::debug!("Detected awww wallpaper via text: {}", path.display());
-                                return Some(path);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if let Ok(output) = Command::new("awww").arg("query").arg("--json").output() {
-            if output.status.success() {
-                if let Ok(json_str) = String::from_utf8(output.stdout) {
-                    if let Ok(json_value) = serde_json::from_str::<serde_json::Value>(&json_str) {
-                        if let Some(image_path) = json_value.get("image").and_then(|v| v.as_str()) {
-                            let path = PathBuf::from(image_path);
-                            if path.exists() {
-                                log::debug!("Detected awww wallpaper via JSON: {}", path.display());
-                                return Some(path);
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        let cache_dir = dirs::cache_dir()?.join("awww");
-        if cache_dir.exists() {
-            if let Ok(entries) = fs::read_dir(&cache_dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if let Some(ext) = path.extension() {
-                        if ext == "awww" {
-                            if let Ok(target) = fs::read_link(&path) {
-                                if target.exists() {
-                                    log::debug!("Detected awww wallpaper via cache symlink: {}", target.display());
-                                    return Some(target);
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        None
-    }
-
-    fn from_ambxst() -> Option<PathBuf> {
-        let home = dirs::home_dir()?;
-        let cache_path = home.join(".cache/ambxst/wallpapers.json");
-        log::debug!("Looking for ambxst config at: {:?}", cache_path);
-        if !cache_path.exists() {
+        if !output.status.success() {
             return None;
         }
-        let content = fs::read_to_string(cache_path).ok()?;
-        // Parseo simple: buscar "currentWall": "ruta"
-        let tag = "currentWall";
-        if let Some(start) = content.find(tag) {
-            let after_tag = &content[start + tag.len()..];
-            if let Some(colon_pos) = after_tag.find(':') {
-                let after_colon = &after_tag[colon_pos + 1..];
-                if let Some(quote_start) = after_colon.find('"') {
-                    let after_quote = &after_colon[quote_start + 1..];
-                    if let Some(quote_end) = after_quote.find('"') {
-                        let path_str = &after_quote[..quote_end];
-                        let path = PathBuf::from(path_str);
-                        if path.exists() {
-                            return Some(path);
-                        }
-                    }
-                }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        for line in stdout.lines() {
+            let mut parts = line.split_whitespace();
+            let pid = parts.next()?.parse::<i32>().ok()?;
+            let args: Vec<&str> = parts.collect();
+            let media = args
+                .iter()
+                .rev()
+                .find(|arg| !arg.starts_with('-'))
+                .map(PathBuf::from)?;
+            if !media.exists() {
+                continue;
             }
+            let elapsed_seconds = Self::process_elapsed_seconds(pid).unwrap_or(0.0);
+            return Some(WallpaperPlaybackInfo {
+                media_path: media,
+                daemon_name: "mpvpaper".to_string(),
+                process_pid: pid,
+                elapsed_seconds,
+            });
         }
+
         None
+    }
+
+    fn process_elapsed_seconds(pid: i32) -> Option<f64> {
+        let output = Command::new("ps")
+            .args(["-o", "etimes=", "-p", &pid.to_string()])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let text = String::from_utf8(output.stdout).ok()?;
+        text.trim().parse::<f64>().ok()
     }
 
     fn load_image_from_path(path: &PathBuf) -> Result<image::DynamicImage> {
@@ -583,12 +97,14 @@ impl WallpaperAnalyzer {
             let status = Command::new("ffmpeg")
                 .args([
                     "-i",
-                    path.to_str().unwrap(),
+                    path.to_str().unwrap_or_default(),
                     "-vframes",
                     "1",
                     "-q:v",
                     "2",
-                    temp_frame.to_str().unwrap(),
+                    "-update",
+                    "1",
+                    temp_frame.to_str().unwrap_or_default(),
                     "-y",
                 ])
                 .status();
@@ -627,24 +143,19 @@ impl WallpaperAnalyzer {
         }
     }
 
-    pub fn generate_gradient_colors(num_colors: usize) -> Result<Vec<[f32; 4]>> {
-        let wallpaper_path = match Self::find_wallpaper() {
-            Some(path) => path,
-            None => {
-                log::warn!("No wallpaper found, using default colors");
-                return Ok(Self::default_colors(num_colors));
-            }
-        };
+    pub fn extract_colors(
+        wallpaper_path: &PathBuf,
+        mode: ColorExtractionMode,
+        num_colors: usize,
+    ) -> Result<Vec<[f32; 4]>> {
+        log::info!(
+            "Analyzing wallpaper: {:?} with mode {:?}",
+            wallpaper_path,
+            mode
+        );
 
-        log::info!("Analyzing wallpaper: {:?}", wallpaper_path);
-
-        let img = match Self::load_image_from_path(&wallpaper_path) {
-            Ok(img) => img,
-            Err(e) => {
-                log::warn!("Could not load wallpaper image: {}, using default colors", e);
-                return Ok(Self::default_colors(num_colors));
-            }
-        };
+        let img = Self::load_image_from_path(wallpaper_path)
+            .with_context(|| format!("Could not load wallpaper image {:?}", wallpaper_path))?;
 
         let (width, height) = img.dimensions();
         log::debug!("Wallpaper dimensions: {}x{}", width, height);
@@ -652,19 +163,40 @@ impl WallpaperAnalyzer {
         let rgb_img = img.to_rgb8();
         let pixels = rgb_img.as_raw();
 
-        let palette = get_palette(pixels, ColorFormat::Rgb, 10, num_colors as u8)
-            .context("Failed to extract color palette")?;
+        let mut new_colors: Vec<[f32; 4]> =
+            get_palette(pixels, ColorFormat::Rgb, 10, num_colors as u8)
+                .context("Failed to extract color palette")?
+                .iter()
+                .map(|c| {
+                    [
+                        c.r as f32 / 255.0,
+                        c.g as f32 / 255.0,
+                        c.b as f32 / 255.0,
+                        1.0,
+                    ]
+                })
+                .collect();
 
-        let mut new_colors: Vec<[f32; 4]> = palette
-            .iter()
-            .map(|c| [c.r as f32 / 255.0, c.g as f32 / 255.0, c.b as f32 / 255.0, 1.0])
-            .collect();
-
-        new_colors.sort_by(|a, b| {
-            let lum_a = 0.299 * a[0] + 0.587 * a[1] + 0.114 * a[2];
-            let lum_b = 0.299 * b[0] + 0.587 * b[1] + 0.114 * b[2];
-            lum_a.partial_cmp(&lum_b).unwrap()
-        });
+        match mode {
+            ColorExtractionMode::Dominant | ColorExtractionMode::Palette => {
+                new_colors.sort_by(|a, b| {
+                    let lum_a = 0.299 * a[0] + 0.587 * a[1] + 0.114 * a[2];
+                    let lum_b = 0.299 * b[0] + 0.587 * b[1] + 0.114 * b[2];
+                    lum_a
+                        .partial_cmp(&lum_b)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+            ColorExtractionMode::Vibrant => {
+                new_colors.sort_by(|a, b| {
+                    let sat_a = (a[0].max(a[1]).max(a[2])) - (a[0].min(a[1]).min(a[2]));
+                    let sat_b = (b[0].max(b[1]).max(b[2])) - (b[0].min(b[1]).min(b[2]));
+                    sat_b
+                        .partial_cmp(&sat_a)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                });
+            }
+        }
 
         let mut prev_guard = PREVIOUS_COLORS.lock().unwrap();
         if !prev_guard.is_empty() && prev_guard.len() == new_colors.len() {
@@ -677,75 +209,107 @@ impl WallpaperAnalyzer {
         }
         *prev_guard = new_colors.clone();
 
-        log::info!("New gradient colors:");
-        for (i, color) in new_colors.iter().enumerate() {
-            log::info!(
-                "  Color {}: #{:02x}{:02x}{:02x} (alpha: {:.2})",
-                i + 1,
-                (color[0] * 255.0) as u8,
-                (color[1] * 255.0) as u8,
-                (color[2] * 255.0) as u8,
-                color[3]
-            );
-        }
-
         Ok(new_colors)
     }
 
-    pub fn start_wallpaper_monitor(tx: Sender<Vec<[f32; 4]>>, num_colors: usize) {
+    pub fn generate_gradient_colors(num_colors: usize, mode: Option<ColorExtractionMode>) -> Result<Vec<[f32; 4]>> {
+        let wallpaper_path = match Self::find_wallpaper() {
+            Some(path) => path,
+            None => {
+                log::warn!("No wallpaper found, using default colors");
+                return Ok(Self::default_colors(num_colors));
+            }
+        };
+
+        let effective_mode = mode.unwrap_or(ColorExtractionMode::Dominant);
+        match Self::extract_colors(&wallpaper_path, effective_mode, num_colors) {
+            Ok(colors) => Ok(colors),
+            Err(e) => {
+                log::warn!(
+                    "Could not extract colors from wallpaper: {}, using default colors",
+                    e
+                );
+                Ok(Self::default_colors(num_colors))
+            }
+        }
+    }
+
+    pub fn start_wallpaper_monitor(tx: Sender<Vec<[f32; 4]>>, num_colors: usize, extraction_mode: ColorExtractionMode, extract_enabled: bool) {
         thread::spawn(move || {
             let mut last_path: Option<PathBuf> = None;
             let mut last_modified: Option<SystemTime> = None;
+            let mut sent_initial = false;
 
             loop {
-                if let Some(path) = Self::find_wallpaper() {
-                    let modified = fs::metadata(&path)
-                        .and_then(|m| m.modified())
-                        .unwrap_or(SystemTime::UNIX_EPOCH);
-                    let changed = match (&last_path, &last_modified) {
-                        (Some(p), Some(t)) => p != &path || t != &modified,
-                        _ => true,
-                    };
-                    if changed {
-                        log::info!("Wallpaper changed to: {:?}", path);
-                        match Self::generate_gradient_colors(num_colors) {
-                            Ok(colors) => {
-                                if let Err(e) = tx.send(colors) {
-                                    log::error!("Failed to send new colors: {}", e);
-                                    break;
+                // Only extract when extract_enabled is true OR if we haven't sent initial colors
+                // (fallback for when parallax/xray have no wallpaper)
+                let should_extract = extract_enabled || !sent_initial;
+
+                if should_extract {
+                    if let Some(path) = Self::find_wallpaper() {
+                        let modified = fs::metadata(&path)
+                            .and_then(|m| m.modified())
+                            .unwrap_or(SystemTime::UNIX_EPOCH);
+                        let changed = match (&last_path, &last_modified) {
+                            (Some(p), Some(t)) => p != &path || t != &modified,
+                            _ => true,
+                        };
+                        if changed {
+                            log::info!("Wallpaper changed to: {:?}", path);
+                            match Self::generate_gradient_colors(num_colors, Some(extraction_mode)) {
+                                Ok(colors) => {
+                                    if let Err(e) = tx.send(colors) {
+                                        log::error!("Failed to send new colors: {}", e);
+                                        break;
+                                    }
+                                    sent_initial = true;
                                 }
+                                Err(e) => log::error!("Failed to generate colors: {}", e),
                             }
-                            Err(e) => log::error!("Failed to generate colors: {}", e),
+                            last_path = Some(path);
+                            last_modified = Some(modified);
                         }
-                        last_path = Some(path);
-                        last_modified = Some(modified);
+                    } else if last_path.is_some() {
+                        log::warn!("Wallpaper disappeared, using default colors");
+                        let default_colors = Self::default_colors(num_colors);
+                        let _ = tx.send(default_colors);
+                        last_path = None;
+                        last_modified = None;
                     }
-                } else if last_path.is_some() {
-                    log::warn!("Wallpaper disappeared, using default colors");
-                    let default_colors = Self::default_colors(num_colors);
-                    let _ = tx.send(default_colors);
-                    last_path = None;
-                    last_modified = None;
                 }
-                thread::sleep(Duration::from_secs(2));
+                // Check frequently for instant reaction
+                thread::sleep(Duration::from_millis(100));
             }
         });
     }
 
-    pub fn start_wallpaper_path_monitor(tx: Sender<Option<PathBuf>>) {
+    pub fn start_wallpaper_path_monitor(tx: Sender<Option<PathBuf>>, color_tx: Option<Sender<Vec<[f32; 4]>>>, num_colors: usize, extraction_mode: ColorExtractionMode) {
         thread::spawn(move || {
             let mut last_path: Option<PathBuf> = None;
             loop {
                 let current_path = Self::find_wallpaper();
                 if current_path != last_path {
-                    log::debug!("Wallpaper path changed: {:?}", current_path);
+                    log::info!("Wallpaper path changed: {:?}", current_path);
+                    // Send path immediately so layers reload
                     if let Err(e) = tx.send(current_path.clone()) {
                         log::error!("Failed to send wallpaper path: {}", e);
                         break;
                     }
+                    // Also trigger color extraction in the same pass
+                    if let Some(ref color_tx) = color_tx {
+                        if let Some(ref _path) = current_path {
+                            log::info!("Extracting colors from new wallpaper");
+                            match Self::generate_gradient_colors(num_colors, Some(extraction_mode)) {
+                                Ok(colors) => {
+                                    let _ = color_tx.send(colors);
+                                }
+                                Err(e) => log::error!("Failed to generate colors: {}", e),
+                            }
+                        }
+                    }
                     last_path = current_path;
                 }
-                thread::sleep(Duration::from_secs(1));
+                thread::sleep(Duration::from_millis(80));
             }
         });
     }

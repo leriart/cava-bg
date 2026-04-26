@@ -1,109 +1,75 @@
-# =============================================================================
-# cava-bg configuration file
-# =============================================================================
-#
-# This file controls the appearance and behavior of the cava-bg audio visualizer.
-# After editing, restart cava-bg for changes to take effect.
-#
-# For more information, visit: https://github.com/leriart/cava-bg
-#
-
-# -----------------------------------------------------------------------------
-# General settings
-# -----------------------------------------------------------------------------
 [general]
-# Framerate of the visualization (frames per second). Higher = smoother but more CPU usage.
-# Default: 60
 framerate = 60
-
-# Automatically extract colors from your current wallpaper.
-# Set to false to use manually defined colors in the [colors] section.
 dynamic_colors = true
-
-# Corner radius of the entire layer window (in pixels). 0 = square corners.
-# Works only if the background is not fully transparent. Useful for rounded overlays.
 corner_radius = 0.0
+disable_audio = false
 
-# Background color of the layer. Use alpha = 0.0 for complete transparency.
 [general.background_color]
 hex = "#000000"
 alpha = 0.0
 
-# Uncomment to let cava auto-adjust sensitivity (recommended for most users)
-# autosens = true
-# Uncomment to set a fixed sensitivity (0-200). Disables autosens.
-# sensitivity = 100
-# Uncomment to show only on a specific monitor (get name via `hyprctl monitors` or `wlr-randr`)
-# preferred_output = "DP-1"
+[display]
+position = "Fill"
+anchor_top = true
+anchor_bottom = true
+anchor_left = true
+anchor_right = true
+width = 0
+height = 0
+margin_top = 0
+margin_bottom = 0
+margin_left = 0
+margin_right = 0
+layer = "Bottom"
+opacity = 1.0
+scale_with_resolution = false
 
-# -----------------------------------------------------------------------------
-# Bars settings
-# -----------------------------------------------------------------------------
-[bars]
-# Number of bars to display. More bars = finer resolution but more GPU load.
-amount = 76
-
-# Gap between bars as a fraction of bar width. 0.1 = gap is 10% of bar width.
+[audio]
+bar_count = 76
+bar_width = 6.0
+bar_spacing = 2.0
 gap = 0.1
-
-# Opacity of the bars (0.0 = fully transparent, 1.0 = fully opaque).
-bar_alpha = 0.7
-
-# Scale factor for bar height (0.0 to 1.0). 1.0 = full screen height.
-# Lower values keep bars confined to the bottom portion of the screen.
+bar_alpha = 0.85
 height_scale = 1.0
+smoothing = 0.8
+max_bar_height = 220.0
+min_bar_height = 0.0
+bar_shape = "Rectangle"
 
-# -----------------------------------------------------------------------------
-# Colors (only used when dynamic_colors = false)
-# -----------------------------------------------------------------------------
+[audio.bar_color]
+hex = "#89dceb"
+alpha = 1.0
+
 [colors]
-# Each entry defines a color in the gradient (from bottom to top).
-# You can add or remove entries; the number of colors determines gradient steps.
-gradient_color_1 = "#94e2d5"   # Teal
-gradient_color_2 = "#89dceb"   # Sky
-gradient_color_3 = "#74c7ec"   # Sapphire
-gradient_color_4 = "#89b4fa"   # Blue
-gradient_color_5 = "#cba6f7"   # Mauve
-gradient_color_6 = "#f5c2e7"   # Pink
-gradient_color_7 = "#eba0ac"   # Red
-gradient_color_8 = "#f38ba8"   # Maroon
+use_gradient = false
+gradient_direction = "BottomToTop"
+palette = [[0.58, 0.89, 0.84, 1.0], [0.96, 0.76, 0.90, 1.0]]
 
-# -----------------------------------------------------------------------------
-# Smoothing (passed directly to cava)
-# -----------------------------------------------------------------------------
-[smoothing]
-# Uncomment to enable Monstercat smoothing (0 = off, 0.5 = medium, 1 = very smooth)
-# monstercat = 1
-# Uncomment to enable waves (requires cava compiled from GitHub)
-# waves = 3
-# Uncomment to set noise reduction (0 = fast/noisy, 1 = slow/smooth)
-# noise_reduction = 0.77
-# -----------------------------------------------------------------------------
-# Hidden Image (optional)
-# -----------------------------------------------------------------------------
-# Uncomment the following block to reveal a hidden image/pattern behind the bars.
-# The image stays fixed to the screen; only the bars reveal it as they move.
-#
-[hidden_image]
-# # Set to true to automatically use the current wallpaper as the hidden image.
-# # If true, the 'path' option is ignored.
-# use_wallpaper = true
-#
-# # Path to a fixed image file (only used if use_wallpaper = false)
-# path = "/home/user/Pictures/my_secret_image.png"
-#
-# # Effect to apply on the revealed image. Options:
-# #   "None", "Grayscale", "Invert", "Sepia", "Palette"
-# # For Palette, specify a scheme: { Palette = "Catppuccin" }
-# effect = "Grayscale"
-#
-# # Blend mode (currently only "Reveal" is supported)
-# blend_mode = "Reveal"
-#
-# # Optional: Directory containing "xray" versions of wallpapers.
-# # When use_wallpaper = true, if a file with the same name exists in this directory,
-# # it will be used as the hidden image instead of the actual wallpaper.
-# xray_images_dir = "/home/user/Images/Xray"
-#
-# # Optional: Directory where wallpapers are stored (can help detection)
-# wallpapers_dir = "/home/user/Wallpapers/Xray"
+[parallax]
+enabled = false
+mode = "Hybrid"
+enable_3d_depth = false
+layers = []
+
+[xray]
+images_dir = ""
+
+[wallpaper]
+auto_detect_wallpaper = true
+sync_interval_seconds = 10
+
+[xray_mask]
+intensity = 0.8
+gamma = 1.2
+opacity = 1.0
+blend_mode = "Normal"
+use_background = false
+
+[performance]
+vsync = true
+multi_threaded_decode = true
+
+[advanced]
+verbose_logging = false
+frame_rate_limit = 60
+layer_cache_size = 5

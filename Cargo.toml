@@ -1,12 +1,16 @@
 [package]
 name = "cava-bg"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2021"
 license = "MIT"
 description = "Audio visualizer for Wayland"
 authors = ["Leriart"]
 repository = "https://github.com/leriart/cava-bg"
 homepage = "https://github.com/leriart/cava-bg"
+
+[features]
+default = []
+dbus-detection = ["dep:dbus"]
 
 [dependencies]
 anyhow = "1.0"
@@ -33,7 +37,26 @@ raw-window-handle = "0.6"
 libc = "0.2"
 serde_json = "1.0"
 urlencoding = "2.1"
+dbus = { version = "0.9", optional = true }
+ffmpeg-next = { version = "8.1", default-features = false, features = ["codec", "format", "software-scaling"] }
+crossbeam-channel = "0.5"
+parking_lot = "0.12"
+eframe = { version = "0.27", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
+rfd = "0.15"
 
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+debug = false
+incremental = false
+overflow-checks = false
+
+[profile.release.package."*"]
+opt-level = 3
+codegen-units = 1
 
 [package.metadata.deb]
 maintainer = "Leriart"
