@@ -12,6 +12,7 @@
     <img src="https://img.shields.io/badge/Discord-Join%20Server-5865F2?logo=discord&logoColor=white" alt="Discord">
   </a>
 </p>
+
 **cava-bg** is a modern, lightweight, and highly customizable visualizer that turns any Wayland desktop into a dynamic audio experience. Designed for users who want seamless wallpaper integration without sacrificing performance, it features real-time color adaptation to your wallpaper and a unique multi-layer parallax and "hidden image" reveal mode, making it the perfect choice for stylized desktop setups.
 
 
