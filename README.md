@@ -4,11 +4,16 @@
   <img src="multimedia/Example%20Xray2.gif">
 </p>
 
+<p align="center">
+  <img src="https://img.shields.io/badge/Rust-1.70%2B-orange.svg" alt="Rust">
+  <img src="https://img.shields.io/badge/Wayland-Native-green.svg" alt="Wayland">
+  <img src="https://img.shields.io/badge/Arch_Linux-AUR-blue.svg" alt="Arch Linux">
+  <a href="https://discord.gg/ehQYYW36Up">
+    <img src="https://img.shields.io/badge/Discord-Join%20Server-5865F2?logo=discord&logoColor=white" alt="Discord">
+  </a>
+</p>
 **cava-bg** is a modern, lightweight, and highly customizable visualizer that turns any Wayland desktop into a dynamic audio experience. Designed for users who want seamless wallpaper integration without sacrificing performance, it features real-time color adaptation to your wallpaper and a unique multi-layer parallax and "hidden image" reveal mode, making it the perfect choice for stylized desktop setups.
 
-![Rust](https://img.shields.io/badge/Rust-1.70%2B-orange.svg)
-![Wayland](https://img.shields.io/badge/Wayland-Native-green.svg)
-![Arch Linux](https://img.shields.io/badge/Arch_Linux-AUR-blue.svg)
 
 ## Features
 
