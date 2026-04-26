@@ -62,6 +62,10 @@ Create a 3D depth effect by moving independent layers at different speeds.
 - **Per-layer Configuration:** Z-depth, opacity, blend mode, parallax speed, offset, mouse reaction (sensitivity, max offset), audio reaction (frequency zone, response curve, transforms: shift, scale, rotate), standalone animation (`Float`, `Rotate`, `Scale`, `Pulse`, `Wiggle`), and drop shadow.
 - **Performance:** Lazy loading of assets, pausing on idle mode, disabling under high load.
 
+<p align="center">
+  <img src="multimedia/Example%20Parallax.gif" alt="Parallax Examples">
+</p>
+
 ### GUI Configuration Interface
 Launch the visual editor with `cava-bg gui`. The GUI organizes all options into tabs:
 - **Audio:** Audio source, sensitivity, complete audio disabling.
