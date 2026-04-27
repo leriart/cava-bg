@@ -2498,7 +2498,13 @@ impl AppState {
             })
             .unwrap_or(surface_caps.formats[0]);
 
-        let alpha_mode = wgpu::CompositeAlphaMode::PreMultiplied;
+        let alpha_mode = surface_caps
+            .alpha_modes
+            .iter()
+            .copied()
+            .find(|&m| m == wgpu::CompositeAlphaMode::Auto || m == wgpu::CompositeAlphaMode::PreMultiplied)
+            .or_else(|| surface_caps.alpha_modes.first().copied())
+            .unwrap_or(wgpu::CompositeAlphaMode::Opaque);
 
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
