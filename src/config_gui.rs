@@ -11,17 +11,15 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use crate::app_config::{
-    AnimationType, BarShape, BlendMode,
-    ColorExtractionMode, Config, LayerAnimationConfig, LayerChoice, LayerSourceType,
-    MaskComputeMode, ParallaxLayerConfig, ParallaxMode, ParallaxProfile,
-    ProfileSource, VisualizationMode,
+    AnimationType, BarShape, BlendMode, ColorExtractionMode, Config, LayerAnimationConfig,
+    LayerChoice, LayerSourceType, MaskComputeMode, ParallaxLayerConfig, ParallaxMode,
+    ParallaxProfile, ProfileSource, VisualizationMode,
 };
 use crate::wallpaper::WallpaperAnalyzer;
 
 pub fn run_config_gui(config_path: &Path) -> Result<()> {
     if !config_path.exists() {
-        crate::create_default_config(config_path)
-            .context("Failed to create default config")?;
+        crate::create_default_config(config_path).context("Failed to create default config")?;
     }
 
     let app = match ConfigEditorApp::load(config_path) {
@@ -69,12 +67,12 @@ pub fn run_config_gui(config_path: &Path) -> Result<()> {
             for path in &symbol_fonts {
                 if let Ok(data) = std::fs::read(path) {
                     let name = format!("symbols-{}", path.rsplit('/').next().unwrap_or("fallback"));
-                    fonts.font_data.insert(
-                        name.clone(),
-                        egui::FontData::from_owned(data),
-                    );
+                    fonts
+                        .font_data
+                        .insert(name.clone(), egui::FontData::from_owned(data));
                     // Prepend to Proportional group as fallback (lower priority than main font)
-                    if let Some(families) = fonts.families.get_mut(&egui::FontFamily::Proportional) {
+                    if let Some(families) = fonts.families.get_mut(&egui::FontFamily::Proportional)
+                    {
                         families.insert(0, name);
                     }
                     log::info!("Loaded symbol font: {}", path);
@@ -198,11 +196,7 @@ impl ConfigEditorApp {
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
-        let xray_dir_input = config
-            .xray
-            .images_dir
-            .clone()
-            .unwrap_or_default();
+        let xray_dir_input = config.xray.images_dir.clone().unwrap_or_default();
         let layers_dir_input = config
             .parallax
             .profiles_dir
@@ -241,11 +235,7 @@ impl ConfigEditorApp {
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
-        let default_selected_profile = config
-            .parallax
-            .active_profile
-            .clone()
-            .unwrap_or_default();
+        let default_selected_profile = config.parallax.active_profile.clone().unwrap_or_default();
 
         Ok(Self {
             config_path: config_path.to_path_buf(),
@@ -310,12 +300,12 @@ impl ConfigEditorApp {
         };
 
         self.config.parallax.profiles_dir = if self.profiles_dir_input.trim().is_empty() {
-            Some(PathBuf::from(
+            Some(
                 self.config_path
                     .parent()
                     .unwrap_or(Path::new(""))
                     .join("parallax"),
-            ))
+            )
         } else {
             Some(PathBuf::from(self.profiles_dir_input.trim()))
         };
@@ -400,7 +390,9 @@ impl ConfigEditorApp {
         if !config.colors.palette.is_empty() {
             return config.colors.palette.clone();
         }
-        vec![crate::app_config::array_from_config_color(config.audio.bar_color.clone())]
+        vec![crate::app_config::array_from_config_color(
+            config.audio.bar_color.clone(),
+        )]
     }
 
     fn push_live_color_update(&self) {
@@ -412,9 +404,9 @@ impl ConfigEditorApp {
         // Siempre mandamos la palette si no está vacía — los gradient_colors
         // son para el efecto de gradiente en las barras, no deben bloquear
         // los colores manuales o extraídos.
-        let colors = if !self.config.colors.palette.is_empty() {
-            self.config.colors.palette.clone()
-        } else if self.config.colors.extract_from_wallpaper {
+        let colors = if !self.config.colors.palette.is_empty()
+            || self.config.colors.extract_from_wallpaper
+        {
             self.config.colors.palette.clone()
         } else {
             Self::static_colors_from_config(&self.config)
@@ -512,12 +504,7 @@ impl ConfigEditorApp {
             .as_ref()
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
-        self.xray_dir_input = self
-            .config
-            .xray
-            .images_dir
-            .clone()
-            .unwrap_or_default();
+        self.xray_dir_input = self.config.xray.images_dir.clone().unwrap_or_default();
         self.layers_dir_input = self
             .config
             .parallax
@@ -613,7 +600,12 @@ impl ConfigEditorApp {
 
         let hot_reload_tab = matches!(
             self.tab,
-            ConfigTab::Audio | ConfigTab::Visualizer | ConfigTab::Effects | ConfigTab::Colors | ConfigTab::Xray | ConfigTab::Parallax
+            ConfigTab::Audio
+                | ConfigTab::Visualizer
+                | ConfigTab::Effects
+                | ConfigTab::Colors
+                | ConfigTab::Xray
+                | ConfigTab::Parallax
         );
         if !hot_reload_tab || current_snapshot == self.live_push_snapshot {
             return;
@@ -658,18 +650,26 @@ impl ConfigEditorApp {
     fn tabs(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
             tab_button(ui, &mut self.tab, ConfigTab::Audio, "\u{23EF} Audio Source");
-            tab_button(ui, &mut self.tab, ConfigTab::Visualizer, "\u{2590}\u{258C} Visualizer");
+            tab_button(
+                ui,
+                &mut self.tab,
+                ConfigTab::Visualizer,
+                "\u{2590}\u{258C} Visualizer",
+            );
             tab_button(ui, &mut self.tab, ConfigTab::Effects, "\u{2726} Effects");
             tab_button(ui, &mut self.tab, ConfigTab::Colors, "\u{1F3A8} Colors");
             tab_button(ui, &mut self.tab, ConfigTab::Parallax, "\u{1F300} Parallax");
             tab_button(ui, &mut self.tab, ConfigTab::Xray, "\u{229E} X-Ray");
-            tab_button(ui, &mut self.tab, ConfigTab::Performance, "\u{26A1} Performance");
+            tab_button(
+                ui,
+                &mut self.tab,
+                ConfigTab::Performance,
+                "\u{26A1} Performance",
+            );
             tab_button(ui, &mut self.tab, ConfigTab::Advanced, "\u{2699} Advanced");
         });
         ui.separator();
     }
-
-
 
     fn section_visualizer(&mut self, ui: &mut egui::Ui) {
         ui.heading("\u{2590}\u{258C} Visualizer Mode & Layout");
@@ -678,14 +678,24 @@ impl ConfigEditorApp {
         // ── Mode & Shape ──
         ui.collapsing("\u{25B6} Mode & Shape", |ui| {
             ui.horizontal(|ui| {
-                ui.label("Visualization mode:").on_hover_text("How the audio spectrum is visually represented.");
-                visualization_mode_combo(ui, &mut self.config.audio.visualization_mode, "visualization_mode_combo");
+                ui.label("Visualization mode:")
+                    .on_hover_text("How the audio spectrum is visually represented.");
+                visualization_mode_combo(
+                    ui,
+                    &mut self.config.audio.visualization_mode,
+                    "visualization_mode_combo",
+                );
             });
-            ui.label(RichText::new(self.describe_visualization_mode()).small().italics());
+            ui.label(
+                RichText::new(self.describe_visualization_mode())
+                    .small()
+                    .italics(),
+            );
 
             ui.separator();
             ui.horizontal(|ui| {
-                ui.label("Bar shape:").on_hover_text("The geometric shape of each individual bar/band element.");
+                ui.label("Bar shape:")
+                    .on_hover_text("The geometric shape of each individual bar/band element.");
                 bar_shape_combo(ui, &mut self.config.audio.bar_shape, "bar_shape_combo");
             });
             ui.label(RichText::new(self.describe_bar_shape()).small().italics());
@@ -715,10 +725,20 @@ impl ConfigEditorApp {
         match self.config.audio.visualization_mode {
             VisualizationMode::Ring => {
                 ui.collapsing("\u{25B6} Ring Options", |ui| {
-                    ui.add(egui::Slider::new(&mut self.config.audio.radial_inner_radius, 0.0..=500.0).text("Inner radius"))
-                        .on_hover_text("Radius of the ring's inner edge. Ring thickness varies with audio.");
-                    ui.add(egui::Slider::new(&mut self.config.audio.radial_sweep_angle, 1.0..=360.0).text("Sweep angle (\u{00B0})"))
-                        .on_hover_text("Angular span of the ring. 360 = full circle, 180 = half circle.");
+                    ui.add(
+                        egui::Slider::new(&mut self.config.audio.radial_inner_radius, 0.0..=500.0)
+                            .text("Inner radius"),
+                    )
+                    .on_hover_text(
+                        "Radius of the ring's inner edge. Ring thickness varies with audio.",
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut self.config.audio.radial_sweep_angle, 1.0..=360.0)
+                            .text("Sweep angle (\u{00B0})"),
+                    )
+                    .on_hover_text(
+                        "Angular span of the ring. 360 = full circle, 180 = half circle.",
+                    );
                 });
             }
             VisualizationMode::Waveform => {
@@ -731,25 +751,47 @@ impl ConfigEditorApp {
             }
             VisualizationMode::Blocks => {
                 ui.collapsing("\u{25B6} Block Options", |ui| {
-                    ui.add(egui::Slider::new(&mut self.config.audio.block_size, 2.0..=50.0).text("Block size"))
-                        .on_hover_text("Size of each frequency block. Small = pixel-art, large = chunky.");
-                    ui.add(egui::Slider::new(&mut self.config.audio.block_spacing, 0.0..=20.0).text("Block spacing"))
-                        .on_hover_text("Gap between adjacent blocks.");
+                    ui.add(
+                        egui::Slider::new(&mut self.config.audio.block_size, 2.0..=50.0)
+                            .text("Block size"),
+                    )
+                    .on_hover_text(
+                        "Size of each frequency block. Small = pixel-art, large = chunky.",
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut self.config.audio.block_spacing, 0.0..=20.0)
+                            .text("Block spacing"),
+                    )
+                    .on_hover_text("Gap between adjacent blocks.");
                 });
             }
             _ => {}
         }
 
         // ── Corner options (only Circle/Triangle shapes) ──
-        if matches!(self.config.audio.bar_shape, BarShape::Circle | BarShape::Triangle) {
+        if matches!(
+            self.config.audio.bar_shape,
+            BarShape::Circle | BarShape::Triangle
+        ) {
             ui.collapsing("\u{25B6} Corner Options", |ui| {
                 ui.horizontal(|ui| {
-                    ui.label("Corner radius (px):").on_hover_text("Rounds corners of non-rectangular bar shapes.");
-                    ui.add(egui::DragValue::new(&mut self.config.audio.corner_radius).clamp_range(0.0f32..=64.0f32).speed(0.5));
+                    ui.label("Corner radius (px):")
+                        .on_hover_text("Rounds corners of non-rectangular bar shapes.");
+                    ui.add(
+                        egui::DragValue::new(&mut self.config.audio.corner_radius)
+                            .clamp_range(0.0f32..=64.0f32)
+                            .speed(0.5),
+                    );
                 });
                 ui.horizontal(|ui| {
-                    ui.label("Corner segments:").on_hover_text("Quality of curved corners. Higher = smoother but more GPU work.");
-                    ui.add(egui::DragValue::new(&mut self.config.audio.corner_segments).clamp_range(2u32..=32u32).speed(1));
+                    ui.label("Corner segments:").on_hover_text(
+                        "Quality of curved corners. Higher = smoother but more GPU work.",
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.config.audio.corner_segments)
+                            .clamp_range(2u32..=32u32)
+                            .speed(1),
+                    );
                 });
             });
         }
@@ -790,8 +832,13 @@ impl ConfigEditorApp {
         ui.separator();
 
         ui.collapsing("\u{25B6} Bar Smoothing", |ui| {
-            ui.add(egui::Slider::new(&mut self.config.audio.smoothing, 0.0..=1.0).text("Bar smoothing"))
-                .on_hover_text("Cross-frame smoothness: 0 = instant/laggy, 1 = smooth but sluggish. Try 0.7.");
+            ui.add(
+                egui::Slider::new(&mut self.config.audio.smoothing, 0.0..=1.0)
+                    .text("Bar smoothing"),
+            )
+            .on_hover_text(
+                "Cross-frame smoothness: 0 = instant/laggy, 1 = smooth but sluggish. Try 0.7.",
+            );
         });
 
         ui.collapsing("\u{25B6} CAVA Advanced Filters", |ui| {
@@ -799,17 +846,20 @@ impl ConfigEditorApp {
             if ui.checkbox(&mut mc_on, "Monstercat style").changed() {
                 self.config.smoothing.monstercat = if mc_on { Some(1.0) } else { Some(0.0) };
             }
-            ui.label("Bars fall rapidly from peaks but rise more slowly.").on_hover_text("Creates the classic music-visualizer look with faster fall-off.");
-            
+            ui.label("Bars fall rapidly from peaks but rise more slowly.")
+                .on_hover_text("Creates the classic music-visualizer look with faster fall-off.");
+
             let mut wv = self.config.smoothing.waves.unwrap_or(0);
-            if ui.add(egui::Slider::new(&mut wv, 0..=10).text("Wave harmonics")).changed() {
+            if ui
+                .add(egui::Slider::new(&mut wv, 0..=10).text("Wave harmonics"))
+                .changed()
+            {
                 self.config.smoothing.waves = Some(wv);
             }
-            ui.label("Number of CAVA wave harmonics. Higher = more complex wave shapes.").on_hover_text("Causes smoother waves in the audio spectrum.");
+            ui.label("Number of CAVA wave harmonics. Higher = more complex wave shapes.")
+                .on_hover_text("Causes smoother waves in the audio spectrum.");
             ui.small("Smoothing changes require restarting CAVA to take effect.");
         });
-
-
     }
 
     fn section_audio(&mut self, ui: &mut egui::Ui) {
@@ -847,14 +897,13 @@ impl ConfigEditorApp {
         }
 
         ui.separator();
-        ui.label(egui::RichText::new("\u{1f4c1} Parallax Profiles").strong().size(14.0));
-        ui.small("Profiles bundle layer images and settings into reusable presets.");
-        path_picker_row(
-            ui,
-            "Profiles directory",
-            &mut self.profiles_dir_input,
-            true,
+        ui.label(
+            egui::RichText::new("\u{1f4c1} Parallax Profiles")
+                .strong()
+                .size(14.0),
         );
+        ui.small("Profiles bundle layer images and settings into reusable presets.");
+        path_picker_row(ui, "Profiles directory", &mut self.profiles_dir_input, true);
 
         if ui.button("Refresh profiles")
             .on_hover_text("Scan the profiles directory for parallax profiles.\nEach profile is a subfolder containing a parallax.toml.")
@@ -884,20 +933,17 @@ impl ConfigEditorApp {
             ui.horizontal(|ui| {
                 ui.label("Active Profile:");
                 egui::ComboBox::from_id_source("active_profile_combo")
-                    .selected_text(
-                        if self.selected_profile.is_empty() {
-                            "(none)"
-                        } else {
-                            &self.selected_profile
-                        },
-                    )
+                    .selected_text(if self.selected_profile.is_empty() {
+                        "(none)"
+                    } else {
+                        &self.selected_profile
+                    })
                     .show_ui(ui, |ui: &mut egui::Ui| {
                         for p in &self.available_profiles {
-                            if ui.selectable_value(
-                                &mut self.selected_profile,
-                                p.clone(),
-                                p.as_str(),
-                            ).clicked() {
+                            if ui
+                                .selectable_value(&mut self.selected_profile, p.clone(), p.as_str())
+                                .clicked()
+                            {
                                 self.config.parallax.layers.clear();
                                 self.config.parallax.active_profile = Some(p.clone());
                                 self.status = format!("Selected profile '{}'", p);
@@ -929,9 +975,11 @@ impl ConfigEditorApp {
                 });
         });
 
-        if ui.button("󰺷 Create New Profile")
+        if ui
+            .button("󰺷 Create New Profile")
             .on_hover_text("Create a new parallax profile from an image or wallpaper.")
-            .clicked() {
+            .clicked()
+        {
             self.create_profile_dialog = true;
             self.create_profile_name.clear();
         }
@@ -963,34 +1011,35 @@ impl ConfigEditorApp {
                             PathBuf::from(self.profiles_dir_input.trim())
                         };
 
-                        let result: Result<ParallaxProfile, anyhow::Error> = if self.create_profile_use_wallpaper {
-                            // Use current wallpaper
-                            let wallpaper = WallpaperAnalyzer::find_wallpaper();
-                            if let Some(wp_path) = wallpaper {
-                                ParallaxProfile::create(&dir, &name, &wp_path)
+                        let result: Result<ParallaxProfile, anyhow::Error> =
+                            if self.create_profile_use_wallpaper {
+                                // Use current wallpaper
+                                let wallpaper = WallpaperAnalyzer::find_wallpaper();
+                                if let Some(wp_path) = wallpaper {
+                                    ParallaxProfile::create(&dir, &name, &wp_path)
+                                } else {
+                                    self.status = "Could not detect current wallpaper.".to_string();
+                                    return;
+                                }
                             } else {
-                                self.status = "Could not detect current wallpaper.".to_string();
-                                return;
-                            }
-                        } else {
-                            // Pick a file
-                            if let Some(path) = FileDialog::new()
-                                .add_filter("Images", &["png", "jpg", "jpeg", "webp"])
-                                .pick_file()
-                            {
-                                ParallaxProfile::create(&dir, &name, &path)
-                            } else {
-                                self.status = "No file selected.".to_string();
-                                return;
-                            }
-                        };
+                                // Pick a file
+                                if let Some(path) = FileDialog::new()
+                                    .add_filter("Images", &["png", "jpg", "jpeg", "webp"])
+                                    .pick_file()
+                                {
+                                    ParallaxProfile::create(&dir, &name, &path)
+                                } else {
+                                    self.status = "No file selected.".to_string();
+                                    return;
+                                }
+                            };
 
                         match result {
                             Ok(_) => {
-                                self.available_profiles =
-                                    ParallaxProfile::discover_profiles(&dir);
+                                self.available_profiles = ParallaxProfile::discover_profiles(&dir);
                                 self.selected_profile = name;
-                                self.status = format!("Created profile '{}'", &self.selected_profile);
+                                self.status =
+                                    format!("Created profile '{}'", &self.selected_profile);
                             }
                             Err(e) => {
                                 self.status = format!("Failed to create profile: {e}");
@@ -1005,27 +1054,28 @@ impl ConfigEditorApp {
             });
         }
 
-        if !self.selected_profile.is_empty() {
-            if ui.button("󰚠 Delete selected profile").clicked() {
-                let dir = if self.profiles_dir_input.trim().is_empty() {
-                    self.config_path
-                        .parent()
-                        .unwrap_or(Path::new(""))
-                        .join("parallax")
-                } else {
-                    PathBuf::from(self.profiles_dir_input.trim())
-                };
-                let profile_dir = dir.join(&self.selected_profile);
-                if let Err(e) = std::fs::remove_dir_all(&profile_dir) {
-                    self.status = format!("Failed to delete profile: {e}");
-                } else {
-                    self.available_profiles = ParallaxProfile::discover_profiles(&dir);
-                    if self.selected_profile == self.config.parallax.active_profile.as_deref().unwrap_or("") {
-                        self.config.parallax.active_profile = None;
-                    }
-                    self.selected_profile.clear();
-                    self.status = format!("Deleted profile directory");
+        if !self.selected_profile.is_empty() && ui.button("󰚠 Delete selected profile").clicked()
+        {
+            let dir = if self.profiles_dir_input.trim().is_empty() {
+                self.config_path
+                    .parent()
+                    .unwrap_or(Path::new(""))
+                    .join("parallax")
+            } else {
+                PathBuf::from(self.profiles_dir_input.trim())
+            };
+            let profile_dir = dir.join(&self.selected_profile);
+            if let Err(e) = std::fs::remove_dir_all(&profile_dir) {
+                self.status = format!("Failed to delete profile: {e}");
+            } else {
+                self.available_profiles = ParallaxProfile::discover_profiles(&dir);
+                if self.selected_profile
+                    == self.config.parallax.active_profile.as_deref().unwrap_or("")
+                {
+                    self.config.parallax.active_profile = None;
                 }
+                self.selected_profile.clear();
+                self.status = "Deleted profile directory".to_string();
             }
         }
 
@@ -1057,7 +1107,11 @@ impl ConfigEditorApp {
         }
 
         // Show common settings regardless of profile mode
-        ui.label(egui::RichText::new("\u{2699} General Settings").strong().size(14.0));
+        ui.label(
+            egui::RichText::new("\u{2699} General Settings")
+                .strong()
+                .size(14.0),
+        );
         ui.horizontal(|ui| {
             ui.label("Parallax Mode:")
                 .on_hover_text("How parallax layers respond to input:\n\nStatic — No movement\nMouse — Track cursor position\nAudio — React to audio amplitude and bands\nAudio + Mouse — React to both");
@@ -1067,12 +1121,19 @@ impl ConfigEditorApp {
             .on_hover_text("Apply perspective depth scaling to layers.\nLayers farther back appear smaller and move slower.");
 
         ui.separator();
-        ui.label(egui::RichText::new("\u{1f5d0} Render Layer").strong().size(14.0));
+        ui.label(
+            egui::RichText::new("\u{1f5d0} Render Layer")
+                .strong()
+                .size(14.0),
+        );
         ui.small("Which compositor layer the renderer attaches to:");
 
-
         ui.separator();
-        ui.label(egui::RichText::new("\u{1f5b1} Mouse Tracking").strong().size(14.0));
+        ui.label(
+            egui::RichText::new("\u{1f5b1} Mouse Tracking")
+                .strong()
+                .size(14.0),
+        );
         ui.checkbox(
             &mut self.config.parallax.mouse.global_tracking,
             "Global mouse tracking (aggregated)",
@@ -1089,9 +1150,11 @@ impl ConfigEditorApp {
         let has_profile = !self.selected_profile.is_empty();
         if has_profile {
             ui.separator();
-            if ui.button("󰏆 Save to profile")
-            .on_hover_text("Write the current layer configuration back to the profile file.")
-            .clicked() {
+            if ui
+                .button("󰏆 Save to profile")
+                .on_hover_text("Write the current layer configuration back to the profile file.")
+                .clicked()
+            {
                 let dir = if self.profiles_dir_input.trim().is_empty() {
                     self.config_path
                         .parent()
@@ -1112,7 +1175,9 @@ impl ConfigEditorApp {
                             }
                         }
                         match profile.save(&dir) {
-                            Ok(_) => self.status = format!("Saved profile '{}'", &self.selected_profile),
+                            Ok(_) => {
+                                self.status = format!("Saved profile '{}'", &self.selected_profile)
+                            }
                             Err(e) => self.status = format!("Failed to save profile: {e}"),
                         }
                     }
@@ -1181,12 +1246,15 @@ impl ConfigEditorApp {
         }
 
         ui.separator();
-        ui.label(egui::RichText::new("\u{1f5bc} Layer Stack").strong().size(14.0));
+        ui.label(
+            egui::RichText::new("\u{1f5bc} Layer Stack")
+                .strong()
+                .size(14.0),
+        );
         let layers_len = self.config.parallax.layers.len();
         if layers_len == 0 && !has_profile {
             ui.label("No layers configured yet. Use the Scan button or add layers manually below.");
         }
-
 
         let mut remove_layer: Option<usize> = None;
         let mut move_up_layer: Option<usize> = None;
@@ -1209,15 +1277,11 @@ impl ConfigEditorApp {
                     ui.horizontal(|ui| {
                         ui.strong("\u{1f3b5} Cava Visualizer");
                         ui.small("(built-in visualizer)");
-                        if viz_idx > 0 {
-                            if ui.button("\u{2b06}").clicked() {
-                                self.config.parallax.visualizer_layer_index = viz_idx.saturating_sub(1);
-                            }
+                        if viz_idx > 0 && ui.button("\u{2b06}").clicked() {
+                            self.config.parallax.visualizer_layer_index = viz_idx.saturating_sub(1);
                         }
-                        if viz_idx < layers_len {
-                            if ui.button("\u{2b07}").clicked() {
-                                self.config.parallax.visualizer_layer_index = viz_idx + 1;
-                            }
+                        if viz_idx < layers_len && ui.button("\u{2b07}").clicked() {
+                            self.config.parallax.visualizer_layer_index = viz_idx + 1;
                         }
                     });
                     ui.small("This layer is tied to the audio visualizer and cannot be removed.");
@@ -1234,16 +1298,14 @@ impl ConfigEditorApp {
                     };
                     ui.strong(label);
                     ui.text_edit_singleline(&mut layer.name);
-                    if idx > 0 {
-                        if ui.button("\u{2b06}").clicked() {
+                    if idx > 0
+                        && ui.button("\u{2b06}").clicked() {
                             move_up_layer = Some(idx);
                         }
-                    }
-                    if idx + 1 < layers_len {
-                        if ui.button("\u{2b07}").clicked() {
+                    if idx + 1 < layers_len
+                        && ui.button("\u{2b07}").clicked() {
                             move_down_layer = Some(idx);
                         }
-                    }
                     if ui.button("\u{00d7} Remove").clicked() {
                         remove_layer = Some(idx);
                     }
@@ -1393,30 +1455,28 @@ impl ConfigEditorApp {
             }
         }
 
-        if !has_profile {
-            if ui.button("+ Add Layer")
+        if !has_profile
+            && ui.button("+ Add Layer")
                 .on_hover_text("Add a new empty parallax layer.\nConfigure its source image, depth, and behavior below.")
                 .clicked() {
                 self.config.parallax.layers.push(default_parallax_layer());
             }
-        }
 
         // If visualizer wasn't inserted in the loop (index >= layers.len()), show it at the end
-        if !rendered_viz && self.config.parallax.enabled && self.config.parallax.visualizer_as_parallax_layer {
+        if !rendered_viz
+            && self.config.parallax.enabled
+            && self.config.parallax.visualizer_as_parallax_layer
+        {
             let viz_idx = self.config.parallax.visualizer_layer_index;
             ui.group(|ui| {
                 ui.horizontal(|ui| {
                     ui.strong("\u{1f3b5} Cava Visualizer");
                     ui.small("(built-in visualizer)");
-                    if viz_idx > 0 {
-                        if ui.button("\u{2b06}").clicked() {
-                            self.config.parallax.visualizer_layer_index = viz_idx.saturating_sub(1);
-                        }
+                    if viz_idx > 0 && ui.button("\u{2b06}").clicked() {
+                        self.config.parallax.visualizer_layer_index = viz_idx.saturating_sub(1);
                     }
-                    if viz_idx < layers_len {
-                        if ui.button("\u{2b07}").clicked() {
-                            self.config.parallax.visualizer_layer_index = viz_idx + 1;
-                        }
+                    if viz_idx < layers_len && ui.button("\u{2b07}").clicked() {
+                        self.config.parallax.visualizer_layer_index = viz_idx + 1;
                     }
                 });
                 ui.small("This layer is tied to the audio visualizer and cannot be removed.");
@@ -1447,7 +1507,10 @@ impl ConfigEditorApp {
 
         // ── Image source ─────────────────────────────────────
         ui.label(egui::RichText::new("🖼 Image Source").strong().size(14.0));
-        let cfg = self.config.hidden_image.get_or_insert_with(Default::default);
+        let cfg = self
+            .config
+            .hidden_image
+            .get_or_insert_with(Default::default);
 
         ui.horizontal(|ui| {
             ui.radio_value(&mut cfg.use_wallpaper, true, "From wallpaper directory");
@@ -1463,7 +1526,8 @@ impl ConfigEditorApp {
             ui.horizontal(|ui| {
                 ui.label("Image:");
                 let path_str = cfg.path.get_or_insert_with(String::new);
-                if ui.button("Browse")
+                if ui
+                    .button("Browse")
                     .on_hover_text("Select an image file from your system")
                     .clicked()
                 {
@@ -1487,13 +1551,14 @@ impl ConfigEditorApp {
         ui.label(egui::RichText::new("✨ Image Effects").strong().size(14.0));
 
         ui.horizontal(|ui| {
-            ui.label("Color effect:")
-                .on_hover_text("Apply a color filter to the hidden image before blending:
+            ui.label("Color effect:").on_hover_text(
+                "Apply a color filter to the hidden image before blending:
 
 None — Original colors
 Grayscale — Black and white
 Invert — Inverted colors
-Sepia — Warm brownish tone");
+Sepia — Warm brownish tone",
+            );
             let effect = &mut cfg.effect;
             let effect_label = match effect {
                 crate::app_config::HiddenImageEffect::None => "None",
@@ -1506,9 +1571,21 @@ Sepia — Warm brownish tone");
                 .selected_text(effect_label)
                 .show_ui(ui, |ui| {
                     ui.selectable_value(effect, crate::app_config::HiddenImageEffect::None, "None");
-                    ui.selectable_value(effect, crate::app_config::HiddenImageEffect::Grayscale, "Grayscale");
-                    ui.selectable_value(effect, crate::app_config::HiddenImageEffect::Invert, "Invert");
-                    ui.selectable_value(effect, crate::app_config::HiddenImageEffect::Sepia, "Sepia");
+                    ui.selectable_value(
+                        effect,
+                        crate::app_config::HiddenImageEffect::Grayscale,
+                        "Grayscale",
+                    );
+                    ui.selectable_value(
+                        effect,
+                        crate::app_config::HiddenImageEffect::Invert,
+                        "Invert",
+                    );
+                    ui.selectable_value(
+                        effect,
+                        crate::app_config::HiddenImageEffect::Sepia,
+                        "Sepia",
+                    );
                 });
         });
 
@@ -1519,18 +1596,17 @@ Sepia — Warm brownish tone");
         });
     }
 
-
     fn section_colors(&mut self, ui: &mut egui::Ui) {
-    ui.heading("Colors & Visual Effects");
-    ui.separator();
+        ui.heading("Colors & Visual Effects");
+        ui.separator();
 
-    // ── Palette: único editor de colores ──────────────────────────
-    ui.label(egui::RichText::new("Color Palette").strong().size(14.0));
-    ui.small("Add colors to the palette. 1 color = solid, 2+ colors = sequence. Toggle gradient below.");
+        // ── Palette: único editor de colores ──────────────────────────
+        ui.label(egui::RichText::new("Color Palette").strong().size(14.0));
+        ui.small("Add colors to the palette. 1 color = solid, 2+ colors = sequence. Toggle gradient below.");
 
-    let mut to_remove = None;
-    let can_remove = self.config.colors.palette.len() > 1;
-    for (idx, color) in self.config.colors.palette.iter_mut().enumerate() {
+        let mut to_remove = None;
+        let can_remove = self.config.colors.palette.len() > 1;
+        for (idx, color) in self.config.colors.palette.iter_mut().enumerate() {
             ui.horizontal(|ui| {
                 let mut rgb = [
                     (color[0] * 255.0) as u8,
@@ -1549,16 +1625,19 @@ Sepia — Warm brownish tone");
                     to_remove = Some(idx);
                 }
             });
-    }
-    if let Some(idx) = to_remove {
+        }
+        if let Some(idx) = to_remove {
             self.config.colors.palette.remove(idx);
-    }
-    ui.horizontal(|ui| {
+        }
+        ui.horizontal(|ui| {
             if ui.button("+ Add Color").clicked() {
                 self.config.colors.palette.push([1.0, 0.0, 1.0, 1.0]);
             }
             if self.config.colors.palette.len() > 1 {
-                if ui.checkbox(&mut self.config.colors.use_gradient, "🌈 Use gradient").changed() {
+                if ui
+                    .checkbox(&mut self.config.colors.use_gradient, "🌈 Use gradient")
+                    .changed()
+                {
                     // use_gradient field toggles between bar sequence and gradient interpolation
                 }
                 if self.config.colors.palette.len() > 1 && self.config.colors.use_gradient {
@@ -1566,11 +1645,11 @@ Sepia — Warm brownish tone");
                         ui.label("Direction:");
                         egui::ComboBox::from_id_source("grad_dir")
                             .selected_text(match self.config.colors.gradient_direction {
-    crate::app_config::GradientDirection::BottomToTop => "Bottom → Top",
-    crate::app_config::GradientDirection::TopToBottom => "Top → Bottom",
-    crate::app_config::GradientDirection::LeftToRight => "Left → Right",
-    crate::app_config::GradientDirection::RightToLeft => "Right → Left",
-})
+                                crate::app_config::GradientDirection::BottomToTop => "Bottom → Top",
+                                crate::app_config::GradientDirection::TopToBottom => "Top → Bottom",
+                                crate::app_config::GradientDirection::LeftToRight => "Left → Right",
+                                crate::app_config::GradientDirection::RightToLeft => "Right → Left",
+                            })
                             .show_ui(ui, |ui| {
                                 ui.selectable_value(
                                     &mut self.config.colors.gradient_direction,
@@ -1596,10 +1675,10 @@ Sepia — Warm brownish tone");
                     });
                 }
             }
-    });
+        });
 
-    // ── Gradient preview ──────────────────────────────────────────
-    if self.config.colors.palette.len() > 1 && self.config.colors.use_gradient {
+        // ── Gradient preview ──────────────────────────────────────────
+        if self.config.colors.palette.len() > 1 && self.config.colors.use_gradient {
             let (rect, _) = ui
                 .allocate_exact_size(egui::vec2(ui.available_width(), 28.0), egui::Sense::hover());
             draw_gradient_preview(
@@ -1608,21 +1687,20 @@ Sepia — Warm brownish tone");
                 &self.config.colors.palette,
                 self.config.colors.gradient_direction,
             );
-    }
+        }
 
-    ui.separator();
+        ui.separator();
 
-    // ── Bar alpha ────────────────────────────────────────────────
-    ui.horizontal(|ui| {
+        // ── Bar alpha ────────────────────────────────────────────────
+        ui.horizontal(|ui| {
             ui.label("Bar Alpha:");
             ui.add(
-                egui::Slider::new(&mut self.config.audio.bar_alpha, 0.0..=1.0)
-                    .text("transparency"),
+                egui::Slider::new(&mut self.config.audio.bar_alpha, 0.0..=1.0).text("transparency"),
             );
-    });
+        });
 
-    // ── Wallpaper extraction ──────────────────────────────────────
-    ui.horizontal(|ui| {
+        // ── Wallpaper extraction ──────────────────────────────────────
+        ui.horizontal(|ui| {
             ui.checkbox(
                 &mut self.config.colors.extract_from_wallpaper,
                 "🎨 Auto-extract from wallpaper",
@@ -1641,11 +1719,15 @@ Sepia — Warm brownish tone");
                                     let count = extracted.len();
                                     self.config.colors.palette = extracted;
                                     match self.persist() {
-                                        Ok(_) => self.status =
-                                            format!("Extracted {count} colors from wallpaper"),
-                                        Err(e) => self.status = format!(
-                                            "Extracted {count} colors, but persist failed: {e}"
-                                        ),
+                                        Ok(_) => {
+                                            self.status =
+                                                format!("Extracted {count} colors from wallpaper")
+                                        }
+                                        Err(e) => {
+                                            self.status = format!(
+                                                "Extracted {count} colors, but persist failed: {e}"
+                                            )
+                                        }
                                     }
                                 }
                                 Err(e) => self.status = format!("Extraction failed: {e}"),
@@ -1654,17 +1736,20 @@ Sepia — Warm brownish tone");
                         None => self.status = "No wallpaper detected".to_string(),
                     }
                 }
-                extraction_mode_combo(ui, &mut self.config.colors.extraction_mode, "colors_extraction_mode");
+                extraction_mode_combo(
+                    ui,
+                    &mut self.config.colors.extraction_mode,
+                    "colors_extraction_mode",
+                );
             }
-    });
+        });
 
-    // ── Dynamic colors toggle ────────────────────────────────────
-    ui.checkbox(
+        // ── Dynamic colors toggle ────────────────────────────────────
+        ui.checkbox(
             &mut self.config.general.dynamic_colors,
             "Dynamic colors (from network)",
-    );
+        );
     }
-
 
     fn section_performance(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
@@ -1858,7 +1943,7 @@ Sepia — Warm brownish tone");
             let mut manual = self.config.general.preferred_outputs.join(", ");
             if ui.text_edit_singleline(&mut manual).changed() {
                 self.config.general.preferred_outputs = manual
-                    .split(|c: char| c == ',' || c == ';')
+                    .split([',', ';'])
                     .map(|s| s.trim().to_string())
                     .filter(|s| !s.is_empty())
                     .collect();
@@ -1880,11 +1965,7 @@ Sepia — Warm brownish tone");
                     if key.is_empty() {
                         self.status = "Output key cannot be empty.".to_string();
                     } else {
-                        let entry = self
-                            .config
-                            .output
-                            .entry(key.clone())
-                            .or_insert_with(crate::app_config::OutputOverrideConfig::default);
+                        let entry = self.config.output.entry(key.clone()).or_default();
                         entry.enabled = Some(true);
                         entry.name = Some(key.clone());
                         entry.config.general = Some(self.config.general.clone());
@@ -2170,12 +2251,18 @@ Sepia — Warm brownish tone");
     fn describe_visualization_mode(&self) -> &'static str {
         match self.config.audio.visualization_mode {
             VisualizationMode::Bars => "\u{25A0} Standard equalizer bars rising from bottom.",
-            VisualizationMode::MirrorBars => "\u{25A0} Bars mirrored vertically from center. Symmetric DJ-style.",
+            VisualizationMode::MirrorBars => {
+                "\u{25A0} Bars mirrored vertically from center. Symmetric DJ-style."
+            }
             VisualizationMode::InvertedBars => "\u{25A0} Bars hanging from the top edge.",
             VisualizationMode::Blocks => "\u{25A0} Pixelated block-style bars. Chunky and retro.",
-            VisualizationMode::Waveform => "\u{223F} Connected line tracing audio amplitude over time.",
+            VisualizationMode::Waveform => {
+                "\u{223F} Connected line tracing audio amplitude over time."
+            }
             VisualizationMode::Spectrum => "\u{223F} Smooth line connecting frequency band peaks.",
-            VisualizationMode::Ring => "\u{25C9} Ring whose thickness varies with frequency amplitude.",
+            VisualizationMode::Ring => {
+                "\u{25C9} Ring whose thickness varies with frequency amplitude."
+            }
         }
     }
 
@@ -2200,7 +2287,10 @@ impl eframe::App for ConfigEditorApp {
 
             if self.pending_file_for_xray {
                 // Assign to hidden image path (Xray direct image)
-                let cfg = self.config.hidden_image.get_or_insert_with(Default::default);
+                let cfg = self
+                    .config
+                    .hidden_image
+                    .get_or_insert_with(Default::default);
                 cfg.path = Some(path);
                 self.pending_file_for_xray = false;
             } else {
@@ -2215,8 +2305,10 @@ impl eframe::App for ConfigEditorApp {
                 }
                 if !assigned {
                     // Create a new layer with this source
-                    let mut new_layer = crate::app_config::ParallaxLayerConfig::default();
-                    new_layer.source = path.clone();
+                    let new_layer = crate::app_config::ParallaxLayerConfig {
+                        source: path.clone(),
+                        ..Default::default()
+                    };
                     self.config.parallax.layers.push(new_layer);
                 }
             }
@@ -2468,7 +2560,7 @@ fn layer_source_type_combo(ui: &mut egui::Ui, value: &mut LayerSourceType, id: &
 #[allow(dead_code)]
 fn path_buffer_for_hidden(cfg: &mut crate::app_config::HiddenImageConfig) -> &mut String {
     // We store the path in a fixed buffer for GUI editing; if None, create a default.
-    cfg.path.get_or_insert_with(|| String::new())
+    cfg.path.get_or_insert_with(String::new)
 }
 
 fn path_picker_row(ui: &mut egui::Ui, label: &str, target: &mut String, folder: bool) {

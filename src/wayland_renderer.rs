@@ -77,8 +77,6 @@ fn cava_config_hash(config: &Config) -> u64 {
     h.finish()
 }
 
-
-
 use crate::app_config::{
     array_from_config_color, BarShape, BlendMode, CavaConfig, CavaGeneralConfig,
     CavaSmoothingConfig, Config, HiddenImageConfig, HiddenImageEffect, LayerChoice,
@@ -115,6 +113,7 @@ struct Uniforms {
 }
 
 impl Uniforms {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         colors: &[[f32; 4]],
         width: f32,
@@ -187,12 +186,8 @@ impl ParallaxUniform {
         let th = _texture_size.1.max(1) as f32;
 
         // Same aspect-ratio preserving transform as X-Ray (cover + center).
-        let (mut crop_scale, mut crop_offset) = compute_preserve_aspect_crop_transform(
-            width,
-            height,
-            tw,
-            th,
-        );
+        let (mut crop_scale, mut crop_offset) =
+            compute_preserve_aspect_crop_transform(width, height, tw, th);
 
         // Remove Y-axis inversion — parallax shader doesn't flip UVs.
         if crop_scale[1] < 0.0 {
@@ -263,16 +258,14 @@ fn compute_preserve_aspect_crop_transform(
 }
 
 fn is_video_media_path(path: &Path) -> bool {
-    match path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "mp4" | "webm" | "mkv" | "mov" | "avi" | "m4v" | "flv" | "wmv" | "gif" => true,
-        _ => false,
-    }
+    matches!(
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "mp4" | "webm" | "mkv" | "mov" | "avi" | "m4v" | "flv" | "wmv" | "gif"
+    )
 }
 
 fn create_texture_from_rgba_frame(
@@ -404,10 +397,18 @@ fn compute_display_anchor(disp: &crate::app_config::DisplayConfig) -> Anchor {
         }
         crate::app_config::Position::Custom => {
             // Override with individual anchor toggles
-            if disp.anchor_top { anchor |= Anchor::TOP; }
-            if disp.anchor_bottom { anchor |= Anchor::BOTTOM; }
-            if disp.anchor_left { anchor |= Anchor::LEFT; }
-            if disp.anchor_right { anchor |= Anchor::RIGHT; }
+            if disp.anchor_top {
+                anchor |= Anchor::TOP;
+            }
+            if disp.anchor_bottom {
+                anchor |= Anchor::BOTTOM;
+            }
+            if disp.anchor_left {
+                anchor |= Anchor::LEFT;
+            }
+            if disp.anchor_right {
+                anchor |= Anchor::RIGHT;
+            }
         }
     }
     anchor
@@ -767,7 +768,12 @@ impl WaylandRenderer {
         let extraction_mode = self.config.colors.extraction_mode;
         let (color_tx, color_receiver) = channel();
         let color_tx_for_path = color_tx.clone();
-        WallpaperAnalyzer::start_wallpaper_monitor(color_tx, num_colors, extraction_mode, extract_colors);
+        WallpaperAnalyzer::start_wallpaper_monitor(
+            color_tx,
+            num_colors,
+            extraction_mode,
+            extract_colors,
+        );
 
         // External cursor monitor — reads cursor position via hyprctl.
         // This works even when the cursor is over other windows.
@@ -814,11 +820,12 @@ impl WaylandRenderer {
             None
         };
 
-        let use_hidden_image = xray_enabled && validate_hidden_image_available(
-            &hidden_image_config,
-            detected_wallpaper.as_ref(),
-            xray_images_dir,
-        );
+        let use_hidden_image = xray_enabled
+            && validate_hidden_image_available(
+                &hidden_image_config,
+                detected_wallpaper.as_ref(),
+                xray_images_dir,
+            );
         // Determine if we need wallpaper monitoring.
         // Check X-Ray (use_wallpaper) OR Parallax (profile_source == FromWallpaper)
         let xray_needs_wallpaper = hidden_image_config
@@ -828,10 +835,15 @@ impl WaylandRenderer {
         let parallax_needs_wallpaper = self.config.parallax.enabled
             && self.config.parallax.profile_source == ProfileSource::FromWallpaper
             && self.config.parallax.profiles_dir.is_some();
-        let needs_wallpaper_monitoring = xray_needs_wallpaper || parallax_needs_wallpaper || extract_colors;
+        let needs_wallpaper_monitoring =
+            xray_needs_wallpaper || parallax_needs_wallpaper || extract_colors;
 
-        info!("needs_wallpaper_monitoring={}, xray_needs={}, parallax_needs={}, extract_colors={}",
-            needs_wallpaper_monitoring, xray_needs_wallpaper, parallax_needs_wallpaper, extract_colors,
+        info!(
+            "needs_wallpaper_monitoring={}, xray_needs={}, parallax_needs={}, extract_colors={}",
+            needs_wallpaper_monitoring,
+            xray_needs_wallpaper,
+            parallax_needs_wallpaper,
+            extract_colors,
         );
 
         let (_wallpaper_path_tx, wallpaper_path_rx): (
@@ -840,8 +852,17 @@ impl WaylandRenderer {
         ) = if needs_wallpaper_monitoring {
             let (tx, rx) = channel();
             let tx_clone = tx.clone();
-            let color_tx = if extract_colors { Some(color_tx_for_path.clone()) } else { None };
-            WallpaperAnalyzer::start_wallpaper_path_monitor(tx, color_tx, num_colors, extraction_mode);
+            let color_tx = if extract_colors {
+                Some(color_tx_for_path.clone())
+            } else {
+                None
+            };
+            WallpaperAnalyzer::start_wallpaper_path_monitor(
+                tx,
+                color_tx,
+                num_colors,
+                extraction_mode,
+            );
             (Some(tx_clone), rx)
         } else {
             let (_dummy_tx, dummy_rx) = channel::<Option<PathBuf>>();
@@ -868,7 +889,9 @@ impl WaylandRenderer {
         let seat_state = SeatState::new(&globals, &qh);
 
         let initial_wallpaper_path = if needs_wallpaper_monitoring {
-            detected_wallpaper.clone().or_else(|| WallpaperAnalyzer::find_wallpaper())
+            detected_wallpaper
+                .clone()
+                .or_else(WallpaperAnalyzer::find_wallpaper)
         } else {
             None
         };
@@ -1037,7 +1060,8 @@ impl WaylandRenderer {
                 // Only apply wallpaper-extracted colors if extract_from_wallpaper is enabled.
                 // Also apply as fallback when parallax/xray have no wallpaper to load.
                 let should_use = state.base_config.colors.extract_from_wallpaper
-                    || (state.current_wallpaper_path.is_none() && state.last_loaded_wallpaper_path.is_none());
+                    || (state.current_wallpaper_path.is_none()
+                        && state.last_loaded_wallpaper_path.is_none());
 
                 if should_use {
                     info!("Updating gradient colors from wallpaper change");
@@ -1073,7 +1097,10 @@ impl WaylandRenderer {
             }
 
             // Check for wallpaper changes (X-Ray or Parallax)
-            if state.use_wallpaper_image || (state.parallax_system.is_some() && state.base_config.parallax.profile_source == ProfileSource::FromWallpaper) {
+            if state.use_wallpaper_image
+                || (state.parallax_system.is_some()
+                    && state.base_config.parallax.profile_source == ProfileSource::FromWallpaper)
+            {
                 if let Ok(Some(new_path)) = state.wallpaper_path_receiver.try_recv() {
                     if state.current_wallpaper_path.as_ref() == Some(&new_path)
                         && state.last_loaded_wallpaper_path.as_ref() == Some(&new_path)
@@ -1111,9 +1138,11 @@ impl WaylandRenderer {
                             &new_path,
                             &output_hidden_cfg,
                             state.xray_config.images_dir.as_deref(),
-                        )
-                            else {
-                            warn!("No matching Xray image for wallpaper {:?}, disabling hidden image", new_path);
+                        ) else {
+                            warn!(
+                                "No matching Xray image for wallpaper {:?}, disabling hidden image",
+                                new_path
+                            );
                             // Reset to dummy texture so cava renders normally
                             let (dummy_tex, dummy_view, _, _) = AppState::create_dummy_texture(
                                 &output_state.wgpu_device,
@@ -1151,7 +1180,10 @@ impl WaylandRenderer {
                             .file_stem()
                             .and_then(|s| s.to_str())
                             .map(|s| s.to_string());
-                        info!("[WALLPAPER] Calling parallax on_wallpaper_change, name={:?}", wp_name);
+                        info!(
+                            "[WALLPAPER] Calling parallax on_wallpaper_change, name={:?}",
+                            wp_name
+                        );
                         if let Err(e) = parallax_system.on_wallpaper_change(wp_name) {
                             warn!("Failed to rebuild parallax layers after wallpaper change: {e}");
                         }
@@ -1185,7 +1217,7 @@ struct CavaFramePacket {
 }
 
 fn resolve_xray_path(
-    wallpaper_path: &PathBuf,
+    wallpaper_path: &Path,
     _config: &Option<HiddenImageConfig>,
     xray_images_dir: Option<&str>,
 ) -> Option<PathBuf> {
@@ -1320,7 +1352,9 @@ impl AppState {
             return;
         }
 
-        info!("[CURSOR] No cursor source available. Install hyprctl (Hyprland) or wlrctl (wlroots).");
+        info!(
+            "[CURSOR] No cursor source available. Install hyprctl (Hyprland) or wlrctl (wlroots)."
+        );
     }
 
     /// Try to get cursor position via `hyprctl cursorpos`
@@ -1360,27 +1394,28 @@ impl AppState {
             })
             .unwrap_or((1920.0, 1080.0));
 
-        info!("[CURSOR] hyprctl cursor monitor, resolution={}x{}", resolution.0, resolution.1);
+        info!(
+            "[CURSOR] hyprctl cursor monitor, resolution={}x{}",
+            resolution.0, resolution.1
+        );
 
         let (res_w, res_h) = resolution;
-        std::thread::spawn(move || {
-            loop {
-                let output = std::process::Command::new("hyprctl")
-                    .args(["cursorpos"])
-                    .output();
+        std::thread::spawn(move || loop {
+            let output = std::process::Command::new("hyprctl")
+                .args(["cursorpos"])
+                .output();
 
-                if let Ok(output) = output {
-                    if output.status.success() {
-                        let text = String::from_utf8_lossy(&output.stdout).to_string();
-                        if let Some((nx, ny)) = Self::parse_xy_csv(&text, res_w, res_h) {
-                            if tx.send((nx, ny)).is_err() {
-                                break;
-                            }
+            if let Ok(output) = output {
+                if output.status.success() {
+                    let text = String::from_utf8_lossy(&output.stdout).to_string();
+                    if let Some((nx, ny)) = Self::parse_xy_csv(&text, res_w, res_h) {
+                        if tx.send((nx, ny)).is_err() {
+                            break;
                         }
                     }
                 }
-                std::thread::sleep(std::time::Duration::from_millis(16));
             }
+            std::thread::sleep(std::time::Duration::from_millis(16));
         });
         Some(())
     }
@@ -1423,7 +1458,10 @@ impl AppState {
             })
             .unwrap_or((1920.0, 1080.0));
 
-        info!("[CURSOR] wlrctl cursor monitor, resolution={}x{}", resolution.0, resolution.1);
+        info!(
+            "[CURSOR] wlrctl cursor monitor, resolution={}x{}",
+            resolution.0, resolution.1
+        );
 
         let (res_w, res_h) = resolution;
         std::thread::spawn(move || {
@@ -1435,7 +1473,7 @@ impl AppState {
                 if let Ok(output) = output {
                     let text = String::from_utf8_lossy(&output.stdout).to_string();
                     // wlrctl outputs: "x y" separated by space or tab
-                    let parts: Vec<&str> = text.trim().splitn(2, |c: char| c == ' ' || c == '\t').collect();
+                    let parts: Vec<&str> = text.trim().splitn(2, [' ', '\t']).collect();
                     if parts.len() == 2 {
                         let x: f32 = parts[0].trim().parse().unwrap_or(0.0);
                         let y: f32 = parts[1].trim().parse().unwrap_or(0.0);
@@ -1596,9 +1634,9 @@ impl AppState {
         self.use_wallpaper_image = self.use_hidden_image
             && self
                 .hidden_image_config
-            .as_ref()
-            .map(|c| c.use_wallpaper)
-            .unwrap_or(false);
+                .as_ref()
+                .map(|c| c.use_wallpaper)
+                .unwrap_or(false);
 
         // If wallpaper monitoring just became required but wasn't started, start it now.
         // This happens when xray is toggled ON at runtime after init skipped wallpaper monitoring.
@@ -1617,7 +1655,10 @@ impl AppState {
         self.render_layer_choice = new_layer;
 
         if layer_changed {
-            info!("Wayland layer changed to {:?}, scheduling surface recreation", new_layer);
+            info!(
+                "Wayland layer changed to {:?}, scheduling surface recreation",
+                new_layer
+            );
             for state in self.per_output.values_mut() {
                 state.draw_layer = new_layer;
                 state.needs_rebuild = true;
@@ -1703,9 +1744,12 @@ impl AppState {
                 state.layer_surface.set_exclusive_zone(-1);
                 let (set_w, set_h) = if disp.width > 0 && disp.height > 0 {
                     if disp.scale_with_resolution {
-                        (disp.width.max(1) as u32, disp.height.max(1) as u32)
+                        (disp.width.max(1), disp.height.max(1))
                     } else {
-                        (state.width.min(disp.width.max(1) as u32), state.height.min(disp.height.max(1) as u32))
+                        (
+                            state.width.min(disp.width.max(1)),
+                            state.height.min(disp.height.max(1)),
+                        )
                     }
                 } else {
                     (state.width, state.height)
@@ -1741,10 +1785,8 @@ impl AppState {
                     }
                     // Create new reader thread for the new pipe
                     if let Some(cava_stdout) = child.stdout.take() {
-                        let (new_tx, new_rx): (
-                            Sender<CavaFramePacket>,
-                            Receiver<CavaFramePacket>,
-                        ) = channel();
+                        let (new_tx, new_rx): (Sender<CavaFramePacket>, Receiver<CavaFramePacket>) =
+                            channel();
                         let reader_cava_tx = new_tx.clone();
                         let bar_count = new_config.audio.bar_count as usize;
                         let threshold = new_config.performance.idle_mode.audio_threshold.max(0.0);
@@ -1817,7 +1859,10 @@ impl AppState {
         let width = old_state.width;
         let height = old_state.height;
 
-        info!("Rebuilding surface for {} on {:?}", output_name, old_state.draw_layer);
+        info!(
+            "Rebuilding surface for {} on {:?}",
+            output_name, old_state.draw_layer
+        );
 
         let surface = self.compositor.create_surface(&self.qh);
         let layer_surface = self.layer_shell.create_layer_surface(
@@ -1861,9 +1906,8 @@ impl AppState {
         }
         .context("Failed to recreate wgpu surface")?;
 
-        let wgpu_surface_static: wgpu::Surface<'static> = unsafe {
-            std::mem::transmute(wgpu_surface)
-        };
+        let wgpu_surface_static: wgpu::Surface<'static> =
+            unsafe { std::mem::transmute(wgpu_surface) };
 
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
@@ -1942,6 +1986,7 @@ impl AppState {
         (texture, view, 1, 1)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn load_or_dummy_texture(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -1965,15 +2010,14 @@ impl AppState {
             // using the same filename as the current wallpaper.
             // No fallback to explicit path — if no counterpart is found,
             // return a dummy texture so cava renders normally.
-            wallpaper_path
-                .and_then(|path| resolve_xray_path(path, config, xray_images_dir))
+            wallpaper_path.and_then(|path| resolve_xray_path(path, config, xray_images_dir))
         } else {
             // Direct image mode: use the explicit path from config, or
             // search the images_dir for a counterpart (no wallpaper involved).
             let from_config = config
                 .as_ref()
                 .and_then(|img_config| img_config.path.as_ref().map(PathBuf::from));
-            from_config.or_else(|| {
+            from_config.or({
                 // No explicit path set; still try xray_images_dir for any candidates?
                 None
             })
@@ -2040,8 +2084,10 @@ impl AppState {
     /// Reload hidden image textures for all outputs after a config change.
     /// Called from [`apply_runtime_config`] when hidden_image/xray config changes.
     fn reload_hidden_images_for_all_outputs(&mut self, new_config: &Config) {
-        info!("reload_hidden_images: xray.enabled={}, wallpaper_path={:?}",
-            new_config.xray.enabled, self.current_wallpaper_path);
+        info!(
+            "reload_hidden_images: xray.enabled={}, wallpaper_path={:?}",
+            new_config.xray.enabled, self.current_wallpaper_path
+        );
 
         let xray_is_enabled = new_config.xray.enabled;
         let use_hidden = xray_is_enabled
@@ -2077,18 +2123,21 @@ impl AppState {
         // Priority:
         //   1. If use_wallpaper=true: look for counterpart in xray_images_dir
         //   2. Otherwise: use the explicit hidden_image.path
-        let load_path: Option<PathBuf> = new_config.hidden_image.as_ref()
-            .and_then(|cfg| {
-                if cfg.use_wallpaper {
-                    // Wallpaper-relative: only counterpart search, no path fallback
-                    self.current_wallpaper_path.as_ref().and_then(|wp| {
-                        resolve_xray_path(wp, &new_config.hidden_image, new_config.xray.images_dir.as_deref())
-                    })
-                } else {
-                    // Direct path mode
-                    cfg.path.as_ref().map(PathBuf::from)
-                }
-            });
+        let load_path: Option<PathBuf> = new_config.hidden_image.as_ref().and_then(|cfg| {
+            if cfg.use_wallpaper {
+                // Wallpaper-relative: only counterpart search, no path fallback
+                self.current_wallpaper_path.as_ref().and_then(|wp| {
+                    resolve_xray_path(
+                        wp,
+                        &new_config.hidden_image,
+                        new_config.xray.images_dir.as_deref(),
+                    )
+                })
+            } else {
+                // Direct path mode
+                cfg.path.as_ref().map(PathBuf::from)
+            }
+        });
 
         let Some(ref load_path) = load_path else {
             warn!("Xray enabled but no hidden image path available (wallpaper={:?}, hidden.path={:?})",
@@ -2108,9 +2157,15 @@ impl AppState {
                 self.xray_prescale_max_dimension,
                 self.xray_generate_mipmaps,
             ) {
-                warn!("Failed to reload hidden image texture for {}: {e}", state.output_name);
+                warn!(
+                    "Failed to reload hidden image texture for {}: {e}",
+                    state.output_name
+                );
             } else {
-                info!("Hidden image texture reloaded for {} from {:?}", state.output_name, load_path);
+                info!(
+                    "Hidden image texture reloaded for {} from {:?}",
+                    state.output_name, load_path
+                );
             }
 
             // After successful reload, mark the texture as loaded
@@ -2316,16 +2371,17 @@ impl AppState {
                 mapped_at_creation: false,
             });
 
-        let uniform_bind_group = output_state
-            .wgpu_device
-            .create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Parallax Layer Uniform Bind Group"),
-                layout: &output_state.parallax_uniform_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: uniform_buffer.as_entire_binding(),
-                }],
-            });
+        let uniform_bind_group =
+            output_state
+                .wgpu_device
+                .create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("Parallax Layer Uniform Bind Group"),
+                    layout: &output_state.parallax_uniform_layout,
+                    entries: &[wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: uniform_buffer.as_entire_binding(),
+                    }],
+                });
 
         Ok(ParallaxGpuLayer {
             texture,
@@ -2391,11 +2447,9 @@ impl AppState {
         if self.per_output.contains_key(&name) {
             return Ok(());
         }
-        if !self.preferred_output_names.is_empty() {
-            if !self.preferred_output_names.contains(&name) {
-                debug!("Skipping monitor {} (not in preferred list)", name);
-                return Ok(());
-            }
+        if !self.preferred_output_names.is_empty() && !self.preferred_output_names.contains(&name) {
+            debug!("Skipping monitor {} (not in preferred list)", name);
+            return Ok(());
         }
 
         let output_index = self.next_output_index;
@@ -2433,9 +2487,12 @@ impl AppState {
         // Compute surface size respecting display config
         let (width, height) = if disp.width > 0 && disp.height > 0 {
             if disp.scale_with_resolution {
-                (disp.width.max(1) as u32, disp.height.max(1) as u32)
+                (disp.width.max(1), disp.height.max(1))
             } else {
-                (mon_width.min(disp.width.max(1) as u32), mon_height.min(disp.height.max(1) as u32))
+                (
+                    mon_width.min(disp.width.max(1)),
+                    mon_height.min(disp.height.max(1)),
+                )
             }
         } else {
             (mon_width, mon_height)
@@ -2445,7 +2502,10 @@ impl AppState {
         let margin_left = disp.margin_left;
         let margin_right = disp.margin_right;
 
-        layer_surface.set_size(width.saturating_sub(margin_left + margin_right), height.saturating_sub(margin_top + margin_bottom));
+        layer_surface.set_size(
+            width.saturating_sub(margin_left + margin_right),
+            height.saturating_sub(margin_top + margin_bottom),
+        );
         layer_surface.set_anchor(anchor);
         layer_surface.set_exclusive_zone(-1);
         surface.commit();
@@ -2502,7 +2562,9 @@ impl AppState {
             .alpha_modes
             .iter()
             .copied()
-            .find(|&m| m == wgpu::CompositeAlphaMode::Auto || m == wgpu::CompositeAlphaMode::PreMultiplied)
+            .find(|&m| {
+                m == wgpu::CompositeAlphaMode::Auto || m == wgpu::CompositeAlphaMode::PreMultiplied
+            })
             .or_else(|| surface_caps.alpha_modes.first().copied())
             .unwrap_or(wgpu::CompositeAlphaMode::Opaque);
 
@@ -2624,11 +2686,13 @@ impl AppState {
             effective_config.audio.corner_segments,
         );
         // Worst case: MirrorBars (2x bars) or Spectrum (2x interpolation)
-        let worst_case_verts = (output_bar_count * max_verts_per_bar).max(
-            output_bar_count * 2 * 6, // Spectrum: 2x interpolated segments, 6 verts each
-        ).max(
-            output_bar_count * 2 * max_verts_per_bar, // MirrorBars: 2x bars
-        );
+        let worst_case_verts = (output_bar_count * max_verts_per_bar)
+            .max(
+                output_bar_count * 2 * 6, // Spectrum: 2x interpolated segments, 6 verts each
+            )
+            .max(
+                output_bar_count * 2 * max_verts_per_bar, // MirrorBars: 2x bars
+            );
         let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("Bars GPU Vertex Buffer"),
             size: (worst_case_verts * 4 * std::mem::size_of::<f32>()) as u64,
@@ -2640,9 +2704,9 @@ impl AppState {
             .as_ref()
             .map(|c| c.effect)
             .unwrap_or_default();
-        let output_colors = if effective_config.general.dynamic_colors {
-            self.colors.clone()
-        } else if effective_config.colors.extract_from_wallpaper {
+        let output_colors = if effective_config.general.dynamic_colors
+            || effective_config.colors.extract_from_wallpaper
+        {
             self.colors.clone()
         } else if !effective_config.colors.palette.is_empty() {
             if effective_config.colors.palette.len() == 1 {
@@ -2841,8 +2905,10 @@ impl AppState {
             })
         };
 
-        let parallax_pipeline_normal =
-            make_parallax_pipeline("Parallax GPU Pipeline Normal", wgpu::BlendState::ALPHA_BLENDING);
+        let parallax_pipeline_normal = make_parallax_pipeline(
+            "Parallax GPU Pipeline Normal",
+            wgpu::BlendState::ALPHA_BLENDING,
+        );
         let parallax_pipeline_add = make_parallax_pipeline(
             "Parallax GPU Pipeline Add",
             wgpu::BlendState {
@@ -3035,9 +3101,7 @@ impl AppState {
             }
 
             let cfg = &state.effective_config;
-            let output_colors = if cfg.general.dynamic_colors {
-                self.colors.clone()
-            } else if cfg.colors.extract_from_wallpaper {
+            let output_colors = if cfg.general.dynamic_colors || cfg.colors.extract_from_wallpaper {
                 self.colors.clone()
             } else if !cfg.colors.palette.is_empty() {
                 if cfg.colors.palette.len() == 1 {
@@ -3261,7 +3325,7 @@ impl AppState {
             state.perf_monitor.maybe_log();
         }
 
-        if self.telemetry_decoder_enabled && self.cava_frame_counter % 600 == 0 {
+        if self.telemetry_decoder_enabled && self.cava_frame_counter.is_multiple_of(600) {
             debug!(
                 "decoder-telemetry: frames={} idle={} peak={:.4}",
                 self.cava_frame_counter, self.is_idle, self.last_cava_peak
@@ -3358,6 +3422,7 @@ fn update_hidden_video_frame(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_visualizer_vertices(
     out: &mut Vec<f32>,
     current_bar_heights: &[f32],
@@ -3450,13 +3515,31 @@ fn build_visualizer_vertices(
                 let radius = corner_radius * bar_width * 0.5;
                 // Upper half: from center+gap to center+gap+halfH
                 bar_geometry::build_bar(
-                    out, bar_shape, x0, half_gap, x1, half_gap + half_h, radius, radius,
-                    corner_segments, polygon_sides, false,
+                    out,
+                    bar_shape,
+                    x0,
+                    half_gap,
+                    x1,
+                    half_gap + half_h,
+                    radius,
+                    radius,
+                    corner_segments,
+                    polygon_sides,
+                    false,
                 );
                 // Lower half: mirrored down
                 bar_geometry::build_bar(
-                    out, bar_shape, x0, -half_gap - half_h, x1, -half_gap, radius, radius,
-                    corner_segments, polygon_sides, false,
+                    out,
+                    bar_shape,
+                    x0,
+                    -half_gap - half_h,
+                    x1,
+                    -half_gap,
+                    radius,
+                    radius,
+                    corner_segments,
+                    polygon_sides,
+                    false,
                 );
             }
         }
@@ -3473,8 +3556,17 @@ fn build_visualizer_vertices(
                 let x1 = bar_gap_width * i as f32 + bar_width * (i + 1) as f32 - 1.0;
                 let radius = corner_radius * bar_width * 0.5;
                 bar_geometry::build_bar(
-                    out, bar_shape, x0, h, x1, 1.0, radius, radius,
-                    corner_segments, polygon_sides, false,
+                    out,
+                    bar_shape,
+                    x0,
+                    h,
+                    x1,
+                    1.0,
+                    radius,
+                    radius,
+                    corner_segments,
+                    polygon_sides,
+                    false,
                 );
             }
         }
@@ -3507,7 +3599,11 @@ fn build_visualizer_vertices(
                         let t = 0.5;
                         // Catmull-rom-like easing using neighbours when available
                         let prev = if i > 0 { points[i - 1] } else { a };
-                        let next = if i + 2 < points.len() { points[i + 2] } else { b };
+                        let next = if i + 2 < points.len() {
+                            points[i + 2]
+                        } else {
+                            b
+                        };
                         let mx = a.0 + (b.0 - a.0) * t;
                         // simple cubic-ish blend on Y, weighted by smoothness
                         let raw_y = a.1 + (b.1 - a.1) * t;
@@ -3534,7 +3630,9 @@ fn build_visualizer_vertices(
             // covering each angular slice.
             let count = target_bar_count.max(8);
             let inner_r = (radial_inner_radius / 100.0).clamp(0.0, 0.85);
-            let sweep = radial_sweep_angle.to_radians().clamp(0.1, std::f32::consts::TAU);
+            let sweep = radial_sweep_angle
+                .to_radians()
+                .clamp(0.1, std::f32::consts::TAU);
             let max_thick = (1.0 - inner_r).max(0.05);
             let h_scale = height_scale.clamp(0.2, 3.0);
             // We use waveform_smoothness to blend each slice with its
@@ -3551,8 +3649,8 @@ fn build_visualizer_vertices(
                 for i in 0..amps.len() {
                     let prev = amps[(i + amps.len() - 1) % amps.len()];
                     let next = amps[(i + 1) % amps.len()];
-                    blurred[i] = amps[i] * (1.0 - smooth * 0.6)
-                        + (prev + next) * 0.5 * smooth * 0.6;
+                    blurred[i] =
+                        amps[i] * (1.0 - smooth * 0.6) + (prev + next) * 0.5 * smooth * 0.6;
                 }
                 amps = blurred;
             }
@@ -3575,6 +3673,7 @@ fn build_visualizer_vertices(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_bars_layout(
     out: &mut Vec<f32>,
     current_bar_heights: &[f32],
@@ -3870,9 +3969,9 @@ impl LayerShellHandler for AppState {
                 .as_ref()
                 .map(|c| c.effect)
                 .unwrap_or_default();
-            let output_colors = if state.effective_config.general.dynamic_colors {
-                self.colors.clone()
-            } else if state.effective_config.colors.extract_from_wallpaper {
+            let output_colors = if state.effective_config.general.dynamic_colors
+                || state.effective_config.colors.extract_from_wallpaper
+            {
                 self.colors.clone()
             } else if !state.effective_config.colors.palette.is_empty() {
                 if state.effective_config.colors.palette.len() == 1 {

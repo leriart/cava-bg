@@ -172,10 +172,7 @@ fn set_output_enabled(config_path: &Path, output: &str, enabled: bool) -> Result
         .with_context(|| format!("Could not parse {}", config_path.display()))?;
     cfg.normalize_compat_fields();
 
-    let entry = cfg
-        .output
-        .entry(output.to_string())
-        .or_insert_with(app_config::OutputOverrideConfig::default);
+    let entry = cfg.output.entry(output.to_string()).or_default();
     entry.enabled = Some(enabled);
     entry.name = Some(output.to_string());
 
@@ -537,8 +534,7 @@ pub fn create_default_config(path: &Path) -> Result<()> {
     }
 
     let cfg = crate::app_config::Config::default();
-    let toml_str = toml::to_string_pretty(&cfg)
-        .context("Failed to serialize default config")?;
+    let toml_str = toml::to_string_pretty(&cfg).context("Failed to serialize default config")?;
     fs::write(path, &toml_str)?;
     info!("Created default config at {:?}", path);
     Ok(())

@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct Config {
     #[serde(default)]
     pub general: GeneralConfig,
@@ -36,28 +36,6 @@ pub struct Config {
     pub global: Option<ConfigOverride>,
     #[serde(default)]
     pub output: BTreeMap<String, OutputOverrideConfig>,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            general: GeneralConfig::default(),
-            audio: AudioConfig::default(),
-            colors: ColorsConfig::default(),
-            display: DisplayConfig::default(),
-            smoothing: SmoothingConfig::default(),
-            hidden_image: None,
-            layers: None,
-            parallax: ParallaxConfig::default(),
-            wallpaper: WallpaperConfig::default(),
-            xray_mask: XrayMaskConfig::default(),
-            xray: XRayConfig::default(),
-            performance: PerformanceConfig::default(),
-            advanced: AdvancedConfig::default(),
-            global: None,
-            output: BTreeMap::new(),
-        }
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
@@ -93,7 +71,8 @@ pub struct ConfigOverride {
 impl ConfigOverride {
     fn normalize_compat_fields(&mut self) {
         if let Some(audio) = self.audio.as_mut() {
-            audio._legacy_bar_gradient = audio._legacy_bar_gradient || audio._legacy_gradient.enabled;
+            audio._legacy_bar_gradient =
+                audio._legacy_bar_gradient || audio._legacy_gradient.enabled;
             audio._legacy_glow_effect = audio._legacy_glow_effect || audio._legacy_glow.enabled;
             if audio._legacy_gradient_colors.is_empty() {
                 audio._legacy_gradient_colors = audio._legacy_gradient.colors.clone();
@@ -238,7 +217,11 @@ pub struct AudioConfig {
     pub _legacy_gradient_direction: GradientDirection,
     #[serde(default, alias = "glow_effect", skip_serializing)]
     pub _legacy_glow_effect: bool,
-    #[serde(default = "default_glow_intensity", alias = "glow_intensity", skip_serializing)]
+    #[serde(
+        default = "default_glow_intensity",
+        alias = "glow_intensity",
+        skip_serializing
+    )]
     pub _legacy_glow_intensity: f32,
     #[serde(default)]
     pub extract_colors_from_wallpaper: bool,
@@ -249,7 +232,7 @@ pub struct AudioConfig {
     #[serde(default = "default_polygon_sides")]
     pub polygon_sides: u32,
     #[serde(default = "default_true")]
-    pub show_visualizer: bool,    // Visualization mode parameters
+    pub show_visualizer: bool, // Visualization mode parameters
     #[serde(default = "default_radial_inner_radius")]
     pub radial_inner_radius: f32,
     #[serde(default = "default_radial_sweep_angle")]
@@ -299,7 +282,8 @@ impl Default for AudioConfig {
             color_extraction_mode: ColorExtractionMode::Dominant,
             visualization_mode: VisualizationMode::Bars,
             polygon_sides: default_polygon_sides(),
-            show_visualizer: true,            radial_inner_radius: default_radial_inner_radius(),
+            show_visualizer: true,
+            radial_inner_radius: default_radial_inner_radius(),
             radial_sweep_angle: default_radial_sweep_angle(),
             waveform_line_width: default_waveform_line_width(),
             waveform_smoothness: default_waveform_smoothness(),
@@ -348,35 +332,26 @@ impl Default for LegacyGlowConfig {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GradientDirection {
     TopToBottom,
+    #[default]
     BottomToTop,
     LeftToRight,
     RightToLeft,
 }
 
-impl Default for GradientDirection {
-    fn default() -> Self {
-        Self::BottomToTop
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ColorExtractionMode {
+    #[default]
     Dominant,
     Vibrant,
     Palette,
 }
 
-impl Default for ColorExtractionMode {
-    fn default() -> Self {
-        Self::Dominant
-    }
-}
-
-#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum VisualizationMode {
+    #[default]
     Bars,
     Waveform,
     Blocks,
@@ -391,12 +366,6 @@ pub enum VisualizationMode {
     /// Continuous filled ring whose thickness is modulated by the bin
     /// amplitudes (a polar variant of Bars).
     Ring,
-}
-
-impl Default for VisualizationMode {
-    fn default() -> Self {
-        Self::Bars
-    }
 }
 
 impl<'de> serde::Deserialize<'de> for VisualizationMode {
@@ -430,8 +399,9 @@ impl<'de> serde::Deserialize<'de> for VisualizationMode {
     }
 }
 
-#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BarShape {
+    #[default]
     Rectangle,
     Circle,
     Triangle,
@@ -457,14 +427,6 @@ impl<'de> serde::Deserialize<'de> for BarShape {
                 Ok(BarShape::Rectangle)
             }
         }
-    }
-}
-
-impl Default for BarShape {
-    fn default() -> Self {
-        // OFF by default means as close to the original engine as possible:
-        // the original draws plain rectangles, so that is our default.
-        Self::Rectangle
     }
 }
 
@@ -609,8 +571,9 @@ impl Default for DisplayConfig {
     }
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Copy)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Copy, Default)]
 pub enum Position {
+    #[default]
     Fill,
     Center,
     Top,
@@ -626,24 +589,13 @@ pub enum Position {
     Custom,
 }
 
-impl Default for Position {
-    fn default() -> Self {
-        Self::Fill
-    }
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Copy)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Copy, Default)]
 pub enum LayerChoice {
     Background,
+    #[default]
     Bottom,
     Top,
     Overlay,
-}
-
-impl Default for LayerChoice {
-    fn default() -> Self {
-        Self::Bottom
-    }
 }
 
 fn default_bar_amount() -> u32 {
@@ -896,8 +848,10 @@ impl ParallaxConfig {
     pub fn normalize_compat_fields(&mut self) {
         for layer in &mut self.layers {
             if layer.source.trim().starts_with("effect:") && layer.effect.is_none() {
-                let mut effect_cfg = ParallaxEffectConfig::default();
-                effect_cfg.enabled = true;
+                let mut effect_cfg = ParallaxEffectConfig {
+                    enabled: true,
+                    ..Default::default()
+                };
                 let tag = layer
                     .source
                     .trim()
@@ -946,32 +900,22 @@ impl ParallaxConfig {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ParallaxMode {
+    #[default]
     AudioReactive,
     MouseReactive,
     Animated,
     Hybrid,
 }
 
-impl Default for ParallaxMode {
-    fn default() -> Self {
-        Self::AudioReactive
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ProfileSource {
     #[serde(rename = "normal")]
     Normal,
     #[serde(rename = "wallpaper")]
+    #[default]
     FromWallpaper,
-}
-
-impl Default for ProfileSource {
-    fn default() -> Self {
-        Self::FromWallpaper
-    }
 }
 
 /// A saved parallax profile — a named collection of layers with config.
@@ -997,7 +941,11 @@ pub struct ParallaxProfile {
 impl ParallaxProfile {
     fn layer_path(&self, profile_dir: &Path, layer_name: &str) -> Option<PathBuf> {
         let p = profile_dir.join(layer_name);
-        if p.exists() { Some(p) } else { None }
+        if p.exists() {
+            Some(p)
+        } else {
+            None
+        }
     }
 
     /// Resolve the full path for a layer (relative to profile_dir)
@@ -1012,7 +960,10 @@ impl ParallaxProfile {
                 let path = entry.path();
                 if path.is_file() {
                     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                        if matches!(ext.to_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp" | "gif") {
+                        if matches!(
+                            ext.to_lowercase().as_str(),
+                            "png" | "jpg" | "jpeg" | "webp" | "gif"
+                        ) {
                             return path;
                         }
                     }
@@ -1156,32 +1107,22 @@ impl Default for ParallaxPerformanceConfig {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FrequencyZone {
+    #[default]
     FullSpectrum,
     Low,
     Mid,
     High,
 }
 
-impl Default for FrequencyZone {
-    fn default() -> Self {
-        Self::FullSpectrum
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AudioResponseCurve {
     Linear,
+    #[default]
     Smooth,
     Exponential,
     Punchy,
-}
-
-impl Default for AudioResponseCurve {
-    fn default() -> Self {
-        Self::Smooth
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -1262,17 +1203,13 @@ impl Default for LayerMouseReactivityConfig {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(clippy::enum_variant_names)]
 pub enum ParallaxEffectType {
+    #[default]
     CavaBars,
     CavaWave,
     CavaRadial,
-}
-
-impl Default for ParallaxEffectType {
-    fn default() -> Self {
-        Self::CavaBars
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -1393,19 +1330,14 @@ pub struct LayerAnimationConfig {
     pub amplitude: f32,
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AnimationType {
+    #[default]
     Float,
     Rotate,
     Scale,
     Pulse,
     Wiggle,
-}
-
-impl Default for AnimationType {
-    fn default() -> Self {
-        Self::Float
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -1489,17 +1421,12 @@ impl Default for VideoDecoderPerfConfig {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MaskComputeMode {
+    #[default]
     Auto,
     Cpu,
     Gpu,
-}
-
-impl Default for MaskComputeMode {
-    fn default() -> Self {
-        Self::Auto
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -1542,8 +1469,9 @@ impl Default for PerformanceTelemetryConfig {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Default)]
 pub enum HiddenImageEffect {
+    #[default]
     None,
     Grayscale,
     Invert,
@@ -1560,26 +1488,15 @@ pub enum PaletteType {
     Solarized,
 }
 
-impl Default for HiddenImageEffect {
-    fn default() -> Self {
-        HiddenImageEffect::None
-    }
-}
-
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Default)]
 pub enum BlendMode {
+    #[default]
     Reveal,
     Normal,
     Add,
     Multiply,
     Screen,
     Overlay,
-}
-
-impl Default for BlendMode {
-    fn default() -> Self {
-        BlendMode::Reveal
-    }
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -1894,8 +1811,10 @@ impl Config {
     }
 
     fn normalize_section_compat_fields(&mut self) {
-        self.audio._legacy_bar_gradient = self.audio._legacy_bar_gradient || self.audio._legacy_gradient.enabled;
-        self.audio._legacy_glow_effect = self.audio._legacy_glow_effect || self.audio._legacy_glow.enabled;
+        self.audio._legacy_bar_gradient =
+            self.audio._legacy_bar_gradient || self.audio._legacy_gradient.enabled;
+        self.audio._legacy_glow_effect =
+            self.audio._legacy_glow_effect || self.audio._legacy_glow.enabled;
 
         if self.audio._legacy_gradient_colors.is_empty() {
             self.audio._legacy_gradient_colors = self.audio._legacy_gradient.colors.clone();
@@ -2077,7 +1996,7 @@ impl Config {
         self.wallpaper
             .xray_layers_dir
             .as_ref()
-            .map(expand_tilde_path)
+            .map(|p| expand_tilde_path(p))
             .or_else(|| dirs::home_dir().map(|h| h.join(".config/cava-bg/Xray")))
     }
 
@@ -2085,7 +2004,7 @@ impl Config {
         self.wallpaper
             .wallpapers_dir
             .as_ref()
-            .map(expand_tilde_path)
+            .map(|p| expand_tilde_path(p))
             .or_else(|| dirs::home_dir().map(|h| h.join(".config/cava-bg/wallpapers")))
     }
 }
@@ -2149,20 +2068,15 @@ impl Default for XRayConfig {
     }
 }
 
-#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum XRayAnimationType {
+    #[default]
     None,
     Fade,
     Pulse,
     WaveReveal,
     AudioSync,
     WallpaperSync,
-}
-
-impl Default for XRayAnimationType {
-    fn default() -> Self {
-        Self::None
-    }
 }
 
 fn default_true() -> bool {
@@ -2178,12 +2092,12 @@ fn default_audio_sens() -> f32 {
     1.0
 }
 
-fn expand_tilde_path(path: &PathBuf) -> PathBuf {
+fn expand_tilde_path(path: &Path) -> PathBuf {
     let s = path.to_string_lossy();
     if let Some(rest) = s.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
             return home.join(rest);
         }
     }
-    path.clone()
+    path.to_path_buf()
 }

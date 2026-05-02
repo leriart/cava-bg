@@ -212,7 +212,10 @@ impl WallpaperAnalyzer {
         Ok(new_colors)
     }
 
-    pub fn generate_gradient_colors(num_colors: usize, mode: Option<ColorExtractionMode>) -> Result<Vec<[f32; 4]>> {
+    pub fn generate_gradient_colors(
+        num_colors: usize,
+        mode: Option<ColorExtractionMode>,
+    ) -> Result<Vec<[f32; 4]>> {
         let wallpaper_path = match Self::find_wallpaper() {
             Some(path) => path,
             None => {
@@ -234,7 +237,12 @@ impl WallpaperAnalyzer {
         }
     }
 
-    pub fn start_wallpaper_monitor(tx: Sender<Vec<[f32; 4]>>, num_colors: usize, extraction_mode: ColorExtractionMode, extract_enabled: bool) {
+    pub fn start_wallpaper_monitor(
+        tx: Sender<Vec<[f32; 4]>>,
+        num_colors: usize,
+        extraction_mode: ColorExtractionMode,
+        extract_enabled: bool,
+    ) {
         thread::spawn(move || {
             let mut last_path: Option<PathBuf> = None;
             let mut last_modified: Option<SystemTime> = None;
@@ -256,7 +264,8 @@ impl WallpaperAnalyzer {
                         };
                         if changed {
                             log::info!("Wallpaper changed to: {:?}", path);
-                            match Self::generate_gradient_colors(num_colors, Some(extraction_mode)) {
+                            match Self::generate_gradient_colors(num_colors, Some(extraction_mode))
+                            {
                                 Ok(colors) => {
                                     if let Err(e) = tx.send(colors) {
                                         log::error!("Failed to send new colors: {}", e);
@@ -283,7 +292,12 @@ impl WallpaperAnalyzer {
         });
     }
 
-    pub fn start_wallpaper_path_monitor(tx: Sender<Option<PathBuf>>, color_tx: Option<Sender<Vec<[f32; 4]>>>, num_colors: usize, extraction_mode: ColorExtractionMode) {
+    pub fn start_wallpaper_path_monitor(
+        tx: Sender<Option<PathBuf>>,
+        color_tx: Option<Sender<Vec<[f32; 4]>>>,
+        num_colors: usize,
+        extraction_mode: ColorExtractionMode,
+    ) {
         thread::spawn(move || {
             let mut last_path: Option<PathBuf> = None;
             loop {
@@ -299,7 +313,8 @@ impl WallpaperAnalyzer {
                     if let Some(ref color_tx) = color_tx {
                         if let Some(ref _path) = current_path {
                             log::info!("Extracting colors from new wallpaper");
-                            match Self::generate_gradient_colors(num_colors, Some(extraction_mode)) {
+                            match Self::generate_gradient_colors(num_colors, Some(extraction_mode))
+                            {
                                 Ok(colors) => {
                                     let _ = color_tx.send(colors);
                                 }
