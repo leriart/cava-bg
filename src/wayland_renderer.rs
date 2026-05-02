@@ -113,6 +113,7 @@ struct Uniforms {
 }
 
 impl Uniforms {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         colors: &[[f32; 4]],
         width: f32,
@@ -257,16 +258,14 @@ fn compute_preserve_aspect_crop_transform(
 }
 
 fn is_video_media_path(path: &Path) -> bool {
-    match path
-        .extension()
-        .and_then(|ext| ext.to_str())
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "mp4" | "webm" | "mkv" | "mov" | "avi" | "m4v" | "flv" | "wmv" | "gif" => true,
-        _ => false,
-    }
+    matches!(
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .as_str(),
+        "mp4" | "webm" | "mkv" | "mov" | "avi" | "m4v" | "flv" | "wmv" | "gif"
+    )
 }
 
 fn create_texture_from_rgba_frame(
@@ -1218,7 +1217,7 @@ struct CavaFramePacket {
 }
 
 fn resolve_xray_path(
-    wallpaper_path: &PathBuf,
+    wallpaper_path: &Path,
     _config: &Option<HiddenImageConfig>,
     xray_images_dir: Option<&str>,
 ) -> Option<PathBuf> {
@@ -1987,6 +1986,7 @@ impl AppState {
         (texture, view, 1, 1)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn load_or_dummy_texture(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -2704,9 +2704,9 @@ impl AppState {
             .as_ref()
             .map(|c| c.effect)
             .unwrap_or_default();
-        let output_colors = if effective_config.general.dynamic_colors {
-            self.colors.clone()
-        } else if effective_config.colors.extract_from_wallpaper {
+        let output_colors = if effective_config.general.dynamic_colors
+            || effective_config.colors.extract_from_wallpaper
+        {
             self.colors.clone()
         } else if !effective_config.colors.palette.is_empty() {
             if effective_config.colors.palette.len() == 1 {
@@ -3101,9 +3101,7 @@ impl AppState {
             }
 
             let cfg = &state.effective_config;
-            let output_colors = if cfg.general.dynamic_colors {
-                self.colors.clone()
-            } else if cfg.colors.extract_from_wallpaper {
+            let output_colors = if cfg.general.dynamic_colors || cfg.colors.extract_from_wallpaper {
                 self.colors.clone()
             } else if !cfg.colors.palette.is_empty() {
                 if cfg.colors.palette.len() == 1 {
@@ -3424,6 +3422,7 @@ fn update_hidden_video_frame(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_visualizer_vertices(
     out: &mut Vec<f32>,
     current_bar_heights: &[f32],
@@ -3674,6 +3673,7 @@ fn build_visualizer_vertices(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_bars_layout(
     out: &mut Vec<f32>,
     current_bar_heights: &[f32],
@@ -3969,9 +3969,9 @@ impl LayerShellHandler for AppState {
                 .as_ref()
                 .map(|c| c.effect)
                 .unwrap_or_default();
-            let output_colors = if state.effective_config.general.dynamic_colors {
-                self.colors.clone()
-            } else if state.effective_config.colors.extract_from_wallpaper {
+            let output_colors = if state.effective_config.general.dynamic_colors
+                || state.effective_config.colors.extract_from_wallpaper
+            {
                 self.colors.clone()
             } else if !state.effective_config.colors.palette.is_empty() {
                 if state.effective_config.colors.palette.len() == 1 {

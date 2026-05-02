@@ -848,8 +848,10 @@ impl ParallaxConfig {
     pub fn normalize_compat_fields(&mut self) {
         for layer in &mut self.layers {
             if layer.source.trim().starts_with("effect:") && layer.effect.is_none() {
-                let mut effect_cfg = ParallaxEffectConfig::default();
-                effect_cfg.enabled = true;
+                let mut effect_cfg = ParallaxEffectConfig {
+                    enabled: true,
+                    ..Default::default()
+                };
                 let tag = layer
                     .source
                     .trim()
@@ -1202,6 +1204,7 @@ impl Default for LayerMouseReactivityConfig {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(clippy::enum_variant_names)]
 pub enum ParallaxEffectType {
     #[default]
     CavaBars,
@@ -1993,7 +1996,7 @@ impl Config {
         self.wallpaper
             .xray_layers_dir
             .as_ref()
-            .map(expand_tilde_path)
+            .map(|p| expand_tilde_path(p))
             .or_else(|| dirs::home_dir().map(|h| h.join(".config/cava-bg/Xray")))
     }
 
@@ -2001,7 +2004,7 @@ impl Config {
         self.wallpaper
             .wallpapers_dir
             .as_ref()
-            .map(expand_tilde_path)
+            .map(|p| expand_tilde_path(p))
             .or_else(|| dirs::home_dir().map(|h| h.join(".config/cava-bg/wallpapers")))
     }
 }
@@ -2089,12 +2092,12 @@ fn default_audio_sens() -> f32 {
     1.0
 }
 
-fn expand_tilde_path(path: &PathBuf) -> PathBuf {
+fn expand_tilde_path(path: &Path) -> PathBuf {
     let s = path.to_string_lossy();
     if let Some(rest) = s.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
             return home.join(rest);
         }
     }
-    path.clone()
+    path.to_path_buf()
 }

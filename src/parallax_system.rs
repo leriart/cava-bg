@@ -773,6 +773,7 @@ fn map_audio_curve(value: f32, curve: AudioResponseCurve) -> f32 {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_line_rgba(
     rgba: &mut [u8],
     width: usize,

@@ -23,6 +23,7 @@ fn push_v(buf: &mut Vec<f32>, x: f32, y: f32, u: f32, v: f32) {
 /// (so corners remain visually circular regardless of aspect ratio).
 /// UVs are computed from the normalized [0,1] position inside the bar box.
 #[inline]
+#[allow(clippy::too_many_arguments)]
 pub fn build_bar(
     buf: &mut Vec<f32>,
     shape: BarShape,
@@ -81,6 +82,7 @@ fn build_rectangle(buf: &mut Vec<f32>, x0: f32, y0: f32, x1: f32, y1: f32) {
 // -- Circle (semi-circular top) ------------------------------------------
 
 #[inline]
+#[allow(clippy::too_many_arguments)]
 fn build_circle_top(
     buf: &mut Vec<f32>,
     x0: f32,

@@ -1,3 +1,5 @@
+#![allow(clippy::type_complexity)]
+
 use log::{debug, info, warn};
 use once_cell::sync::Lazy;
 use parking_lot::Mutex;

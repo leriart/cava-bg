@@ -404,9 +404,9 @@ impl ConfigEditorApp {
         // Siempre mandamos la palette si no está vacía — los gradient_colors
         // son para el efecto de gradiente en las barras, no deben bloquear
         // los colores manuales o extraídos.
-        let colors = if !self.config.colors.palette.is_empty() {
-            self.config.colors.palette.clone()
-        } else if self.config.colors.extract_from_wallpaper {
+        let colors = if !self.config.colors.palette.is_empty()
+            || self.config.colors.extract_from_wallpaper
+        {
             self.config.colors.palette.clone()
         } else {
             Self::static_colors_from_config(&self.config)
@@ -2305,8 +2305,10 @@ impl eframe::App for ConfigEditorApp {
                 }
                 if !assigned {
                     // Create a new layer with this source
-                    let mut new_layer = crate::app_config::ParallaxLayerConfig::default();
-                    new_layer.source = path.clone();
+                    let new_layer = crate::app_config::ParallaxLayerConfig {
+                        source: path.clone(),
+                        ..Default::default()
+                    };
                     self.config.parallax.layers.push(new_layer);
                 }
             }
