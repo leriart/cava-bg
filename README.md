@@ -102,6 +102,24 @@ yay -S cava-bg
 paru -S cava-bg
 ```
 
+### NixOS (Flakes)
+
+Add `cava-bg` to your system configuration using the flake:
+
+```nix
+# In your flake.nix inputs:
+inputs.cava-bg.url = "github:leriart/cava-bg";
+
+# In your system configuration:
+environment.systemPackages = [ inputs.cava-bg.packages.${system}.default ];
+```
+
+Or run it directly without installing:
+
+```bash
+nix run github:leriart/cava-bg
+```
+
 ### Dependencies
 Before installing from source or pre-built packages, ensure you have the following dependencies:
 - **cava**
