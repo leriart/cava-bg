@@ -10,6 +10,7 @@
       let
         pkgs = import nixpkgs { inherit system; };
         naersk-lib = pkgs.callPackage naersk { };
+        rustSrc = pkgs.rust.packages.stable.rustPlatform.rustLibSrc;
 
         runtimeDeps = with pkgs; [
           wayland
@@ -59,6 +60,7 @@
             rust-analyzer
           ];
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath runtimeDeps;
+          RUST_SRC_PATH = "${rustSrc}";
         };
       }
     );
