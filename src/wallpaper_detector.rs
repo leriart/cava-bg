@@ -982,8 +982,8 @@ fn from_plasma_dbus() -> Option<PathBuf> {
 
 fn hyprpaper_socket_candidates() -> Vec<PathBuf> {
     let mut sockets = Vec::new();
-    if let Some(sig) = env::var("HYPRLAND_INSTANCE_SIGNATURE").ok() {
-        if let Some(runtime) = env::var("XDG_RUNTIME_DIR").ok() {
+    if let Ok(sig) = env::var("HYPRLAND_INSTANCE_SIGNATURE") {
+        if let Ok(runtime) = env::var("XDG_RUNTIME_DIR") {
             sockets.push(
                 PathBuf::from(&runtime)
                     .join("hypr")

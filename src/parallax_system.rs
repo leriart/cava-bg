@@ -4,14 +4,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use anyhow::{Context, Result};
-use log::{info, warn};
 use crate::app_config::{
     AnimationType, AudioConfig, AudioResponseCurve, BlendMode, FrequencyZone, LayerSourceType,
     ParallaxConfig, ParallaxEffectType, ParallaxLayerConfig, ParallaxMouseConfig, ParallaxProfile,
     ProfileSource,
 };
 use crate::video_decoder::{VideoDecoder, VideoDecoderConfig, VideoFrame};
+use anyhow::{Context, Result};
+use log::{info, warn};
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct AudioBands {
@@ -113,7 +113,12 @@ struct RuntimeLayer {
 }
 
 impl RuntimeLayer {
-    fn frame_for_time(&mut self, audio_cfg: Option<&AudioConfig>, playback_time: f64, audio: AudioBands) -> Option<VideoFrame> {
+    fn frame_for_time(
+        &mut self,
+        audio_cfg: Option<&AudioConfig>,
+        playback_time: f64,
+        audio: AudioBands,
+    ) -> Option<VideoFrame> {
         match self.asset.as_mut() {
             Some(LayerAsset::Static(frame)) => {
                 self.last_frame = Some(frame.clone());
@@ -146,7 +151,12 @@ impl RuntimeLayer {
         }
     }
 
-    fn generate_effect_frame(&self, audio_cfg: Option<&AudioConfig>, playback_time: f64, audio: AudioBands) -> VideoFrame {
+    fn generate_effect_frame(
+        &self,
+        audio_cfg: Option<&AudioConfig>,
+        playback_time: f64,
+        audio: AudioBands,
+    ) -> VideoFrame {
         let width = 640u32;
         let height = 360u32;
         let mut rgba = vec![0u8; (width * height * 4) as usize];
@@ -179,7 +189,8 @@ impl RuntimeLayer {
                     };
                     let wobble = ((t * 2.2) + i as f32 * 0.35).sin() * 0.15;
                     let h_norm = (zone * 0.8 + amp * 0.2 + wobble.abs() * 0.3).clamp(0.02, 1.0);
-                    let h_px = ((h_norm * height_scale * height as f32) as usize).min(height as usize);
+                    let h_px =
+                        ((h_norm * height_scale * height as f32) as usize).min(height as usize);
                     for y in 0..h_px {
                         let yy = (height as usize - 1).saturating_sub(y);
                         for x in x0..x1 {
@@ -260,7 +271,12 @@ pub struct ParallaxSystem {
 }
 
 impl ParallaxSystem {
-    pub fn new(cfg: ParallaxConfig, target_width: u32, target_height: u32, wallpaper_name: Option<String>) -> Result<Self> {
+    pub fn new(
+        cfg: ParallaxConfig,
+        target_width: u32,
+        target_height: u32,
+        wallpaper_name: Option<String>,
+    ) -> Result<Self> {
         let mut instance = Self {
             cfg,
             target_size: (target_width.max(1), target_height.max(1)),
@@ -292,10 +308,17 @@ impl ParallaxSystem {
     }
 
     pub fn on_wallpaper_change(&mut self, name: Option<String>) -> Result<()> {
-        info!("[PARALLAX] on_wallpaper_change called, name={:?}, current layers={}", name, self.layers.len());
+        info!(
+            "[PARALLAX] on_wallpaper_change called, name={:?}, current layers={}",
+            name,
+            self.layers.len()
+        );
         self.wallpaper_name = name;
         self.rebuild_layers()?;
-        info!("[PARALLAX] after rebuild_layers, layers={}", self.layers.len());
+        info!(
+            "[PARALLAX] after rebuild_layers, layers={}",
+            self.layers.len()
+        );
         Ok(())
     }
 
@@ -533,10 +556,11 @@ impl ParallaxSystem {
         self.layers.clear();
 
         // Determine profiles directory: from config, or default to ~/.config/cava-bg/parallax
-        let profiles_dir = self.cfg.profiles_dir.clone()
-            .or_else(|| {
-                dirs::config_dir().map(|d| d.join("cava-bg").join("parallax"))
-            })
+        let profiles_dir = self
+            .cfg
+            .profiles_dir
+            .clone()
+            .or_else(|| dirs::config_dir().map(|d| d.join("cava-bg").join("parallax")))
             .filter(|d| d.exists());
 
         if let Some(ref pd) = profiles_dir {
@@ -672,13 +696,12 @@ impl ParallaxSystem {
 
         match layer.inferred_type {
             LayerSourceType::StaticImage => {
-                let frame = decode_static_image(&layer.source)
-                    .with_context(|| {
-                        format!(
-                            "Failed to decode static parallax layer {}",
-                            layer.source.display()
-                        )
-                    })?;
+                let frame = decode_static_image(&layer.source).with_context(|| {
+                    format!(
+                        "Failed to decode static parallax layer {}",
+                        layer.source.display()
+                    )
+                })?;
                 layer.asset = Some(LayerAsset::Static(frame.clone()));
                 layer.last_frame = Some(frame);
             }

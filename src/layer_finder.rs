@@ -195,7 +195,7 @@ fn infer_depth_from_stem(stem: &str) -> f32 {
         return depth.clamp(0.0, 1.0);
     }
 
-    if let Some(index) = stem
+    if let Ok(index) = stem
         .chars()
         .rev()
         .take_while(|c| c.is_ascii_digit())
@@ -204,7 +204,6 @@ fn infer_depth_from_stem(stem: &str) -> f32 {
         .rev()
         .collect::<String>()
         .parse::<u32>()
-        .ok()
     {
         return (index as f32 / 10.0).clamp(0.0, 1.0);
     }
