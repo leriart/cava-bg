@@ -859,6 +859,17 @@ fn main() -> Result<()> {
         "off" | "kill" => {
             kill_existing_instance(&pid_file)?;
         }
+        "restart" => {
+            kill_existing_instance(&pid_file)?;
+            ensure_config_exists(&config_path)?;
+            if debug_mode {
+                println!("Running cava-bg in debug foreground mode (no daemon detach).");
+                println!("Daemon log file: {}", daemon_log_path().display());
+                run_foreground(config_path, pid_file, true, output_filter)?;
+            } else {
+                start_daemon(&config_path, output_filter.as_deref())?;
+            }
+        }
         "outputs" => {
             print_outputs(&config_path)?;
         }
