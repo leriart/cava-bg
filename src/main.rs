@@ -78,24 +78,26 @@ fn ensure_parent_dir(path: &Path) -> Result<()> {
 
 const MAX_LOG_SIZE: u64 = 1024 * 1024; // 1MB
 
-fn rotate_log_file(log_path: &Path) {
+fn rotate_log_file(log_path: &Path) -> bool {
     if let Ok(metadata) = fs::metadata(log_path) {
         if metadata.len() > MAX_LOG_SIZE {
             let rotated = PathBuf::from(format!("{}.old", log_path.display()));
-            let _ = fs::rename(log_path, &rotated);
+            return fs::rename(log_path, &rotated).is_ok();
         }
     }
+    false
 }
 
 fn rotate_daemon_log() {
     let log_path = daemon_log_path();
-    rotate_log_file(&log_path);
-    if let Ok(new_file) = OpenOptions::new().create(true).append(true).open(&log_path) {
-        let fd = new_file.into_raw_fd();
-        unsafe {
-            libc::dup2(fd, libc::STDOUT_FILENO);
-            libc::dup2(fd, libc::STDERR_FILENO);
-            libc::close(fd);
+    if rotate_log_file(&log_path) {
+        if let Ok(new_file) = OpenOptions::new().create(true).append(true).open(&log_path) {
+            let fd = new_file.into_raw_fd();
+            unsafe {
+                libc::dup2(fd, libc::STDOUT_FILENO);
+                libc::dup2(fd, libc::STDERR_FILENO);
+                libc::close(fd);
+            }
         }
     }
 }
