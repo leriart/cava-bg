@@ -20,6 +20,7 @@ use std::env;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
+use std::os::unix::io::IntoRawFd;
 use std::os::unix::process::CommandExt;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -73,6 +74,30 @@ fn ensure_parent_dir(path: &Path) -> Result<()> {
             .with_context(|| format!("Could not create directory {}", parent.to_string_lossy()))?;
     }
     Ok(())
+}
+
+const MAX_LOG_SIZE: u64 = 1024 * 1024; // 1MB
+
+fn rotate_log_file(log_path: &Path) {
+    if let Ok(metadata) = fs::metadata(log_path) {
+        if metadata.len() > MAX_LOG_SIZE {
+            let rotated = PathBuf::from(format!("{}.old", log_path.display()));
+            let _ = fs::rename(log_path, &rotated);
+        }
+    }
+}
+
+fn rotate_daemon_log() {
+    let log_path = daemon_log_path();
+    rotate_log_file(&log_path);
+    if let Ok(new_file) = OpenOptions::new().create(true).append(true).open(&log_path) {
+        let fd = new_file.into_raw_fd();
+        unsafe {
+            libc::dup2(fd, libc::STDOUT_FILENO);
+            libc::dup2(fd, libc::STDERR_FILENO);
+            libc::close(fd);
+        }
+    }
 }
 
 fn append_daemon_log_line(message: &str) {
@@ -558,6 +583,7 @@ fn start_daemon(config_path: &Path, output_filter: Option<&str>) -> Result<()> {
 
     let log_path = daemon_log_path();
     ensure_parent_dir(&log_path)?;
+    rotate_log_file(&log_path);
     let log_file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -679,6 +705,16 @@ fn run_foreground(
 
     daemon_debug_log(debug_mode, "Signal handlers installed for SIGINT/SIGTERM");
     daemon_debug_log(debug_mode, "[DAEMON] Entering main loop...");
+
+    if !debug_mode {
+        let log_running = running.clone();
+        thread::spawn(move || {
+            while log_running.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_secs(30));
+                rotate_daemon_log();
+            }
+        });
+    }
 
     let mut restart_attempt: u64 = 0;
     while running.load(Ordering::SeqCst) {
