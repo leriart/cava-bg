@@ -750,11 +750,13 @@ fn run_foreground(
     daemon_debug_log(debug_mode, "Signal handlers installed for SIGINT/SIGTERM");
     daemon_debug_log(debug_mode, "[DAEMON] Entering main loop...");
 
+    rotate_daemon_log();
+
     if !debug_mode {
         let log_running = running.clone();
         thread::spawn(move || {
             while log_running.load(Ordering::SeqCst) {
-                thread::sleep(Duration::from_secs(30));
+                thread::sleep(Duration::from_secs(60));
                 rotate_daemon_log();
             }
         });
