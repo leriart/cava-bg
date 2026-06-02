@@ -1,0 +1,16 @@
+#!/bin/sh
+set -e
+
+# Create default config if not present
+CONFIG_DIR="$HOME/.config/cava-bg"
+if [ ! -d "$CONFIG_DIR" ]; then
+    mkdir -p "$CONFIG_DIR"
+fi
+
+if [ ! -f "$CONFIG_DIR/config.toml" ]; then
+    cp /usr/share/doc/cava-bg/config.toml "$CONFIG_DIR/config.toml" 2>/dev/null || true
+fi
+
+echo "cava-bg installed! Run 'cava-bg' to start the visualizer."
+echo "Configure with: cava-bg --config"
+echo "Config file: ~/.config/cava-bg/config.toml"

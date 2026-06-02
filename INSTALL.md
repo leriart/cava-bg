@@ -21,7 +21,7 @@ The AUR package will automatically:
 
 ```bash
 # Download the binary archive
-VERSION="0.1.0"
+VERSION="0.2.4"
 ARCH="x86_64-unknown-linux-gnu"
 wget https://github.com/leriart/cava-bg/releases/download/v${VERSION}/cava-bg-v${VERSION}-${ARCH}.tar.gz
 
