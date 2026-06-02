@@ -120,6 +120,48 @@ Or run it directly without installing:
 nix run github:leriart/cava-bg
 ```
 
+### Home Manager Integration
+
+1. **Add the input to your flake:**
+```nix
+inputs = {
+  # ... other inputs
+  cava-bg.url = "github:leriart/cava-bg";
+};
+```
+
+2. **Import the module and configure:**
+```nix
+{
+  homeConfigurations."user@host" = home-manager.lib.homeManagerConfiguration {
+    pkgs = nixpkgs.legacyPackages.x86_64-linux;
+    modules = [
+      cava-bg.homeManagerModules.cava-bg # Import the module
+
+      {
+        programs.cava-bg = {
+          enable = true;
+
+          # Declarative configuration (mirrors config.toml)
+          settings = {
+            general.framerate = 60;
+            audio.bar_count = 76;
+            colors.use_gradient = true;
+            xray.enabled = false;
+          };
+
+          # Systemd user service management
+          systemd = {
+            enable = true;
+            memoryMax = "500M";
+          };
+        };
+      }
+    ];
+  };
+}
+```
+
 ### Dependencies
 Before installing from source or pre-built packages, ensure you have the following dependencies:
 - **cava**

@@ -815,6 +815,7 @@ pub struct ParallaxConfig {
     pub show_visualizer: bool,
     #[serde(default)]
     pub visualizer_as_parallax_layer: bool,
+    #[serde(default)]
     pub visualizer_layer_index: usize,
     #[serde(default)]
     pub profiles_dir: Option<PathBuf>,

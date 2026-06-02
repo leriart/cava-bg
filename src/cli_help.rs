@@ -6,6 +6,7 @@ pub fn print_help() {
     println!("  cava-bg on --debug                 Run in foreground debug mode (no detach)");
     println!("  cava-bg on --output <name>         Start filtered to a specific output");
     println!("  cava-bg off                        Stop the daemon");
+    println!("  cava-bg restart                    Restart the daemon");
     println!("  cava-bg status                     Show daemon + output status");
     println!("  cava-bg outputs                    List detected runtime outputs");
     println!("  cava-bg output-on --output <name>  Enable one output in config");

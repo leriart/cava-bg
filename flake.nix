@@ -6,6 +6,9 @@
   };
 
   outputs = { self, nixpkgs, naersk, flake-utils, ... }:
+    let
+      baseHmModule = import ./nix/home-module.nix;
+    in
     flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = import nixpkgs { inherit system; };
@@ -20,6 +23,7 @@
           libglvnd
           ffmpeg
           dbus
+          cava
         ];
 
         cava-bg = naersk-lib.buildPackage {
@@ -41,7 +45,8 @@
           postFixup = ''
             if [ -x "$out/bin/cava-bg" ]; then
               wrapProgram "$out/bin/cava-bg" \
-                --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath runtimeDeps}"
+                --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath runtimeDeps}" \
+                --prefix PATH : "${pkgs.lib.makeBinPath [ pkgs.cava pkgs.ffmpeg ]}"
             fi
           '';
         };
@@ -63,5 +68,17 @@
           RUST_SRC_PATH = "${rustSrc}";
         };
       }
-    );
+    )
+    // {
+      homeManagerModules.cava-bg-base = baseHmModule;
+
+      homeManagerModules.cava-bg = { config, lib, pkgs, ... }: {
+        imports = [ baseHmModule ];
+        programs.cava-bg.package = lib.mkDefault (
+          self.packages.${pkgs.stdenv.hostPlatform.system}.default
+        );
+      };
+
+      homeManagerModule = self.homeManagerModules.cava-bg;
+    };
 }

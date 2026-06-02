@@ -20,6 +20,7 @@ use std::env;
 use std::fs;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
+use std::os::unix::io::IntoRawFd;
 use std::os::unix::process::CommandExt;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
@@ -73,6 +74,32 @@ fn ensure_parent_dir(path: &Path) -> Result<()> {
             .with_context(|| format!("Could not create directory {}", parent.to_string_lossy()))?;
     }
     Ok(())
+}
+
+const MAX_LOG_SIZE: u64 = 1024 * 1024; // 1MB
+
+fn rotate_log_file(log_path: &Path) -> bool {
+    if let Ok(metadata) = fs::metadata(log_path) {
+        if metadata.len() > MAX_LOG_SIZE {
+            let rotated = PathBuf::from(format!("{}.old", log_path.display()));
+            return fs::rename(log_path, &rotated).is_ok();
+        }
+    }
+    false
+}
+
+fn rotate_daemon_log() {
+    let log_path = daemon_log_path();
+    if rotate_log_file(&log_path) {
+        if let Ok(new_file) = OpenOptions::new().create(true).append(true).open(&log_path) {
+            let fd = new_file.into_raw_fd();
+            unsafe {
+                libc::dup2(fd, libc::STDOUT_FILENO);
+                libc::dup2(fd, libc::STDERR_FILENO);
+                libc::close(fd);
+            }
+        }
+    }
 }
 
 fn append_daemon_log_line(message: &str) {
@@ -154,7 +181,7 @@ fn print_outputs(config_path: &Path) -> Result<()> {
 
 fn print_status(pid_file: &Path, config_path: &Path) -> Result<()> {
     let daemon_running = read_pid_file(pid_file)?
-        .map(process_exists)
+        .map(|pid| process_exists(pid) && is_cava_bg_process(pid))
         .unwrap_or(false);
     println!(
         "Daemon: {}",
@@ -212,6 +239,32 @@ fn process_exists(pid: i32) -> bool {
 
     let errno = std::io::Error::last_os_error().raw_os_error();
     matches!(errno, Some(libc::EPERM))
+}
+
+/// Checks if the given PID belongs to the cava-bg daemon by inspecting its command-line arguments.
+pub fn is_cava_bg_process(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+
+    let cmdline_path = format!("/proc/{}/cmdline", pid);
+    let cmdline_bytes = match std::fs::read(&cmdline_path) {
+        Ok(bytes) => bytes,
+        Err(_) => return false,
+    };
+
+    let args: Vec<&str> = cmdline_bytes
+        .split(|&b| b == 0)
+        .filter_map(|b| std::str::from_utf8(b).ok())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if args.len() < 2 {
+        return false;
+    }
+
+    args.iter()
+        .any(|&arg| ["on", "restart", "__run"].contains(&arg))
 }
 
 fn read_pid_file(pid_file: &Path) -> Result<Option<i32>> {
@@ -339,13 +392,21 @@ fn check_single_instance(pid_file: &Path, debug_mode: bool) -> Result<bool> {
         }
 
         match read_pid_file(&candidate)? {
-            Some(old_pid) if process_exists(old_pid) => {
+            Some(old_pid) if process_exists(old_pid) && is_cava_bg_process(old_pid) => {
                 eprintln!(
                     "Another instance of cava-bg is already running (PID {}).",
                     old_pid
                 );
                 eprintln!("Use 'cava-bg off' to stop it.");
                 return Ok(false);
+            }
+            Some(old_pid) if process_exists(old_pid) => {
+                warn!(
+                    "Removing stale PID file {} (PID {} belongs to a different process)",
+                    candidate.display(),
+                    old_pid
+                );
+                let _ = fs::remove_file(&candidate);
             }
             Some(old_pid) => {
                 warn!(
@@ -515,6 +576,16 @@ fn kill_existing_instance(pid_file: &Path) -> Result<()> {
         return Ok(());
     }
 
+    if !is_cava_bg_process(pid) {
+        let _ = fs::remove_file(&pid_path);
+        println!(
+            "Found stale PID file at {} (PID {} belongs to a different process). Cleaned up.",
+            pid_path.display(),
+            pid
+        );
+        return Ok(());
+    }
+
     if stop_pid_with_escalation(pid) {
         let _ = fs::remove_file(&pid_path);
         println!("cava-bg daemon stopped (PID {}).", pid);
@@ -558,6 +629,7 @@ fn start_daemon(config_path: &Path, output_filter: Option<&str>) -> Result<()> {
 
     let log_path = daemon_log_path();
     ensure_parent_dir(&log_path)?;
+    rotate_log_file(&log_path);
     let log_file = OpenOptions::new()
         .create(true)
         .append(true)
@@ -680,6 +752,18 @@ fn run_foreground(
     daemon_debug_log(debug_mode, "Signal handlers installed for SIGINT/SIGTERM");
     daemon_debug_log(debug_mode, "[DAEMON] Entering main loop...");
 
+    rotate_daemon_log();
+
+    if !debug_mode {
+        let log_running = running.clone();
+        thread::spawn(move || {
+            while log_running.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_secs(60));
+                rotate_daemon_log();
+            }
+        });
+    }
+
     let mut restart_attempt: u64 = 0;
     while running.load(Ordering::SeqCst) {
         restart_attempt += 1;
@@ -775,6 +859,17 @@ fn main() -> Result<()> {
         }
         "off" | "kill" => {
             kill_existing_instance(&pid_file)?;
+        }
+        "restart" => {
+            kill_existing_instance(&pid_file)?;
+            ensure_config_exists(&config_path)?;
+            if debug_mode {
+                println!("Running cava-bg in debug foreground mode (no daemon detach).");
+                println!("Daemon log file: {}", daemon_log_path().display());
+                run_foreground(config_path, pid_file, true, output_filter)?;
+            } else {
+                start_daemon(&config_path, output_filter.as_deref())?;
+            }
         }
         "outputs" => {
             print_outputs(&config_path)?;
