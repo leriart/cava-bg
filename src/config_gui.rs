@@ -535,7 +535,7 @@ impl ConfigEditorApp {
     fn daemon_status() -> DaemonStatus {
         let pid_file = Self::daemon_pid_path();
         let pid = read_pid_from_file(&pid_file);
-        let running = pid.is_some_and(process_exists);
+        let running = pid.is_some_and(|p| process_exists(p) && crate::is_cava_bg_process(p));
         DaemonStatus {
             running,
             pid,

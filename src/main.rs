@@ -179,7 +179,7 @@ fn print_outputs(config_path: &Path) -> Result<()> {
 
 fn print_status(pid_file: &Path, config_path: &Path) -> Result<()> {
     let daemon_running = read_pid_file(pid_file)?
-        .map(process_exists)
+        .map(|pid| process_exists(pid) && is_cava_bg_process(pid))
         .unwrap_or(false);
     println!(
         "Daemon: {}",
@@ -237,6 +237,35 @@ fn process_exists(pid: i32) -> bool {
 
     let errno = std::io::Error::last_os_error().raw_os_error();
     matches!(errno, Some(libc::EPERM))
+}
+
+/// Checks if the given PID belongs to the cava-bg daemon by inspecting its command-line arguments.
+pub fn is_cava_bg_process(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+
+    let cmdline_path = format!("/proc/{}/cmdline", pid);
+    let cmdline_bytes = match std::fs::read(&cmdline_path) {
+        Ok(bytes) => bytes,
+        Err(_) => return false,
+    };
+
+    let args: Vec<&str> = cmdline_bytes
+        .split(|&b| b == 0)
+        .filter_map(|b| std::str::from_utf8(b).ok())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if args.len() < 3 {
+        return false;
+    }
+
+    let has_internal_flag = args.contains(&"__run");
+
+    let has_config_flag = args.contains(&"--config");
+
+    has_internal_flag && has_config_flag
 }
 
 fn read_pid_file(pid_file: &Path) -> Result<Option<i32>> {
@@ -364,13 +393,21 @@ fn check_single_instance(pid_file: &Path, debug_mode: bool) -> Result<bool> {
         }
 
         match read_pid_file(&candidate)? {
-            Some(old_pid) if process_exists(old_pid) => {
+            Some(old_pid) if process_exists(old_pid) && is_cava_bg_process(old_pid) => {
                 eprintln!(
                     "Another instance of cava-bg is already running (PID {}).",
                     old_pid
                 );
                 eprintln!("Use 'cava-bg off' to stop it.");
                 return Ok(false);
+            }
+            Some(old_pid) if process_exists(old_pid) => {
+                warn!(
+                    "Removing stale PID file {} (PID {} belongs to a different process)",
+                    candidate.display(),
+                    old_pid
+                );
+                let _ = fs::remove_file(&candidate);
             }
             Some(old_pid) => {
                 warn!(
@@ -534,6 +571,16 @@ fn kill_existing_instance(pid_file: &Path) -> Result<()> {
         let _ = fs::remove_file(&pid_path);
         println!(
             "Found stale PID file at {} (PID {} is not running). Cleaned up.",
+            pid_path.display(),
+            pid
+        );
+        return Ok(());
+    }
+
+    if !is_cava_bg_process(pid) {
+        let _ = fs::remove_file(&pid_path);
+        println!(
+            "Found stale PID file at {} (PID {} belongs to a different process). Cleaned up.",
             pid_path.display(),
             pid
         );
