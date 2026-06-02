@@ -20,6 +20,7 @@
           libglvnd
           ffmpeg
           dbus
+          cava
         ];
 
         cava-bg = naersk-lib.buildPackage {
