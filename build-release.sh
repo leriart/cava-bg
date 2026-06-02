@@ -30,19 +30,19 @@ cp "$RELEASE_DIR/cava-bg" "$DIST_DIR/"
 # Create archive
 echo "Creating archive..."
 cd "$DIST_DIR"
-tar -czf "../cava-bg-v$VERSION-$ARCH.tar.gz" cava-bg
+tar -czf "../cava-bg-$VERSION-$ARCH.tar.gz" cava-bg
 cd ..
 
 # Create checksum
 echo "Creating checksum..."
-sha256sum "cava-bg-v$VERSION-$ARCH.tar.gz" > "cava-bg-v$VERSION-$ARCH.tar.gz.sha256"
+sha256sum "cava-bg-$VERSION-$ARCH.tar.gz" > "cava-bg-$VERSION-$ARCH.tar.gz.sha256"
 
 echo ""
 echo "Release built successfully!"
 echo "Files created:"
 echo "  - dist/cava-bg (binary)"
-echo "  - cava-bg-v$VERSION-$ARCH.tar.gz (archive)"
-echo "  - cava-bg-v$VERSION-$ARCH.tar.gz.sha256 (checksum)"
+echo "  - cava-bg-$VERSION-$ARCH.tar.gz (archive)"
+echo "  - cava-bg-$VERSION-$ARCH.tar.gz.sha256 (checksum)"
 echo ""
 echo "To create a GitHub release:"
 echo "1. Create a new release on GitHub"

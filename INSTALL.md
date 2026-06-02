@@ -23,14 +23,14 @@ The AUR package will automatically:
 # Download the binary archive
 VERSION="0.2.4"
 ARCH="x86_64-unknown-linux-gnu"
-wget https://github.com/leriart/cava-bg/releases/download/v${VERSION}/cava-bg-v${VERSION}-${ARCH}.tar.gz
+wget https://github.com/leriart/cava-bg/releases/download/${VERSION}/cava-bg-${VERSION}-${ARCH}.tar.gz
 
 # Verify checksum
-wget https://github.com/leriart/cava-bg/releases/download/v${VERSION}/cava-bg-v${VERSION}-${ARCH}.tar.gz.sha256
-sha256sum -c cava-bg-v${VERSION}-${ARCH}.tar.gz.sha256
+wget https://github.com/leriart/cava-bg/releases/download/${VERSION}/cava-bg-${VERSION}-${ARCH}.tar.gz.sha256
+sha256sum -c cava-bg-${VERSION}-${ARCH}.tar.gz.sha256
 
 # Extract
-tar -xzf cava-bg-v${VERSION}-${ARCH}.tar.gz
+tar -xzf cava-bg-${VERSION}-${ARCH}.tar.gz
 ```
 
 ### 2. Install system-wide
