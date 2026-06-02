@@ -257,15 +257,12 @@ pub fn is_cava_bg_process(pid: i32) -> bool {
         .filter(|s| !s.is_empty())
         .collect();
 
-    if args.len() < 3 {
+    if args.len() < 2 {
         return false;
     }
 
-    let has_internal_flag = args.contains(&"__run");
-
-    let has_config_flag = args.contains(&"--config");
-
-    has_internal_flag && has_config_flag
+    args.iter()
+        .any(|&arg| ["on", "restart", "__run"].contains(&arg))
 }
 
 fn read_pid_file(pid_file: &Path) -> Result<Option<i32>> {
