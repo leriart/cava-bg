@@ -42,7 +42,8 @@
           postFixup = ''
             if [ -x "$out/bin/cava-bg" ]; then
               wrapProgram "$out/bin/cava-bg" \
-                --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath runtimeDeps}"
+                --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath runtimeDeps}" \
+                --prefix PATH : "${pkgs.lib.makeBinPath [ pkgs.cava pkgs.ffmpeg ]}"
             fi
           '';
         };
