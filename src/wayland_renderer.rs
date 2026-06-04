@@ -3183,7 +3183,7 @@ impl AppState {
 
             let frame = match state.wgpu_surface.get_current_texture() {
                 Ok(f) => f,
-                Err(wgpu::SurfaceError::Lost) => {
+                Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                     state
                         .wgpu_surface
                         .configure(&state.wgpu_device, &state.wgpu_config);
