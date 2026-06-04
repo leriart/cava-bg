@@ -43,6 +43,11 @@ crossbeam-channel = "0.5"
 parking_lot = "0.12"
 eframe = { version = "0.27", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }
 rfd = "0.15"
+clap = "4"
+
+[build-dependencies]
+clap = "4"
+clap_complete = "4"
 
 [profile.release]
 opt-level = 3
@@ -72,6 +77,9 @@ priority = "optional"
 assets = [
     ["target/release/cava-bg", "/usr/bin/cava-bg", "755"],
     ["README.md", "/usr/share/doc/cava-bg/README.md", "644"],
+    ["target/release/completions/cava-bg.bash", "/usr/share/bash-completion/completions/cava-bg", "644"],
+    ["target/release/completions/_cava-bg", "/usr/share/zsh/site-functions/_cava-bg", "644"],
+    ["target/release/completions/cava-bg.fish", "/usr/share/fish/vendor_completions.d/cava-bg.fish", "644"],
 ]
 
 

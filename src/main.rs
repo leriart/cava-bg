@@ -2,7 +2,7 @@
 
 mod app_config;
 mod bar_geometry;
-mod cli_help;
+mod cli;
 mod config_gui;
 mod layer_finder;
 mod layer_system;
@@ -15,6 +15,7 @@ mod wayland_renderer;
 mod xray_animator;
 
 use anyhow::{Context, Result};
+use cli::Cli;
 use log::{error, info, warn};
 use std::env;
 use std::fs;
@@ -24,14 +25,13 @@ use std::os::unix::io::IntoRawFd;
 use std::os::unix::process::CommandExt;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::process::{exit, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
 use app_config::Config;
-use cli_help::print_help;
 use config_gui::run_config_gui;
 use serde::Deserialize;
 use wayland_renderer::WaylandRenderer;
@@ -128,20 +128,6 @@ fn legacy_pid_file_paths() -> Vec<PathBuf> {
         PathBuf::from(format!("{home}/.config/cava-bg/cava-bg.pid")),
         PathBuf::from("/tmp/cava-bg.pid"),
     ]
-}
-
-fn parse_config_path(args: &[String]) -> PathBuf {
-    if let Some(idx) = args.iter().position(|a| a == "--config") {
-        if let Some(path) = args.get(idx + 1) {
-            return PathBuf::from(path);
-        }
-    }
-    default_config_path()
-}
-
-fn parse_output_arg(args: &[String]) -> Option<String> {
-    let idx = args.iter().position(|a| a == "--output")?;
-    args.get(idx + 1).cloned()
 }
 
 fn read_runtime_outputs(config_path: &Path) -> Result<Vec<RuntimeOutputInfo>> {
@@ -838,70 +824,60 @@ fn run_foreground(
 fn main() -> Result<()> {
     env_logger::init();
 
-    let args: Vec<String> = env::args().collect();
-    let config_path = parse_config_path(&args);
+    let cli = Cli::parse();
+    let config_path = cli
+        .config
+        .as_ref()
+        .map(PathBuf::from)
+        .unwrap_or_else(default_config_path);
     let pid_file = pid_file_path();
 
-    let command = args.get(1).map(|s| s.as_str()).unwrap_or("on");
-    let debug_mode = args.iter().any(|arg| arg == "--debug");
-    let output_filter = parse_output_arg(&args);
-
-    match command {
-        "on" => {
+    match cli.command {
+        None if cli.config.is_some() => {
+            run_foreground(config_path, pid_file, cli.debug, cli.output)?;
+        }
+        None | Some(cli::Command::On) => {
             ensure_config_exists(&config_path)?;
-            if debug_mode {
+            if cli.debug {
                 println!("Running cava-bg in debug foreground mode (no daemon detach).");
                 println!("Daemon log file: {}", daemon_log_path().display());
-                run_foreground(config_path, pid_file, true, output_filter)?;
+                run_foreground(config_path, pid_file, true, cli.output)?;
             } else {
-                start_daemon(&config_path, output_filter.as_deref())?;
+                start_daemon(&config_path, cli.output.as_deref())?;
             }
         }
-        "off" | "kill" => {
+        Some(cli::Command::Off) | Some(cli::Command::Kill) => {
             kill_existing_instance(&pid_file)?;
         }
-        "restart" => {
+        Some(cli::Command::Restart) => {
             kill_existing_instance(&pid_file)?;
             ensure_config_exists(&config_path)?;
-            if debug_mode {
+            if cli.debug {
                 println!("Running cava-bg in debug foreground mode (no daemon detach).");
                 println!("Daemon log file: {}", daemon_log_path().display());
-                run_foreground(config_path, pid_file, true, output_filter)?;
+                run_foreground(config_path, pid_file, true, cli.output)?;
             } else {
-                start_daemon(&config_path, output_filter.as_deref())?;
+                start_daemon(&config_path, cli.output.as_deref())?;
             }
         }
-        "outputs" => {
+        Some(cli::Command::Outputs) => {
             print_outputs(&config_path)?;
         }
-        "status" => {
+        Some(cli::Command::Status) => {
             print_status(&pid_file, &config_path)?;
         }
-        "output-on" => {
-            let Some(output) = output_filter.as_deref() else {
-                anyhow::bail!("Use --output <name> with output-on");
-            };
-            set_output_enabled(&config_path, output, true)?;
+        Some(cli::Command::OutputOn { output }) => {
+            set_output_enabled(&config_path, &output, true)?;
         }
-        "output-off" => {
-            let Some(output) = output_filter.as_deref() else {
-                anyhow::bail!("Use --output <name> with output-off");
-            };
-            set_output_enabled(&config_path, output, false)?;
+        Some(cli::Command::OutputOff { output }) => {
+            set_output_enabled(&config_path, &output, false)?;
         }
-        "gui" => {
+        Some(cli::Command::Gui) => {
             ensure_config_exists(&config_path)?;
             run_config_gui(&config_path)?;
         }
-        "__run" => {
-            run_foreground(config_path, pid_file, false, output_filter)?;
-        }
-        "--config" => {
-            run_foreground(config_path, pid_file, debug_mode, output_filter)?;
-        }
-        _ => {
-            print_help();
-            exit(0);
+        Some(cli::Command::__Run) => {
+            run_foreground(config_path, pid_file, false, cli.output)?;
         }
     }
 
