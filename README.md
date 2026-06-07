@@ -241,7 +241,7 @@ cava-bg output-on --output DP-1
 
 ## Configuration
 
-cava-bg uses a flexible TOML configuration file. The default configuration is created at `~/.config/cava-bg/config.toml`. 
+cava-bg uses a flexible TOML configuration file. The default configuration is created at `~/.config/cava-bg/config.toml`. See [CONFIG.md](CONFIG.md) for the complete configuration reference. 
 
 - **Key options include:**
     - `framerate`: Render frames per second (general.framerate).
