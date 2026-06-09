@@ -8,6 +8,7 @@ mod layer_finder;
 mod layer_system;
 mod parallax_system;
 mod perf_monitor;
+mod supervisor;
 mod video_decoder;
 mod wallpaper;
 mod wallpaper_detector;
@@ -17,6 +18,8 @@ mod xray_animator;
 use anyhow::{Context, Result};
 use cli::Cli;
 use log::{error, info, warn};
+use serde::Deserialize;
+
 use std::env;
 use std::fs;
 use std::fs::{File, OpenOptions};
@@ -33,7 +36,6 @@ use std::time::Duration;
 
 use app_config::Config;
 use config_gui::run_config_gui;
-use serde::Deserialize;
 use wayland_renderer::WaylandRenderer;
 
 fn default_config_path() -> PathBuf {
@@ -41,14 +43,20 @@ fn default_config_path() -> PathBuf {
     PathBuf::from(format!("{home}/.config/cava-bg/config.toml"))
 }
 
-fn pid_file_path() -> PathBuf {
+fn pid_file_path(output: Option<&str>) -> PathBuf {
     let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(format!("{home}/.config/cava-bg/daemon.pid"))
+    match output {
+        Some(name) => PathBuf::from(format!("{home}/.config/cava-bg/daemon.{name}.pid")),
+        None => PathBuf::from(format!("{home}/.config/cava-bg/daemon.pid")),
+    }
 }
 
-fn daemon_log_path() -> PathBuf {
+fn daemon_log_path(output: Option<&str>) -> PathBuf {
     let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(format!("{home}/.config/cava-bg/daemon.log"))
+    match output {
+        Some(name) => PathBuf::from(format!("{home}/.config/cava-bg/daemon.{name}.log")),
+        None => PathBuf::from(format!("{home}/.config/cava-bg/daemon.log")),
+    }
 }
 
 fn runtime_outputs_path(config_path: &Path) -> PathBuf {
@@ -88,8 +96,8 @@ fn rotate_log_file(log_path: &Path) -> bool {
     false
 }
 
-fn rotate_daemon_log() {
-    let log_path = daemon_log_path();
+fn rotate_daemon_log(output: Option<&str>) {
+    let log_path = daemon_log_path(output);
     if rotate_log_file(&log_path) {
         if let Ok(new_file) = OpenOptions::new().create(true).append(true).open(&log_path) {
             let fd = new_file.into_raw_fd();
@@ -102,8 +110,8 @@ fn rotate_daemon_log() {
     }
 }
 
-fn append_daemon_log_line(message: &str) {
-    let log_path = daemon_log_path();
+fn append_daemon_log_line(message: &str, output: Option<&str>) {
+    let log_path = daemon_log_path(output);
     if ensure_parent_dir(&log_path).is_err() {
         return;
     }
@@ -114,9 +122,9 @@ fn append_daemon_log_line(message: &str) {
     }
 }
 
-fn daemon_debug_log(debug_mode: bool, message: &str) {
+fn daemon_debug_log(debug_mode: bool, message: &str, output: Option<&str>) {
     info!("{message}");
-    append_daemon_log_line(message);
+    append_daemon_log_line(message, output);
     if debug_mode {
         eprintln!("{message}");
     }
@@ -165,14 +173,66 @@ fn print_outputs(config_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn print_status(pid_file: &Path, config_path: &Path) -> Result<()> {
-    let daemon_running = read_pid_file(pid_file)?
-        .map(|pid| process_exists(pid) && is_cava_bg_process(pid))
+fn print_status(config_path: &Path) -> Result<()> {
+    let supervisor_file = pid_file_path(None);
+    let supervisor_running = read_pid_file(&supervisor_file)?
+        .map(|pid| process_exists(pid) && is_cava_bg_process(pid) && is_supervisor_process(pid))
         .unwrap_or(false);
-    println!(
-        "Daemon: {}",
-        if daemon_running { "running" } else { "stopped" }
-    );
+
+    if supervisor_running {
+        println!("Supervisor: running");
+        let supervisor_pid = read_pid_file(&supervisor_file)?.unwrap_or(0);
+        println!("  PID: {}", supervisor_pid);
+    } else {
+        // Check main daemon pid + legacy + per-output pid files
+        let pid_files = collect_pid_files();
+        let main_pid = read_pid_file(&supervisor_file)?;
+        let main_running = main_pid
+            .map(|pid| process_exists(pid) && is_cava_bg_process(pid))
+            .unwrap_or(false);
+        let any_running = main_running
+            || pid_files.iter().any(|pf| {
+                read_pid_file(pf)
+                    .ok()
+                    .flatten()
+                    .map(|pid| process_exists(pid) && is_cava_bg_process(pid))
+                    .unwrap_or(false)
+            });
+
+        if let Some(pid) = main_pid.filter(|_| main_running) {
+            println!("Daemon: running (no supervisor, PID {})", pid);
+        } else if any_running {
+            println!("Daemon: running (legacy/per-output only)");
+        } else {
+            println!("Daemon: stopped");
+        }
+    }
+
+    // Show per-output children
+    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let config_dir = PathBuf::from(format!("{home}/.config/cava-bg"));
+    if let Ok(entries) = fs::read_dir(&config_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if let Some(output) = name
+                    .strip_prefix("daemon.")
+                    .and_then(|n| n.strip_suffix(".pid"))
+                {
+                    if let Some(pid) = read_pid_file(&path).ok().flatten() {
+                        let running = process_exists(pid) && is_cava_bg_process(pid);
+                        println!(
+                            "  Output '{}': {} (PID {})",
+                            output,
+                            if running { "running" } else { "stopped" },
+                            pid
+                        );
+                    }
+                }
+            }
+        }
+    }
+
     print_outputs(config_path)?;
     Ok(())
 }
@@ -249,8 +309,53 @@ pub fn is_cava_bg_process(pid: i32) -> bool {
         return false;
     }
 
-    args.iter()
-        .any(|&arg| ["on", "restart", "__run"].contains(&arg))
+    args.iter().any(|&arg| {
+        [
+            "on",
+            "restart",
+            "__run",
+            "__supervisor",
+            "--debug",
+            "--config",
+        ]
+        .contains(&arg)
+    }) && !args.iter().any(|&arg| {
+        [
+            "off",
+            "kill",
+            "status",
+            "outputs",
+            "output-on",
+            "output-off",
+            "gui",
+            "help",
+        ]
+        .contains(&arg)
+    })
+}
+
+fn is_supervisor_process(pid: i32) -> bool {
+    if pid <= 0 {
+        return false;
+    }
+
+    let cmdline_path = format!("/proc/{}/cmdline", pid);
+    let cmdline_bytes = match std::fs::read(&cmdline_path) {
+        Ok(bytes) => bytes,
+        Err(_) => return false,
+    };
+
+    let args: Vec<&str> = cmdline_bytes
+        .split(|&b| b == 0)
+        .filter_map(|b| std::str::from_utf8(b).ok())
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    if args.len() < 2 {
+        return false;
+    }
+
+    args.contains(&"__supervisor")
 }
 
 fn read_pid_file(pid_file: &Path) -> Result<Option<i32>> {
@@ -280,7 +385,12 @@ fn read_pid_file(pid_file: &Path) -> Result<Option<i32>> {
     Ok(Some(pid))
 }
 
-fn write_pid_file_atomic(pid_file: &Path, pid: u32, debug_mode: bool) -> Result<()> {
+fn write_pid_file_atomic(
+    pid_file: &Path,
+    pid: u32,
+    debug_mode: bool,
+    output: Option<&str>,
+) -> Result<()> {
     ensure_parent_dir(pid_file)?;
 
     let pid_text = format!("{pid}\n");
@@ -290,6 +400,7 @@ fn write_pid_file_atomic(pid_file: &Path, pid: u32, debug_mode: bool) -> Result<
     daemon_debug_log(
         debug_mode,
         &format!("Writing PID to file: {}", pid_file.display()),
+        output,
     );
 
     for attempt in 1..=max_attempts {
@@ -336,7 +447,7 @@ fn write_pid_file_atomic(pid_file: &Path, pid: u32, debug_mode: bool) -> Result<
 
         match write_result {
             Ok(_) => {
-                daemon_debug_log(debug_mode, "PID file written successfully");
+                daemon_debug_log(debug_mode, "PID file written successfully", output);
                 return Ok(());
             }
             Err(err) => {
@@ -348,13 +459,16 @@ fn write_pid_file_atomic(pid_file: &Path, pid: u32, debug_mode: bool) -> Result<
                     pid_file.display(),
                     err
                 );
-                append_daemon_log_line(&format!(
-                    "Attempt {}/{} failed while writing PID file {}: {:#}",
-                    attempt,
-                    max_attempts,
-                    pid_file.display(),
-                    err
-                ));
+                append_daemon_log_line(
+                    &format!(
+                        "Attempt {}/{} failed while writing PID file {}: {:#}",
+                        attempt,
+                        max_attempts,
+                        pid_file.display(),
+                        err
+                    ),
+                    output,
+                );
 
                 if attempt == max_attempts {
                     return Err(err);
@@ -368,7 +482,7 @@ fn write_pid_file_atomic(pid_file: &Path, pid: u32, debug_mode: bool) -> Result<
     anyhow::bail!("Unexpected PID write loop exit")
 }
 
-fn check_single_instance(pid_file: &Path, debug_mode: bool) -> Result<bool> {
+fn check_single_instance(pid_file: &Path, debug_mode: bool, output: Option<&str>) -> Result<bool> {
     let mut pid_locations = vec![pid_file.to_path_buf()];
     pid_locations.extend(legacy_pid_file_paths());
 
@@ -409,26 +523,8 @@ fn check_single_instance(pid_file: &Path, debug_mode: bool) -> Result<bool> {
         }
     }
 
-    write_pid_file_atomic(pid_file, std::process::id(), debug_mode)?;
+    write_pid_file_atomic(pid_file, std::process::id(), debug_mode, output)?;
     Ok(true)
-}
-
-fn resolve_pid_file_for_off(primary: &Path) -> PathBuf {
-    if primary.exists() {
-        return primary.to_path_buf();
-    }
-
-    for legacy in legacy_pid_file_paths() {
-        if legacy.exists() {
-            warn!(
-                "Using legacy PID file location: {}. It will be cleaned up automatically.",
-                legacy.display()
-            );
-            return legacy;
-        }
-    }
-
-    primary.to_path_buf()
 }
 
 fn terminate_pid(pid: i32) {
@@ -508,80 +604,105 @@ fn stop_pid_with_escalation(pid: i32) -> bool {
     false
 }
 
-fn kill_existing_instance(pid_file: &Path) -> Result<()> {
-    let pid_path = resolve_pid_file_for_off(pid_file);
-    let pid = match read_pid_file(&pid_path)? {
-        Some(pid) => pid,
-        None => {
-            let _ = fs::remove_file(&pid_path);
+fn collect_pid_files() -> Vec<PathBuf> {
+    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let config_dir = PathBuf::from(format!("{home}/.config/cava-bg"));
+    let mut files = Vec::new();
 
-            let discovered = find_cava_bg_processes()?;
-            if !discovered.is_empty() {
-                println!(
-                    "PID file missing at {}. Found running cava-bg processes via fallback scan: {:?}",
-                    pid_path.display(),
-                    discovered
-                );
-                println!("Attempting to stop discovered processes...");
+    let basic = pid_file_path(None);
+    if basic.exists() {
+        files.push(basic);
+    }
 
-                let mut failed = Vec::new();
-                for candidate in discovered {
-                    if stop_pid_with_escalation(candidate) {
-                        println!("Stopped cava-bg process PID {}.", candidate);
-                    } else {
-                        failed.push(candidate);
-                    }
-                }
-
-                if failed.is_empty() {
-                    return Ok(());
-                }
-
-                anyhow::bail!(
-                    "Some cava-bg processes could not be stopped: {:?}. Try 'kill -9 <pid>' manually. For diagnosis run 'cava-bg on --debug' and inspect {}",
-                    failed,
-                    daemon_log_path().display()
-                );
-            }
-
-            anyhow::bail!(
-                "No running daemon was found (PID file is missing or empty at {}). Suggestion: run 'cava-bg on --debug' to diagnose startup issues and review {}",
-                pid_path.display(),
-                daemon_log_path().display()
-            );
+    for legacy in legacy_pid_file_paths() {
+        if legacy.exists() && !files.contains(&legacy) {
+            files.push(legacy);
         }
-    };
+    }
 
-    if !process_exists(pid) {
-        let _ = fs::remove_file(&pid_path);
-        println!(
-            "Found stale PID file at {} (PID {} is not running). Cleaned up.",
-            pid_path.display(),
-            pid
-        );
+    if let Ok(entries) = fs::read_dir(&config_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                if name.starts_with("daemon.") && name.ends_with(".pid") && !files.contains(&path) {
+                    files.push(path);
+                }
+            }
+        }
+    }
+
+    files
+}
+
+fn kill_existing_instance() -> Result<()> {
+    let pid_files = collect_pid_files();
+
+    let mut process_found = false;
+    let mut killed_any = false;
+    let mut failed = Vec::new();
+
+    for pid_file in &pid_files {
+        let Some(pid) = read_pid_file(pid_file)? else {
+            let _ = fs::remove_file(pid_file);
+            continue;
+        };
+
+        let alive = process_exists(pid) && is_cava_bg_process(pid);
+        if !alive {
+            let _ = fs::remove_file(pid_file);
+            continue;
+        }
+
+        process_found = true;
+
+        if stop_pid_with_escalation(pid) {
+            killed_any = true;
+            println!(
+                "cava-bg process stopped (PID {}, pidfile: {}).",
+                pid,
+                pid_file.display()
+            );
+            let _ = fs::remove_file(pid_file);
+        } else {
+            failed.push(pid);
+        }
+    }
+
+    if !process_found {
+        let discovered = find_cava_bg_processes()?;
+        if !discovered.is_empty() {
+            println!(
+                "No PID files found. Found running cava-bg processes via fallback scan: {:?}",
+                discovered
+            );
+            println!("Attempting to stop discovered processes...");
+
+            for candidate in discovered {
+                if stop_pid_with_escalation(candidate) {
+                    killed_any = true;
+                    println!("Stopped cava-bg process PID {}.", candidate);
+                } else {
+                    failed.push(candidate);
+                }
+            }
+        }
+    }
+
+    if killed_any {
         return Ok(());
     }
 
-    if !is_cava_bg_process(pid) {
-        let _ = fs::remove_file(&pid_path);
-        println!(
-            "Found stale PID file at {} (PID {} belongs to a different process). Cleaned up.",
-            pid_path.display(),
-            pid
+    if !failed.is_empty() {
+        anyhow::bail!(
+            "Some cava-bg processes could not be stopped: {:?}. Try 'kill -9 <pid>' manually. For diagnosis run 'cava-bg on --debug' and inspect {}",
+            failed,
+            daemon_log_path(None).display()
         );
-        return Ok(());
-    }
-
-    if stop_pid_with_escalation(pid) {
-        let _ = fs::remove_file(&pid_path);
-        println!("cava-bg daemon stopped (PID {}).", pid);
-        return Ok(());
     }
 
     anyhow::bail!(
-        "Failed to stop PID {}. You may need to stop it manually with 'kill -9 {}'.",
-        pid,
-        pid
+        "No running daemon was found. Suggestion: run 'cava-bg on --debug' to diagnose startup issues and review {}",
+        daemon_log_path(None).display()
     )
 }
 
@@ -605,7 +726,7 @@ fn ensure_config_exists(config_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn start_daemon(config_path: &Path, output_filter: Option<&str>) -> Result<()> {
+fn start_daemon(config_path: &Path, output_filter: Option<&str>, supervisor: bool) -> Result<()> {
     let exe = env::current_exe().context("Could not resolve the current executable")?;
     let devnull = File::options()
         .read(true)
@@ -613,7 +734,7 @@ fn start_daemon(config_path: &Path, output_filter: Option<&str>) -> Result<()> {
         .open("/dev/null")
         .context("Could not open /dev/null")?;
 
-    let log_path = daemon_log_path();
+    let log_path = daemon_log_path(output_filter);
     ensure_parent_dir(&log_path)?;
     rotate_log_file(&log_path);
     let log_file = OpenOptions::new()
@@ -623,16 +744,20 @@ fn start_daemon(config_path: &Path, output_filter: Option<&str>) -> Result<()> {
         .with_context(|| format!("Could not open daemon log file {}", log_path.display()))?;
 
     let mut cmd = Command::new(exe);
-    cmd.arg("__run")
-        .arg("--config")
-        .arg(config_path)
-        .stdin(Stdio::from(devnull.try_clone()?))
+    if let Some(output) = output_filter {
+        cmd.arg("__run")
+            .arg("--config")
+            .arg(config_path)
+            .arg("--output")
+            .arg(output);
+    } else if supervisor {
+        cmd.arg("__supervisor").arg("--config").arg(config_path);
+    } else {
+        cmd.arg("__run").arg("--config").arg(config_path);
+    }
+    cmd.stdin(Stdio::from(devnull.try_clone()?))
         .stdout(Stdio::from(log_file.try_clone()?))
         .stderr(Stdio::from(log_file));
-
-    if let Some(output) = output_filter {
-        cmd.arg("--output").arg(output);
-    }
 
     unsafe {
         cmd.pre_exec(|| {
@@ -644,7 +769,7 @@ fn start_daemon(config_path: &Path, output_filter: Option<&str>) -> Result<()> {
     }
 
     let mut child = cmd.spawn().context("Could not start the daemon")?;
-    let pid_file = pid_file_path();
+    let pid_file = pid_file_path(output_filter);
 
     for _ in 0..30 {
         if let Some(status) = child.try_wait().context("Could not poll daemon process")? {
@@ -679,16 +804,24 @@ fn run_foreground(
     pid_file: PathBuf,
     debug_mode: bool,
     output_filter: Option<String>,
+    supervised: bool,
 ) -> Result<()> {
+    if supervised {
+        unsafe {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+        }
+    }
+
     ensure_config_exists(&config_path)?;
 
     let child_pid = std::process::id();
     daemon_debug_log(
         debug_mode,
         &format!("[DAEMON] Process started, PID: {}", child_pid),
+        output_filter.as_deref(),
     );
 
-    if !check_single_instance(&pid_file, debug_mode)? {
+    if !check_single_instance(&pid_file, debug_mode, output_filter.as_deref())? {
         std::process::exit(1);
     }
 
@@ -718,11 +851,12 @@ fn run_foreground(
         }
     };
     config.normalize_compat_fields();
-    if let Some(output_name) = output_filter {
+    if let Some(output_name) = &output_filter {
         config.general.preferred_outputs = vec![output_name.clone()];
         daemon_debug_log(
             debug_mode,
             &format!("[DAEMON] Output filter enabled for '{output_name}'"),
+            output_filter.as_deref(),
         );
     }
 
@@ -735,17 +869,26 @@ fn run_foreground(
     })
     .expect("Error setting signal handler for SIGINT/SIGTERM");
 
-    daemon_debug_log(debug_mode, "Signal handlers installed for SIGINT/SIGTERM");
-    daemon_debug_log(debug_mode, "[DAEMON] Entering main loop...");
+    daemon_debug_log(
+        debug_mode,
+        "Signal handlers installed for SIGINT/SIGTERM",
+        output_filter.as_deref(),
+    );
+    daemon_debug_log(
+        debug_mode,
+        "[DAEMON] Entering main loop...",
+        output_filter.as_deref(),
+    );
 
-    rotate_daemon_log();
+    rotate_daemon_log(output_filter.as_deref());
 
     if !debug_mode {
         let log_running = running.clone();
+        let output_filter_clone = output_filter.clone();
         thread::spawn(move || {
             while log_running.load(Ordering::SeqCst) {
                 thread::sleep(Duration::from_secs(60));
-                rotate_daemon_log();
+                rotate_daemon_log(output_filter_clone.as_deref());
             }
         });
     }
@@ -753,12 +896,24 @@ fn run_foreground(
     let mut restart_attempt: u64 = 0;
     while running.load(Ordering::SeqCst) {
         restart_attempt += 1;
-        daemon_debug_log(debug_mode, "[DAEMON] Initializing Wayland connection...");
-        daemon_debug_log(debug_mode, "[DAEMON] Starting renderer...");
+        daemon_debug_log(
+            debug_mode,
+            "[DAEMON] Initializing Wayland connection...",
+            output_filter.as_deref(),
+        );
+        daemon_debug_log(
+            debug_mode,
+            "[DAEMON] Starting renderer...",
+            output_filter.as_deref(),
+        );
 
         let render_result = panic::catch_unwind(AssertUnwindSafe(|| {
-            let renderer =
-                WaylandRenderer::new(config.clone(), running.clone(), Some(config_path.clone()));
+            let renderer = WaylandRenderer::new(
+                config.clone(),
+                running.clone(),
+                Some(config_path.clone()),
+                supervised,
+            );
             renderer.run()
         }));
 
@@ -768,6 +923,7 @@ fn run_foreground(
                     daemon_debug_log(
                         debug_mode,
                         "[DAEMON] Renderer returned without error. Restarting keep-alive loop...",
+                        output_filter.as_deref(),
                     );
                 }
             }
@@ -776,6 +932,7 @@ fn run_foreground(
                 daemon_debug_log(
                     debug_mode,
                     &format!("[DAEMON ERROR] Failed to start: {:#}", err),
+                    output_filter.as_deref(),
                 );
             }
             Err(payload) => {
@@ -794,6 +951,7 @@ fn run_foreground(
                         "[DAEMON ERROR] Failed to start: Daemon panicked: {}",
                         panic_message
                     ),
+                    output_filter.as_deref(),
                 );
             }
         }
@@ -808,6 +966,7 @@ fn run_foreground(
                 "[DAEMON] Keep-alive retry in 2s (attempt {})",
                 restart_attempt
             ),
+            output_filter.as_deref(),
         );
         for _ in 0..20 {
             if !running.load(Ordering::SeqCst) {
@@ -830,41 +989,41 @@ fn main() -> Result<()> {
         .as_ref()
         .map(PathBuf::from)
         .unwrap_or_else(default_config_path);
-    let pid_file = pid_file_path();
+    let pid_file = pid_file_path(cli.output.as_deref());
 
     match cli.command {
         None if cli.config.is_some() => {
-            run_foreground(config_path, pid_file, cli.debug, cli.output)?;
+            run_foreground(config_path, pid_file, cli.debug, cli.output, false)?;
         }
         None | Some(cli::Command::On) => {
             ensure_config_exists(&config_path)?;
             if cli.debug {
                 println!("Running cava-bg in debug foreground mode (no daemon detach).");
-                println!("Daemon log file: {}", daemon_log_path().display());
-                run_foreground(config_path, pid_file, true, cli.output)?;
+                println!("Daemon log file: {}", daemon_log_path(None).display());
+                run_foreground(config_path, pid_file, true, cli.output, false)?;
             } else {
-                start_daemon(&config_path, cli.output.as_deref())?;
+                start_daemon(&config_path, cli.output.as_deref(), cli.supervisor)?;
             }
         }
         Some(cli::Command::Off) | Some(cli::Command::Kill) => {
-            kill_existing_instance(&pid_file)?;
+            kill_existing_instance()?;
         }
         Some(cli::Command::Restart) => {
-            kill_existing_instance(&pid_file)?;
+            kill_existing_instance()?;
             ensure_config_exists(&config_path)?;
             if cli.debug {
                 println!("Running cava-bg in debug foreground mode (no daemon detach).");
-                println!("Daemon log file: {}", daemon_log_path().display());
-                run_foreground(config_path, pid_file, true, cli.output)?;
+                println!("Daemon log file: {}", daemon_log_path(None).display());
+                run_foreground(config_path, pid_file, true, cli.output, false)?;
             } else {
-                start_daemon(&config_path, cli.output.as_deref())?;
+                start_daemon(&config_path, cli.output.as_deref(), cli.supervisor)?;
             }
         }
         Some(cli::Command::Outputs) => {
             print_outputs(&config_path)?;
         }
         Some(cli::Command::Status) => {
-            print_status(&pid_file, &config_path)?;
+            print_status(&config_path)?;
         }
         Some(cli::Command::OutputOn { output }) => {
             set_output_enabled(&config_path, &output, true)?;
@@ -877,7 +1036,14 @@ fn main() -> Result<()> {
             run_config_gui(&config_path)?;
         }
         Some(cli::Command::__Run) => {
-            run_foreground(config_path, pid_file, false, cli.output)?;
+            if cli.supervised && cli.output.is_none() {
+                anyhow::bail!("--supervised requires --output <name>");
+            }
+
+            run_foreground(config_path, pid_file, false, cli.output, cli.supervised)?;
+        }
+        Some(cli::Command::__Supervisor) => {
+            supervisor::run_supervisor(config_path, pid_file, cli.debug)?;
         }
     }
 

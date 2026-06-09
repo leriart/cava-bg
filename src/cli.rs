@@ -5,6 +5,8 @@ pub struct Cli {
     pub debug: bool,
     pub output: Option<String>,
     pub config: Option<String>,
+    pub supervisor: bool,
+    pub supervised: bool,
 }
 
 pub enum Command {
@@ -18,6 +20,7 @@ pub enum Command {
     OutputOff { output: String },
     Gui,
     __Run,
+    __Supervisor,
 }
 
 impl Cli {
@@ -48,6 +51,7 @@ impl Cli {
             },
             "gui" => Command::Gui,
             "__run" => Command::__Run,
+            "__supervisor" => Command::__Supervisor,
             _ => unreachable!(),
         });
         Self {
@@ -55,6 +59,11 @@ impl Cli {
             debug: matches.get_flag("debug"),
             output: matches.get_one::<String>("output").cloned(),
             config: matches.get_one::<String>("config").cloned(),
+            supervisor: matches.get_flag("supervisor"),
+            supervised: matches
+                .subcommand_matches("__run")
+                .map(|m| m.get_flag("supervised"))
+                .unwrap_or(false),
         }
     }
 }

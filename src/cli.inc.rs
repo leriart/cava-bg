@@ -24,6 +24,13 @@ pub fn cli() -> clap::Command {
                 .value_name("PATH")
                 .help("Custom config path"),
         )
+        .arg(
+            clap::Arg::new("supervisor")
+                .long("supervisor")
+                .global(true)
+                .action(clap::ArgAction::SetTrue)
+                .help("Enable supervisor mode (per-output child processes)"),
+        )
         .subcommand(clap::Command::new("on").about("Start the daemon in the background"))
         .subcommand(clap::Command::new("off").about("Stop the daemon"))
         .subcommand(clap::Command::new("kill").about("Alias for off"))
@@ -56,6 +63,17 @@ pub fn cli() -> clap::Command {
         .subcommand(
             clap::Command::new("__run")
                 .about("Internal: run in foreground")
+                .hide(true)
+                .arg(
+                    clap::Arg::new("supervised")
+                        .long("supervised")
+                        .action(clap::ArgAction::SetTrue)
+                        .hide(true),
+                ),
+        )
+        .subcommand(
+            clap::Command::new("__supervisor")
+                .about("Internal: supervisor for per-output processes")
                 .hide(true),
         )
 }
