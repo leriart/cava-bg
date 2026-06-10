@@ -7,6 +7,7 @@ pub struct Cli {
     pub config: Option<String>,
     pub supervisor: bool,
     pub supervised: bool,
+    pub systemd: bool,
 }
 
 pub enum Command {
@@ -64,6 +65,7 @@ impl Cli {
                 .subcommand_matches("__run")
                 .map(|m| m.get_flag("supervised"))
                 .unwrap_or(false),
+            systemd: matches.get_flag("systemd"),
         }
     }
 }

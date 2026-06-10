@@ -1,5 +1,6 @@
 use anyhow::{Context, Result};
-use log::{error, warn};
+use log::{error, info, warn};
+use sd_notify::NotifyState;
 use smithay_client_toolkit::delegate_output;
 use smithay_client_toolkit::delegate_registry;
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
@@ -18,6 +19,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -32,9 +34,12 @@ use crate::check_single_instance;
 use crate::daemon_debug_log;
 use crate::daemon_log_path;
 use crate::ensure_config_exists;
+use crate::heartbeat_tick;
 use crate::pid_file_path;
 use crate::rotate_daemon_log;
+use crate::start_watchdog_thread;
 use crate::wayland_renderer::RuntimeOutputStatus;
+use crate::DaemonContext;
 
 #[derive(Clone)]
 struct OutputGeometry {
@@ -52,6 +57,7 @@ struct SupervisorState {
     exe: PathBuf,
     config_path: PathBuf,
     debug_mode: bool,
+    systemd_mode: bool,
     pid_file: PathBuf,
     running: Arc<AtomicBool>,
     config_last_modified: Option<SystemTime>,
@@ -59,20 +65,86 @@ struct SupervisorState {
 }
 
 impl SupervisorState {
-    fn spawn_output_child(&self, output_name: &str, log_file: &File) -> Result<Child> {
+    fn spawn_output_child(&self, output_name: &str, log_file: Option<&File>) -> Result<Child> {
         let mut cmd = Command::new(&self.exe);
         cmd.arg("__run")
             .arg("--supervised")
             .arg("--config")
             .arg(&self.config_path)
             .arg("--output")
-            .arg(output_name)
-            .stdin(Stdio::null())
-            .stdout(log_file.try_clone().map(Stdio::from)?)
-            .stderr(log_file.try_clone().map(Stdio::from)?);
+            .arg(output_name);
 
-        cmd.spawn()
-            .with_context(|| format!("Could not spawn child for output '{}'", output_name))
+        if self.systemd_mode {
+            cmd.arg("--systemd");
+        }
+
+        cmd.stdin(Stdio::null());
+
+        if let Some(file) = log_file {
+            cmd.stdout(Stdio::from(file.try_clone()?))
+                .stderr(Stdio::from(file.try_clone()?));
+        } else {
+            cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
+        }
+
+        let mut child = cmd
+            .spawn()
+            .with_context(|| format!("Could not spawn child for output '{}'", output_name))?;
+
+        if log_file.is_none() {
+            let name = output_name.to_string();
+            if let Some(stdout) = child.stdout.take() {
+                thread::spawn(move || {
+                    for line in BufReader::new(stdout).lines() {
+                        match line {
+                            Ok(line) => {
+                                let formatted_line =
+                                    if let Some((prefix, message)) = line.split_once("] ") {
+                                        format!("{}] [{}] {}", prefix, name, message)
+                                    } else {
+                                        format!("[{}] {}", name, line)
+                                    };
+                                eprintln!("{}", formatted_line)
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "[SUPERVISOR] Error reading stdout from '{}': {}",
+                                    name, e
+                                );
+                                break;
+                            }
+                        }
+                    }
+                });
+            }
+            let name = output_name.to_string();
+            if let Some(stderr) = child.stderr.take() {
+                thread::spawn(move || {
+                    for line in BufReader::new(stderr).lines() {
+                        match line {
+                            Ok(line) => {
+                                let formatted_line =
+                                    if let Some((prefix, message)) = line.split_once("] ") {
+                                        format!("{}] [{}] {}", prefix, name, message)
+                                    } else {
+                                        format!("[{}] {}", name, line)
+                                    };
+                                eprintln!("{}", formatted_line)
+                            }
+                            Err(e) => {
+                                eprintln!(
+                                    "[SUPERVISOR] Error reading stderr from '{}': {}",
+                                    name, e
+                                );
+                                break;
+                            }
+                        }
+                    }
+                });
+            }
+        }
+
+        Ok(child)
     }
 
     fn spawn_child_for_output(&mut self, name: &str) {
@@ -85,18 +157,23 @@ impl SupervisorState {
         self.last_spawn_attempt
             .insert(name.to_string(), Instant::now());
 
-        let log_path = daemon_log_path(Some(name));
-        let log_file = match OpenOptions::new().create(true).append(true).open(&log_path) {
-            Ok(f) => f,
-            Err(e) => {
-                error!("[SUPERVISOR] Failed to open log for '{}': {}", name, e);
-                return;
+        let log_file = if self.systemd_mode {
+            None
+        } else {
+            let log_path = daemon_log_path(Some(name));
+            match OpenOptions::new().create(true).append(true).open(&log_path) {
+                Ok(f) => Some(f),
+                Err(e) => {
+                    error!("[SUPERVISOR] Failed to open log for '{}': {}", name, e);
+                    return;
+                }
             }
         };
-        match self.spawn_output_child(name, &log_file) {
+        match self.spawn_output_child(name, log_file.as_ref()) {
             Ok(child) => {
                 daemon_debug_log(
                     self.debug_mode,
+                    self.systemd_mode,
                     &format!(
                         "[SUPERVISOR] Spawned child for '{}' (PID {})",
                         name,
@@ -122,6 +199,7 @@ impl SupervisorState {
             let _ = fs::remove_file(pid_file_path(Some(name)));
             daemon_debug_log(
                 self.debug_mode,
+                self.systemd_mode,
                 &format!("[SUPERVISOR] Killed child for '{}'", name),
                 None,
             );
@@ -156,6 +234,7 @@ impl SupervisorState {
             } else {
                 daemon_debug_log(
                     self.debug_mode,
+                    self.systemd_mode,
                     &format!(
                         "[SUPERVISOR] Child '{}' exited, output disconnected, not restarting",
                         name
@@ -271,6 +350,7 @@ impl SupervisorState {
             if is_enabled && !is_running {
                 daemon_debug_log(
                     self.debug_mode,
+                    self.systemd_mode,
                     &format!(
                         "[SUPERVISOR] Output '{}' enabled in config. Spawning child.",
                         output_name
@@ -281,6 +361,7 @@ impl SupervisorState {
             } else if !is_enabled && is_running {
                 daemon_debug_log(
                     self.debug_mode,
+                    self.systemd_mode,
                     &format!(
                         "[SUPERVISOR] Output '{}' disabled in config. Killing child.",
                         output_name
@@ -313,6 +394,7 @@ impl OutputHandler for SupervisorState {
 
             daemon_debug_log(
                 self.debug_mode,
+                self.systemd_mode,
                 &format!("[SUPERVISOR] New output detected: '{}'", name),
                 None,
             );
@@ -348,6 +430,7 @@ impl OutputHandler for SupervisorState {
                 if old_name != new_name {
                     daemon_debug_log(
                         self.debug_mode,
+                        self.systemd_mode,
                         &format!(
                             "[SUPERVISOR] Output renamed: '{}' -> '{}'",
                             old_name, new_name
@@ -388,6 +471,7 @@ impl OutputHandler for SupervisorState {
         if let Some(name) = self.output_id_to_name.remove(&output.id()) {
             daemon_debug_log(
                 self.debug_mode,
+                self.systemd_mode,
                 &format!("[SUPERVISOR] Output destroyed: '{}'", name),
                 None,
             );
@@ -409,16 +493,25 @@ impl ProvidesRegistryState for SupervisorState {
 delegate_output!(SupervisorState);
 delegate_registry!(SupervisorState);
 
-pub fn run_supervisor(config_path: PathBuf, pid_file: PathBuf, debug_mode: bool) -> Result<()> {
+pub fn run_supervisor(daemon_context: DaemonContext) -> Result<()> {
+    let config_path = daemon_context.config_path;
+    let pid_file = daemon_context.pid_file;
+    let debug_mode = daemon_context.debug_mode;
+    let systemd_mode = daemon_context.systemd_mode;
+
     ensure_config_exists(&config_path)?;
 
     daemon_debug_log(
         debug_mode,
+        systemd_mode,
         &format!("[SUPERVISOR] Started, PID: {}", std::process::id()),
         None,
     );
 
-    if !check_single_instance(&pid_file, debug_mode, None)? {
+    if systemd_mode {
+        info!("[SUPERVISOR] Running in systemd mode");
+    }
+    if !check_single_instance(&pid_file, debug_mode, systemd_mode, None)? {
         std::process::exit(1);
     }
 
@@ -453,26 +546,47 @@ pub fn run_supervisor(config_path: PathBuf, pid_file: PathBuf, debug_mode: bool)
         config_last_modified: None,
         config_path,
         debug_mode,
+        systemd_mode,
         pid_file,
         running,
         dirty: false,
     };
 
-    let log_running = state.running.clone();
-    thread::spawn(move || {
-        while log_running.load(Ordering::SeqCst) {
-            thread::sleep(Duration::from_secs(60));
-            rotate_daemon_log(None);
-        }
-    });
+    if !systemd_mode {
+        let log_running = state.running.clone();
+        thread::spawn(move || {
+            while log_running.load(Ordering::SeqCst) {
+                thread::sleep(Duration::from_secs(60));
+                rotate_daemon_log(None);
+            }
+        });
+    }
 
-    daemon_debug_log(debug_mode, "[SUPERVISOR] Signal handlers installed", None);
     daemon_debug_log(
         debug_mode,
+        systemd_mode,
+        "[SUPERVISOR] Signal handlers installed",
+        None,
+    );
+
+    if systemd_mode {
+        if let Err(e) = sd_notify::notify(&[NotifyState::Ready]) {
+            warn!("Failed to notify systemd (READY=1): {}", e);
+        } else {
+            info!("[SUPERVISOR] Notified systemd: READY=1");
+        }
+
+        start_watchdog_thread(state.running.clone());
+    }
+
+    daemon_debug_log(
+        debug_mode,
+        systemd_mode,
         "[SUPERVISOR] Entering Wayland event loop (hotplug enabled)",
         None,
     );
     while state.running.load(Ordering::SeqCst) {
+        heartbeat_tick();
         event_loop
             .dispatch(Some(Duration::from_millis(500)), &mut state)
             .context("Event loop dispatch error")?;
@@ -483,6 +597,7 @@ pub fn run_supervisor(config_path: PathBuf, pid_file: PathBuf, debug_mode: bool)
 
     daemon_debug_log(
         state.debug_mode,
+        systemd_mode,
         "[SUPERVISOR] Shutting down children...",
         None,
     );
@@ -492,6 +607,11 @@ pub fn run_supervisor(config_path: PathBuf, pid_file: PathBuf, debug_mode: bool)
         let _ = fs::remove_file(pid_file_path(Some(&name)));
     }
 
+    if systemd_mode {
+        if let Err(e) = sd_notify::notify(&[NotifyState::Stopping]) {
+            warn!("Failed to notify systemd (STOPPING=1): {}", e);
+        }
+    }
     let _ = fs::remove_file(&state.pid_file);
     Ok(())
 }

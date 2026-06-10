@@ -1,0 +1,20 @@
+[Unit]
+Description=cava-bg — Audio visualizer for Wayland
+Documentation=https://github.com/leriart/cava-bg
+After=graphical-session.target
+PartOf=graphical-session.target
+
+[Service]
+Type=notify
+# Single process mode (default):
+ExecStart=/usr/bin/cava-bg on --systemd
+# Per-output child processes via supervisor (uncomment to use):
+# ExecStart=/usr/bin/cava-bg on --systemd --supervisor
+Restart=on-failure
+RestartSec=5
+NotifyAccess=main
+# Uncomment to enable hardware watchdog (cava-bg will be restarted if it freezes):
+# WatchdogSec=30
+
+[Install]
+WantedBy=graphical-session.target

@@ -83,6 +83,7 @@ use crate::app_config::{
     OutputDescriptor, PaletteType, ProfileSource, VisualizationMode, XRayConfig,
 };
 use crate::bar_geometry;
+use crate::heartbeat_tick;
 use crate::parallax_system::{AudioBands, ComputedParallaxLayer, ParallaxSystem};
 use crate::perf_monitor::PerfMonitor;
 use crate::video_decoder::{VideoDecoder, VideoDecoderConfig};
@@ -1036,6 +1037,7 @@ impl WaylandRenderer {
         }
 
         event_loop.run(Some(event_tick), &mut app_state, |state| {
+            heartbeat_tick();
             if let Ok(new_framerate) = state.framerate_receiver.try_recv() {
                 state.framerate = new_framerate;
                 info!("Framerate updated dynamically to {}", new_framerate);

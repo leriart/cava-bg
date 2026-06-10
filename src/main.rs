@@ -18,6 +18,7 @@ mod xray_animator;
 use anyhow::{Context, Result};
 use cli::Cli;
 use log::{error, info, warn};
+use sd_notify::NotifyState;
 use serde::Deserialize;
 
 use std::env;
@@ -29,14 +30,20 @@ use std::os::unix::process::CommandExt;
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use app_config::Config;
 use config_gui::run_config_gui;
 use wayland_renderer::WaylandRenderer;
+
+static HEARTBEAT_TICK: AtomicU64 = AtomicU64::new(0);
+
+fn heartbeat_tick() {
+    HEARTBEAT_TICK.fetch_add(1, Ordering::SeqCst);
+}
 
 fn default_config_path() -> PathBuf {
     let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
@@ -66,6 +73,40 @@ fn runtime_outputs_path(config_path: &Path) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("/tmp/runtime-outputs.json"))
 }
 
+fn start_watchdog_thread(running: Arc<AtomicBool>) {
+    if let Some(interval) = sd_notify::watchdog_enabled() {
+        let mut first_watchdog_error = true;
+        thread::spawn(move || {
+            let half = (interval / 2).max(Duration::from_millis(100));
+            let mut last_tick = crate::HEARTBEAT_TICK.load(Ordering::SeqCst);
+
+            while running.load(Ordering::SeqCst) {
+                thread::sleep(half);
+                let current_tick = crate::HEARTBEAT_TICK.load(Ordering::SeqCst);
+
+                if current_tick == last_tick {
+                    warn!(
+                        "[SYSTEMD] Heartbeat stalled or system suspended, skipping watchdog ping"
+                    );
+                    continue;
+                }
+                last_tick = current_tick;
+
+                if let Err(e) = sd_notify::notify(&[NotifyState::Watchdog]) {
+                    if first_watchdog_error {
+                        warn!("Failed to notify systemd (WATCHDOG=1): {}", e);
+                        first_watchdog_error = false;
+                    }
+                }
+            }
+        });
+        info!(
+            "[SYSTEMD] Watchdog enabled (interval: {}ms)",
+            interval.as_millis()
+        );
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct RuntimeOutputInfo {
     name: String,
@@ -74,6 +115,13 @@ struct RuntimeOutputInfo {
     height: u32,
     position: [i32; 2],
     configured: bool,
+}
+
+struct DaemonContext {
+    config_path: PathBuf,
+    pid_file: PathBuf,
+    debug_mode: bool,
+    systemd_mode: bool,
 }
 
 fn ensure_parent_dir(path: &Path) -> Result<()> {
@@ -122,9 +170,11 @@ fn append_daemon_log_line(message: &str, output: Option<&str>) {
     }
 }
 
-fn daemon_debug_log(debug_mode: bool, message: &str, output: Option<&str>) {
+fn daemon_debug_log(debug_mode: bool, systemd_mode: bool, message: &str, output: Option<&str>) {
     info!("{message}");
-    append_daemon_log_line(message, output);
+    if !systemd_mode {
+        append_daemon_log_line(message, output);
+    }
     if debug_mode {
         eprintln!("{message}");
     }
@@ -173,7 +223,12 @@ fn print_outputs(config_path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn print_status(config_path: &Path) -> Result<()> {
+fn print_status(config_path: &Path, systemd_mode: bool) -> Result<()> {
+    if systemd_mode {
+        println!("Use 'systemctl --user status cava-bg' to check service status.");
+        return Ok(());
+    }
+
     let supervisor_file = pid_file_path(None);
     let supervisor_running = read_pid_file(&supervisor_file)?
         .map(|pid| process_exists(pid) && is_cava_bg_process(pid) && is_supervisor_process(pid))
@@ -389,6 +444,7 @@ fn write_pid_file_atomic(
     pid_file: &Path,
     pid: u32,
     debug_mode: bool,
+    systemd_mode: bool,
     output: Option<&str>,
 ) -> Result<()> {
     ensure_parent_dir(pid_file)?;
@@ -399,6 +455,7 @@ fn write_pid_file_atomic(
 
     daemon_debug_log(
         debug_mode,
+        systemd_mode,
         &format!("Writing PID to file: {}", pid_file.display()),
         output,
     );
@@ -447,7 +504,12 @@ fn write_pid_file_atomic(
 
         match write_result {
             Ok(_) => {
-                daemon_debug_log(debug_mode, "PID file written successfully", output);
+                daemon_debug_log(
+                    debug_mode,
+                    systemd_mode,
+                    "PID file written successfully",
+                    output,
+                );
                 return Ok(());
             }
             Err(err) => {
@@ -459,16 +521,18 @@ fn write_pid_file_atomic(
                     pid_file.display(),
                     err
                 );
-                append_daemon_log_line(
-                    &format!(
-                        "Attempt {}/{} failed while writing PID file {}: {:#}",
-                        attempt,
-                        max_attempts,
-                        pid_file.display(),
-                        err
-                    ),
-                    output,
-                );
+                if !systemd_mode {
+                    append_daemon_log_line(
+                        &format!(
+                            "Attempt {}/{} failed while writing PID file {}: {:#}",
+                            attempt,
+                            max_attempts,
+                            pid_file.display(),
+                            err
+                        ),
+                        output,
+                    );
+                }
 
                 if attempt == max_attempts {
                     return Err(err);
@@ -482,7 +546,12 @@ fn write_pid_file_atomic(
     anyhow::bail!("Unexpected PID write loop exit")
 }
 
-fn check_single_instance(pid_file: &Path, debug_mode: bool, output: Option<&str>) -> Result<bool> {
+fn check_single_instance(
+    pid_file: &Path,
+    debug_mode: bool,
+    systemd_mode: bool,
+    output: Option<&str>,
+) -> Result<bool> {
     let mut pid_locations = vec![pid_file.to_path_buf()];
     pid_locations.extend(legacy_pid_file_paths());
 
@@ -523,7 +592,13 @@ fn check_single_instance(pid_file: &Path, debug_mode: bool, output: Option<&str>
         }
     }
 
-    write_pid_file_atomic(pid_file, std::process::id(), debug_mode, output)?;
+    write_pid_file_atomic(
+        pid_file,
+        std::process::id(),
+        debug_mode,
+        systemd_mode,
+        output,
+    )?;
     Ok(true)
 }
 
@@ -634,7 +709,59 @@ fn collect_pid_files() -> Vec<PathBuf> {
     files
 }
 
-fn kill_existing_instance() -> Result<()> {
+fn run_systemctl(args: &[&str]) -> Result<std::process::Output> {
+    let timeout = Duration::from_secs(10);
+    let mut child = Command::new("systemctl")
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("Failed to spawn systemctl")?;
+
+    let start = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return child.wait_with_output().context("systemctl command failed"),
+            Ok(None) => {
+                if start.elapsed() > timeout {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    anyhow::bail!("systemctl command timed out after 10s");
+                }
+                thread::sleep(Duration::from_millis(50));
+            }
+            Err(e) => anyhow::bail!("systemctl wait failed: {}", e),
+        }
+    }
+}
+
+fn systemd_unit_is_active() -> bool {
+    match run_systemctl(&["--user", "is-active", "cava-bg.service"]) {
+        Ok(output) => {
+            let status = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            status == "active"
+        }
+        Err(e) => {
+            warn!("systemctl check failed (assuming inactive): {}", e);
+            false
+        }
+    }
+}
+
+fn kill_existing_instance(systemd_mode: bool) -> Result<()> {
+    if systemd_unit_is_active() {
+        let output = run_systemctl(&["--user", "stop", "cava-bg.service"])?;
+        if output.status.success() {
+            println!("cava-bg.service stopped via systemctl.");
+            return Ok(());
+        }
+        anyhow::bail!("systemctl --user stop cava-bg.service failed.");
+    }
+
+    if systemd_mode {
+        anyhow::bail!("Use 'systemctl --user stop cava-bg' instead.");
+    }
+
     let pid_files = collect_pid_files();
 
     let mut process_found = false;
@@ -800,9 +927,7 @@ fn start_daemon(config_path: &Path, output_filter: Option<&str>, supervisor: boo
 }
 
 fn run_foreground(
-    config_path: PathBuf,
-    pid_file: PathBuf,
-    debug_mode: bool,
+    daemon_context: DaemonContext,
     output_filter: Option<String>,
     supervised: bool,
 ) -> Result<()> {
@@ -812,16 +937,30 @@ fn run_foreground(
         }
     }
 
+    let config_path = daemon_context.config_path;
+    let pid_file = daemon_context.pid_file;
+    let debug_mode = daemon_context.debug_mode;
+    let systemd_mode = daemon_context.systemd_mode;
+
     ensure_config_exists(&config_path)?;
 
     let child_pid = std::process::id();
     daemon_debug_log(
         debug_mode,
+        systemd_mode,
         &format!("[DAEMON] Process started, PID: {}", child_pid),
         output_filter.as_deref(),
     );
 
-    if !check_single_instance(&pid_file, debug_mode, output_filter.as_deref())? {
+    if systemd_mode {
+        info!("[SYSTEMD] Running in systemd mode (PID {child_pid})");
+    }
+    if !check_single_instance(
+        &pid_file,
+        debug_mode,
+        systemd_mode,
+        output_filter.as_deref(),
+    )? {
         std::process::exit(1);
     }
 
@@ -855,6 +994,7 @@ fn run_foreground(
         config.general.preferred_outputs = vec![output_name.clone()];
         daemon_debug_log(
             debug_mode,
+            systemd_mode,
             &format!("[DAEMON] Output filter enabled for '{output_name}'"),
             output_filter.as_deref(),
         );
@@ -871,18 +1011,33 @@ fn run_foreground(
 
     daemon_debug_log(
         debug_mode,
+        systemd_mode,
         "Signal handlers installed for SIGINT/SIGTERM",
         output_filter.as_deref(),
     );
+
+    if systemd_mode && !supervised {
+        if let Err(e) = sd_notify::notify(&[NotifyState::Ready]) {
+            warn!("Failed to notify systemd (READY=1): {}", e);
+        } else {
+            info!("[SYSTEMD] Notified systemd: READY=1");
+        }
+
+        start_watchdog_thread(running.clone());
+    }
+
     daemon_debug_log(
         debug_mode,
+        systemd_mode,
         "[DAEMON] Entering main loop...",
         output_filter.as_deref(),
     );
 
-    rotate_daemon_log(output_filter.as_deref());
+    if !systemd_mode {
+        rotate_daemon_log(output_filter.as_deref());
+    }
 
-    if !debug_mode {
+    if !debug_mode && !systemd_mode {
         let log_running = running.clone();
         let output_filter_clone = output_filter.clone();
         thread::spawn(move || {
@@ -898,11 +1053,13 @@ fn run_foreground(
         restart_attempt += 1;
         daemon_debug_log(
             debug_mode,
+            systemd_mode,
             "[DAEMON] Initializing Wayland connection...",
             output_filter.as_deref(),
         );
         daemon_debug_log(
             debug_mode,
+            systemd_mode,
             "[DAEMON] Starting renderer...",
             output_filter.as_deref(),
         );
@@ -922,6 +1079,7 @@ fn run_foreground(
                 if running.load(Ordering::SeqCst) {
                     daemon_debug_log(
                         debug_mode,
+                        systemd_mode,
                         "[DAEMON] Renderer returned without error. Restarting keep-alive loop...",
                         output_filter.as_deref(),
                     );
@@ -931,6 +1089,7 @@ fn run_foreground(
                 error!("Daemon renderer error: {:#}", err);
                 daemon_debug_log(
                     debug_mode,
+                    systemd_mode,
                     &format!("[DAEMON ERROR] Failed to start: {:#}", err),
                     output_filter.as_deref(),
                 );
@@ -947,6 +1106,7 @@ fn run_foreground(
                 error!("Daemon panicked: {}", panic_message);
                 daemon_debug_log(
                     debug_mode,
+                    systemd_mode,
                     &format!(
                         "[DAEMON ERROR] Failed to start: Daemon panicked: {}",
                         panic_message
@@ -962,6 +1122,7 @@ fn run_foreground(
 
         daemon_debug_log(
             debug_mode,
+            systemd_mode,
             &format!(
                 "[DAEMON] Keep-alive retry in 2s (attempt {})",
                 restart_attempt
@@ -976,14 +1137,25 @@ fn run_foreground(
         }
     }
 
+    if systemd_mode && !supervised {
+        if let Err(e) = sd_notify::notify(&[NotifyState::Stopping]) {
+            warn!("Failed to notify systemd (STOPPING=1): {}", e);
+        }
+    }
     let _ = fs::remove_file(&pid_file);
     Ok(())
 }
 
 fn main() -> Result<()> {
+    let cli = Cli::parse();
+
+    let systemd_mode = cli.systemd;
+    if systemd_mode && env::var("RUST_LOG").is_err() {
+        env::set_var("RUST_LOG", "info");
+    }
+
     env_logger::init();
 
-    let cli = Cli::parse();
     let config_path = cli
         .config
         .as_ref()
@@ -991,30 +1163,61 @@ fn main() -> Result<()> {
         .unwrap_or_else(default_config_path);
     let pid_file = pid_file_path(cli.output.as_deref());
 
+    let daemon_context = DaemonContext {
+        config_path: config_path.clone(),
+        pid_file,
+        debug_mode: cli.debug,
+        systemd_mode,
+    };
+
     match cli.command {
         None if cli.config.is_some() => {
-            run_foreground(config_path, pid_file, cli.debug, cli.output, false)?;
+            run_foreground(daemon_context, cli.output, false)?;
         }
         None | Some(cli::Command::On) => {
             ensure_config_exists(&config_path)?;
-            if cli.debug {
-                println!("Running cava-bg in debug foreground mode (no daemon detach).");
-                println!("Daemon log file: {}", daemon_log_path(None).display());
-                run_foreground(config_path, pid_file, true, cli.output, false)?;
+            if cli.debug || systemd_mode {
+                if cli.debug {
+                    println!("Running cava-bg in debug foreground mode (no daemon detach).");
+                    if !systemd_mode {
+                        println!("Daemon log file: {}", daemon_log_path(None).display());
+                    }
+                }
+                if cli.supervisor {
+                    supervisor::run_supervisor(daemon_context)?;
+                } else {
+                    if systemd_mode {
+                        info!("Starting in systemd mode (foreground, journald logging)");
+                    }
+                    run_foreground(daemon_context, cli.output, false)?;
+                }
             } else {
                 start_daemon(&config_path, cli.output.as_deref(), cli.supervisor)?;
             }
         }
         Some(cli::Command::Off) | Some(cli::Command::Kill) => {
-            kill_existing_instance()?;
+            kill_existing_instance(systemd_mode)?;
         }
         Some(cli::Command::Restart) => {
-            kill_existing_instance()?;
+            if systemd_unit_is_active() {
+                let output = run_systemctl(&["--user", "restart", "cava-bg.service"])?;
+                if output.status.success() {
+                    println!("cava-bg.service restarted via systemctl.");
+                    return Ok(());
+                }
+                anyhow::bail!("systemctl --user restart cava-bg.service failed.");
+            }
+
+            if systemd_mode {
+                anyhow::bail!("Use 'systemctl --user restart cava-bg' instead.");
+            }
+
+            kill_existing_instance(systemd_mode)?;
             ensure_config_exists(&config_path)?;
             if cli.debug {
                 println!("Running cava-bg in debug foreground mode (no daemon detach).");
                 println!("Daemon log file: {}", daemon_log_path(None).display());
-                run_foreground(config_path, pid_file, true, cli.output, false)?;
+                run_foreground(daemon_context, cli.output, false)?;
             } else {
                 start_daemon(&config_path, cli.output.as_deref(), cli.supervisor)?;
             }
@@ -1023,7 +1226,7 @@ fn main() -> Result<()> {
             print_outputs(&config_path)?;
         }
         Some(cli::Command::Status) => {
-            print_status(&config_path)?;
+            print_status(&config_path, systemd_mode)?;
         }
         Some(cli::Command::OutputOn { output }) => {
             set_output_enabled(&config_path, &output, true)?;
@@ -1040,10 +1243,10 @@ fn main() -> Result<()> {
                 anyhow::bail!("--supervised requires --output <name>");
             }
 
-            run_foreground(config_path, pid_file, false, cli.output, cli.supervised)?;
+            run_foreground(daemon_context, cli.output, cli.supervised)?;
         }
         Some(cli::Command::__Supervisor) => {
-            supervisor::run_supervisor(config_path, pid_file, cli.debug)?;
+            supervisor::run_supervisor(daemon_context)?;
         }
     }
 

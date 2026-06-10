@@ -31,6 +31,13 @@ pub fn cli() -> clap::Command {
                 .action(clap::ArgAction::SetTrue)
                 .help("Enable supervisor mode (per-output child processes)"),
         )
+        .arg(
+            clap::Arg::new("systemd")
+                .long("systemd")
+                .global(true)
+                .action(clap::ArgAction::SetTrue)
+                .help("Run as a systemd service (logs to journald, no daemon detach)"),
+        )
         .subcommand(clap::Command::new("on").about("Start the daemon in the background"))
         .subcommand(clap::Command::new("off").about("Stop the daemon"))
         .subcommand(clap::Command::new("kill").about("Alias for off"))
