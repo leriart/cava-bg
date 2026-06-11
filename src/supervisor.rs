@@ -37,6 +37,7 @@ use crate::ensure_config_exists;
 use crate::heartbeat_tick;
 use crate::pid_file_path;
 use crate::rotate_daemon_log;
+use crate::runtime_outputs_path;
 use crate::start_watchdog_thread;
 use crate::wayland_renderer::RuntimeOutputStatus;
 use crate::DaemonContext;
@@ -250,13 +251,7 @@ impl SupervisorState {
             return;
         }
 
-        let Some(path) = self
-            .config_path
-            .parent()
-            .map(|dir| dir.join("runtime-outputs.json"))
-        else {
-            return;
-        };
+        let path = runtime_outputs_path(&self.config_path);
 
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
