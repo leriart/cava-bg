@@ -2,7 +2,7 @@
 %global __requires_exclude ^.*$
 
 Name:           cava-bg
-Version:        0.2.4
+Version:        0.2.5
 Release:        1%{?dist}
 Summary:        Audio visualizer for Wayland — background layer
 

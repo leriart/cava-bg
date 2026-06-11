@@ -3,7 +3,7 @@
 # Run this on a Debian/Ubuntu system with dpkg-deb available
 set -e
 
-VERSION="0.2.4"
+VERSION="0.2.5"
 ARCH="amd64"
 PKG_NAME="cava-bg"
 BUILD_DIR="$(cd "$(dirname "$0")" && pwd)"
