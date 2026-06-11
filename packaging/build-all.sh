@@ -6,7 +6,7 @@ set -e
 
 export PATH="$HOME/.cargo/bin:$PATH"
 
-VERSION="0.2.4"
+VERSION="0.2.5"
 PKG_NAME="cava-bg"
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 DIST_DIR="$PROJECT_DIR/target/dist"
