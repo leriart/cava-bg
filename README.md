@@ -30,6 +30,7 @@
 - **Parallax System** - Add depth to your desktop environment with mouse-reactive and audio-reactive layers.
 - **Advanced X-Ray system** - Seamlessly animate image masks reacting to audio.
 - **Daemon Mode** - Easy background running via `cava-bg on` and `cava-bg off`.
+- **Systemd Integration** - Native sd-notify, watchdog, and `cava-bg on --systemd` for journald logging.
 - **GUI Configuration** - Full visual editor with color previews and tabbed organization (`cava-bg gui`).
 - **Hot Reloading** - Configuration changes are applied without restarting the daemon.
 - **Performance Optimization** - Idle mode, lazy video decoding, and FPS limiting.
@@ -153,7 +154,9 @@ inputs = {
           # Systemd user service management
           systemd = {
             enable = true;
+            # supervisor = true;    # Enable per-output child processes
             memoryMax = "500M";
+            # watchdogSec = 30;     # Hardware watchdog (restart on freeze)
           };
         };
       }
@@ -223,8 +226,14 @@ cava-bg on
 # Start in the background as a daemon
 cava-bg on
 
+# Run with per-output child process isolation
+cava-bg on --supervisor
+
+# Run as a systemd service (logs to journald, sd_notify)
+cava-bg on --systemd
+
 # Run in the foreground with a custom config
-cava-bg on --config /path/to/config.toml
+cava-bg --config /path/to/config.toml
 
 # Run in foreground with debugging logs
 cava-bg on --debug
