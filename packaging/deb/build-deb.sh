@@ -35,6 +35,14 @@ mkdir -p "$DEB_DIR/usr/share/licenses/${PKG_NAME}"
 # Copy binary
 cp target/release/${PKG_NAME} "$DEB_DIR/usr/bin/"
 
+# Shell completions
+mkdir -p "$DEB_DIR/usr/share/bash-completion/completions"
+mkdir -p "$DEB_DIR/usr/share/zsh/site-functions"
+mkdir -p "$DEB_DIR/usr/share/fish/vendor_completions.d"
+cp target/release/completions/cava-bg.bash "$DEB_DIR/usr/share/bash-completion/completions/cava-bg"
+cp target/release/completions/_cava-bg "$DEB_DIR/usr/share/zsh/site-functions/_cava-bg"
+cp target/release/completions/cava-bg.fish "$DEB_DIR/usr/share/fish/vendor_completions.d/cava-bg.fish"
+
 # Copy docs
 cp README.md "$DEB_DIR/usr/share/doc/${PKG_NAME}/"
 cp config.toml "$DEB_DIR/usr/share/doc/${PKG_NAME}/"

@@ -36,6 +36,7 @@
             pkg-config
             rustPlatform.bindgenHook
             makeWrapper
+            installShellFiles
           ];
 
           LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath runtimeDeps;
@@ -47,6 +48,14 @@
               wrapProgram "$out/bin/cava-bg" \
                 --prefix LD_LIBRARY_PATH : "${pkgs.lib.makeLibraryPath runtimeDeps}" \
                 --prefix PATH : "${pkgs.lib.makeBinPath [ pkgs.cava pkgs.ffmpeg ]}"
+            fi
+          '';
+          postInstall = ''
+            COMPDIR="$NIX_BUILD_TOP/completions"
+            if [ -d "$COMPDIR" ]; then
+              installShellCompletion --bash --name cava-bg "$COMPDIR/cava-bg.bash"
+              installShellCompletion --zsh --name _cava-bg "$COMPDIR/_cava-bg"
+              installShellCompletion --fish --name cava-bg.fish "$COMPDIR/cava-bg.fish"
             fi
           '';
         };

@@ -4,41 +4,63 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
+/// Top-level configuration for cava-bg.
+/// Each sub-table controls a specific subsystem (audio, display, colors, etc.).
+/// Per-output overrides can be defined under `[output."<name>"]`.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[cfg_attr(any(), config_doc(hide_defaults, root))]
 pub struct Config {
+    /// General behaviour: framerate, background colour, auto-sensitivity.
     #[serde(default)]
     pub general: GeneralConfig,
+    /// Audio visualiser bar parameters: count, size, colours, shape, smoothing.
     #[serde(default, alias = "bars")]
     pub audio: AudioConfig,
+    /// Colour palette, gradient settings, wallpaper colour extraction.
     #[serde(default)]
     pub colors: ColorsConfig,
+    /// Output positioning, anchoring, margins, layer choice.
     #[serde(default)]
     pub display: DisplayConfig,
+    /// Smoothing overrides forwarded to the cava subprocess.
     #[serde(default)]
     pub smoothing: SmoothingConfig,
+    /// Obsolete: hidden image overlay (replaced by `[layers]`).
     #[serde(default)]
     pub hidden_image: Option<HiddenImageConfig>,
+    /// Image / video overlay layers with X-Ray reveal support.
     #[serde(default)]
     pub layers: Option<LayersConfig>,
+    /// Parallax scrolling layers (audio- and mouse-reactive).
     #[serde(default)]
     pub parallax: ParallaxConfig,
+    /// Wallpaper auto-detection from desktop environments.
     #[serde(default)]
     pub wallpaper: WallpaperConfig,
+    /// X-Ray mask effect parameters (intensity, gamma, blend).
     #[serde(default)]
     pub xray_mask: XrayMaskConfig,
+    /// Legacy X-Ray effect configuration.
     #[serde(default)]
     pub xray: XRayConfig,
+    /// Performance tuning: vsync, threading, idle mode, telemetry.
     #[serde(default)]
     pub performance: PerformanceConfig,
+    /// Advanced / debugging settings.
     #[serde(default)]
     pub advanced: AdvancedConfig,
+    /// Default overrides applied to all outputs (before per-output rules).
     #[serde(default)]
     pub global: Option<ConfigOverride>,
+    /// Per-output overrides keyed by output name / connector / index.
     #[serde(default)]
     pub output: BTreeMap<String, OutputOverrideConfig>,
 }
 
+/// Partial config mirror used for `[global]` and per-output overrides.
+/// Every field is optional; only sections to override need to be provided.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[cfg_attr(any(), config_doc(hide_defaults))]
 pub struct ConfigOverride {
     #[serde(default)]
     pub general: Option<GeneralConfig>,
@@ -106,41 +128,62 @@ impl ConfigOverride {
     }
 }
 
+/// Per-output configuration override.
+/// Matched against runtime output descriptors by name, connector, or index.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
+#[cfg_attr(any(), config_doc(hide_defaults))]
 pub struct OutputOverrideConfig {
+    /// Whether this output is enabled (omit = inherited).
     #[serde(default)]
     pub enabled: Option<bool>,
+    /// Exact output name or wildcard pattern.
     #[serde(default)]
     pub name: Option<String>,
+    /// Connector name (e.g. "DP-1", "HDMI-A-1").
     #[serde(default)]
     pub connector: Option<String>,
+    /// Output index (0-based).
     #[serde(default)]
     pub index: Option<u32>,
+    /// Overrides inherited from the parent config.
     #[serde(flatten)]
     pub config: ConfigOverride,
 }
 
+/// Describes a detected Wayland output at runtime.
 #[derive(Debug, Clone)]
 pub struct OutputDescriptor {
+    /// Output name (e.g. "DP-1").
     pub name: String,
+    /// Connector type (e.g. "DP", "HDMI").
     pub connector: Option<String>,
+    /// Output index (0-based).
     pub index: Option<u32>,
 }
 
+/// General application behaviour.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct GeneralConfig {
+    /// Target framerate for the visualiser.
     #[serde(default = "default_framerate")]
     pub framerate: u32,
+    /// Background colour behind the bars (hex + optional alpha).
     #[serde(default = "default_config_color")]
     pub background_color: ConfigColor,
+    /// Enable cava auto-sensitivity (omit = use cava default).
     pub autosens: Option<bool>,
+    /// cava sensitivity multiplier (omit = use cava default).
     pub sensitivity: Option<f32>,
+    /// List of output names preferred for showing the visualiser.
     #[serde(default, alias = "preferred_output")]
     pub preferred_outputs: Vec<String>,
+    /// Dynamically cycle colours based on audio amplitude.
     #[serde(default)]
     pub dynamic_colors: bool,
+    /// Corner radius for the visualiser background.
     #[serde(default = "default_corner_radius")]
     pub corner_radius: f32,
+    /// Disable audio capture (currently a no-op — cava always starts).
     #[serde(default)]
     pub disable_audio: bool,
 }
@@ -175,74 +218,111 @@ fn default_config_color() -> ConfigColor {
     })
 }
 
+/// Audio visualiser bar configuration.
+///
+/// Controls the appearance, shape, and behaviour of the audio bars
+/// rendered as a Wayland background layer. Also stores legacy gradient / glow
+/// fields for backward compatibility.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AudioConfig {
+    /// Number of bars.
     #[serde(default = "default_bar_amount", alias = "amount")]
     pub bar_count: u32,
+    /// Width of each bar in logical pixels.
     #[serde(default = "default_bar_width")]
     pub bar_width: f32,
+    /// Horizontal spacing between bars in logical pixels.
     #[serde(default = "default_bar_spacing")]
     pub bar_spacing: f32,
+    /// Inter-bar spacing as a fraction of bar width (0..1).
     #[serde(default = "default_bar_gap")]
     pub gap: f32,
+    /// Opacity of every bar (0..1).
     #[serde(default = "default_bar_alpha")]
     pub bar_alpha: f32,
+    /// Overall height multiplier for bars.
     #[serde(default = "default_height_scale")]
     pub height_scale: f32,
+    /// Visual smoothing factor (0..1) — not currently forwarded to cava.
     #[serde(default = "default_visualizer_smoothing")]
     pub smoothing: f32,
+    /// Solid colour used for all bars when colour extraction is disabled.
     #[serde(default = "default_bar_color")]
     pub bar_color: ConfigColor,
+    /// Maximum bar height in logical pixels.
     #[serde(default = "default_max_bar_height")]
     pub max_bar_height: f32,
+    /// Minimum bar height in logical pixels.
     #[serde(default = "default_min_bar_height")]
     pub min_bar_height: f32,
+    /// Obsolete: mirror bars vertically (use `visualization_mode = "MirrorBars"`).
     #[serde(default, skip_serializing)]
     pub mirror_bars: bool,
+    /// Bar shape: Rectangle, Circle, Triangle, or Line.
     #[serde(default)]
     pub bar_shape: BarShape,
+    /// Corner radius for rounded bars, in logical pixels.
     #[serde(default = "default_corner_radius_px")]
     pub corner_radius: f32,
+    /// Number of segments used for rounded corners (higher = smoother).
     #[serde(default = "default_corner_segments")]
     pub corner_segments: u32,
+    /// Legacy: enable bar gradient (replaced by `[colors]`).
     #[serde(default, alias = "bar_gradient")]
     pub _legacy_bar_gradient: bool,
+    /// Legacy: gradient config (replaced by `[colors]`).
     #[serde(default, alias = "gradient", skip_serializing)]
     pub _legacy_gradient: LegacyGradientConfig,
+    /// Legacy: glow config.
     #[serde(default, alias = "glow", skip_serializing)]
     pub _legacy_glow: LegacyGlowConfig,
+    /// Legacy: gradient colour stops.
     #[serde(default, alias = "gradient_colors", skip_serializing)]
     pub _legacy_gradient_colors: Vec<[f32; 4]>,
+    /// Legacy: gradient direction.
     #[serde(default, alias = "gradient_direction", skip_serializing)]
     pub _legacy_gradient_direction: GradientDirection,
+    /// Legacy: enable glow effect.
     #[serde(default, alias = "glow_effect", skip_serializing)]
     pub _legacy_glow_effect: bool,
+    /// Legacy: glow intensity.
     #[serde(
         default = "default_glow_intensity",
         alias = "glow_intensity",
         skip_serializing
     )]
     pub _legacy_glow_intensity: f32,
+    /// Obsolete: does not take effect — use [`ColorsConfig::extract_from_wallpaper`] instead.
     #[serde(default)]
     pub extract_colors_from_wallpaper: bool,
+    /// Wallpaper colour extraction method: Dominant, Vibrant, or Palette.
     #[serde(default)]
     pub color_extraction_mode: ColorExtractionMode,
+    /// Visualization style: Bars, Waveform, Blocks, MirrorBars, InvertedBars, Spectrum, Ring.
     #[serde(default)]
     pub visualization_mode: VisualizationMode,
+    /// Number of polygon sides for certain visualization modes.
     #[serde(default = "default_polygon_sides")]
     pub polygon_sides: u32,
+    /// Show the audio visualiser overlay.
     #[serde(default = "default_true")]
-    pub show_visualizer: bool, // Visualization mode parameters
+    pub show_visualizer: bool,
+    /// Inner radius for Ring mode, in logical pixels.
     #[serde(default = "default_radial_inner_radius")]
     pub radial_inner_radius: f32,
+    /// Sweep angle for Ring mode in degrees.
     #[serde(default = "default_radial_sweep_angle")]
     pub radial_sweep_angle: f32,
+    /// Line width for Waveform mode, in logical pixels.
     #[serde(default = "default_waveform_line_width")]
     pub waveform_line_width: f32,
+    /// Smoothness factor for Waveform mode (0..1).
     #[serde(default = "default_waveform_smoothness")]
     pub waveform_smoothness: f32,
+    /// Block size for Blocks mode, in logical pixels.
     #[serde(default = "default_block_size")]
     pub block_size: f32,
+    /// Spacing between blocks in Blocks mode, in logical pixels.
     #[serde(default = "default_block_spacing")]
     pub block_spacing: f32,
     /// Number of turns for Spiral visualization mode (1.0 = single revolution).
@@ -295,12 +375,18 @@ impl Default for AudioConfig {
     }
 }
 
+/// Legacy gradient configuration (replaced by `[colors]` section).
+/// Kept for backward-compatible deserialisation only.
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(any(), config_doc(skip))]
 pub struct LegacyGradientConfig {
+    /// Enable gradient.
     #[serde(default)]
     pub enabled: bool,
+    /// Gradient colour stops as RGBA arrays.
     #[serde(default = "default_gradient_colors")]
     pub colors: Vec<[f32; 4]>,
+    /// Gradient direction.
     #[serde(default)]
     pub direction: GradientDirection,
 }
@@ -315,10 +401,15 @@ impl Default for LegacyGradientConfig {
     }
 }
 
+/// Legacy glow effect configuration.
+/// Kept for backward-compatible deserialisation only.
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(any(), config_doc(skip))]
 pub struct LegacyGlowConfig {
+    /// Enable glow.
     #[serde(default)]
     pub enabled: bool,
+    /// Glow intensity.
     #[serde(default = "default_glow_intensity")]
     pub intensity: f32,
 }
@@ -332,28 +423,41 @@ impl Default for LegacyGlowConfig {
     }
 }
 
+/// Direction of the colour gradient (legacy).
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum GradientDirection {
+    /// Gradient from top to bottom.
     TopToBottom,
+    /// Gradient from bottom to top.
     #[default]
     BottomToTop,
+    /// Gradient from left to right.
     LeftToRight,
+    /// Gradient from right to left.
     RightToLeft,
 }
 
+/// Method used to extract colours from the wallpaper.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ColorExtractionMode {
+    /// Use the most dominant colour from the wallpaper.
     #[default]
     Dominant,
+    /// Use the most vibrant colour from the wallpaper.
     Vibrant,
+    /// Extract a full palette from the wallpaper.
     Palette,
 }
 
+/// Visualization style for the audio bars.
 #[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum VisualizationMode {
+    /// Standard vertical bars growing from the bottom.
     #[default]
     Bars,
+    /// Smooth waveform line following the audio amplitude.
     Waveform,
+    /// Rectangular blocks arranged in a grid pattern.
     Blocks,
     /// Bars mirrored vertically: each bar extends symmetrically up and down
     /// from the horizontal center line. Ideal for music players / DJ visuals.
@@ -399,12 +503,17 @@ impl<'de> serde::Deserialize<'de> for VisualizationMode {
     }
 }
 
+/// Shape of individual bars.
 #[derive(Serialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum BarShape {
+    /// Standard rectangular bars.
     #[default]
     Rectangle,
+    /// Circular bars.
     Circle,
+    /// Triangular bars.
     Triangle,
+    /// Thin line bars.
     Line,
 }
 
@@ -430,12 +539,16 @@ impl<'de> serde::Deserialize<'de> for BarShape {
     }
 }
 
+/// Per-bar shape configuration (extended variant).
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct BarShapeConfig {
+    /// Bar shape variant.
     #[serde(default)]
     pub shape: BarShape,
+    /// Corner radius for rounded bars, in logical pixels.
     #[serde(default = "default_corner_radius_px")]
     pub corner_radius: f32,
+    /// Number of segments for rounded corners.
     #[serde(default = "default_corner_segments")]
     pub corner_segments: u32,
 }
@@ -486,18 +599,25 @@ fn default_mirror_gap() -> f32 {
     0.04
 }
 
+/// Colour settings: palette, gradient, wallpaper extraction.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ColorsConfig {
+    /// Extract colours from the current wallpaper instead of using the palette.
     #[serde(default)]
     pub extract_from_wallpaper: bool,
+    /// Colour extraction method when `extract_from_wallpaper` is true.
     #[serde(default)]
     pub extraction_mode: ColorExtractionMode,
+    /// Colour palette as a list of RGBA arrays.
     #[serde(default = "default_palette_colors")]
     pub palette: Vec<[f32; 4]>,
+    /// Direction of the colour gradient applied to bars.
     #[serde(default)]
     pub gradient_direction: GradientDirection,
+    /// Apply gradient colours across bars.
     #[serde(default = "default_true")]
     pub use_gradient: bool,
+    /// Legacy flattened gradient colours (backward compatibility).
     #[serde(default, flatten)]
     pub legacy_gradient_colors: HashMap<String, String>,
 }
@@ -515,36 +635,52 @@ impl Default for ColorsConfig {
     }
 }
 
+/// Output positioning and sizing.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct DisplayConfig {
+    /// Positioning mode: Fill, Center, Top, Bottom, Left, Right, Custom.
     #[serde(default)]
     pub position: Position,
+    /// Anchor the visualiser to the top edge.
     #[serde(default = "default_anchor_true")]
     pub anchor_top: bool,
+    /// Anchor the visualiser to the bottom edge.
     #[serde(default = "default_anchor_true")]
     pub anchor_bottom: bool,
+    /// Anchor the visualiser to the left edge.
     #[serde(default = "default_anchor_true")]
     pub anchor_left: bool,
+    /// Anchor the visualiser to the right edge.
     #[serde(default = "default_anchor_true")]
     pub anchor_right: bool,
+    /// Custom width in logical pixels (0 = auto).
     #[serde(default)]
     pub width: u32,
+    /// Custom height in logical pixels (0 = auto).
     #[serde(default)]
     pub height: u32,
+    /// Top margin in logical pixels.
     #[serde(default)]
     pub margin_top: u32,
+    /// Bottom margin in logical pixels.
     #[serde(default)]
     pub margin_bottom: u32,
+    /// Left margin in logical pixels.
     #[serde(default)]
     pub margin_left: u32,
+    /// Right margin in logical pixels.
     #[serde(default)]
     pub margin_right: u32,
+    /// Wayland layer: Background, Bottom, Top, Overlay.
     #[serde(default)]
     pub layer: LayerChoice,
+    /// Layer opacity (0..1).
     #[serde(default = "default_opacity")]
     pub opacity: f32,
+    /// Scale the visualiser with output resolution changes.
     #[serde(default)]
     pub scale_with_resolution: bool,
+    /// Legacy uniform margin (superseded by per-side margins).
     #[serde(default, alias = "margin", skip_serializing)]
     pub legacy_margin: Option<f32>,
 }
@@ -571,15 +707,23 @@ impl Default for DisplayConfig {
     }
 }
 
+/// Positioning mode for the visualiser on screen.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Copy, Default)]
 pub enum Position {
+    /// Fill the entire output.
     #[default]
     Fill,
+    /// Center on the output.
     Center,
+    /// Align to the top edge.
     Top,
+    /// Align to the bottom edge.
     Bottom,
+    /// Align to the left edge.
     Left,
+    /// Align to the right edge.
     Right,
+    /// Custom position (requires manual anchor configuration).
     #[serde(
         alias = "TopLeft",
         alias = "TopRight",
@@ -589,12 +733,17 @@ pub enum Position {
     Custom,
 }
 
+/// Wayland layer at which the visualiser is rendered.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Copy, Default)]
 pub enum LayerChoice {
+    /// Below the wallpaper / background.
     Background,
+    /// Normal bottom layer.
     #[default]
     Bottom,
+    /// Above most windows.
     Top,
+    /// Always-on-top overlay.
     Overlay,
 }
 
@@ -654,110 +803,161 @@ fn default_anchor_true() -> bool {
     true
 }
 
+/// Smoothing parameters forwarded to the cava subprocess.
+/// These are passed verbatim to cava's `[smoothing]` section.
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct SmoothingConfig {
+    /// Monstercat smoothing factor (0..1).
     pub monstercat: Option<f32>,
+    /// Waves smoothing setting (integer).
     pub waves: Option<i32>,
+    /// Noise reduction factor.
     pub noise_reduction: Option<f32>,
 }
 
+/// A colour value specified either as a hex string or as a struct with hex + alpha.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(untagged)]
 pub enum ConfigColor {
+    /// Simple hex colour string, e.g. `"#ff00ff"`.
     Simple(String),
+    /// Hex colour with a separate alpha channel, expressed as an inline table `{ hex = "...", alpha = ... }`.
     Complex(HexColorConfig),
 }
 
+/// Hex colour with optional alpha.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct HexColorConfig {
+    /// Hex colour string, e.g. `"#ff00ff"`.
     pub hex: String,
+    /// Alpha channel (0..1). Defaults to 1.0 when absent.
     pub alpha: Option<f32>,
 }
 
+/// Internal cava subprocess configuration (not user-facing).
 #[derive(Serialize, Deserialize, Debug)]
+#[cfg_attr(any(), config_doc(skip))]
 pub struct CavaConfig {
     pub general: CavaGeneralConfig,
     pub smoothing: CavaSmoothingConfig,
     pub output: HashMap<String, String>,
 }
 
+/// General cava subprocess settings.
 #[derive(Serialize, Deserialize, Debug)]
+#[cfg_attr(any(), config_doc(skip))]
 pub struct CavaGeneralConfig {
+    /// Cava framerate.
     pub framerate: u32,
+    /// Number of cava bars (overrides `bar_count`).
     pub bars: u32,
+    /// Cava auto-sensitivity.
     pub autosens: Option<bool>,
+    /// Cava sensitivity.
     pub sensitivity: Option<f32>,
 }
 
+/// Cava subprocess smoothing settings.
 #[derive(Serialize, Deserialize, Debug)]
+#[cfg_attr(any(), config_doc(skip))]
 pub struct CavaSmoothingConfig {
     pub monstercat: Option<f32>,
     pub waves: Option<i32>,
     pub noise_reduction: Option<f32>,
 }
 
+/// Obsolete hidden-image overlay (replaced by `[layers]`).
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]
 pub struct HiddenImageConfig {
+    /// Use the current wallpaper as the hidden image.
     #[serde(default)]
     pub use_wallpaper: bool,
+    /// Path to the hidden image file.
     pub path: Option<String>,
+    /// Visual effect applied to the hidden image.
     #[serde(default)]
     pub effect: HiddenImageEffect,
+    /// Blend mode for the reveal effect.
     #[serde(default)]
     pub blend_mode: BlendMode,
+    /// Directory containing wallpapers for detection.
     pub wallpapers_dir: Option<String>,
 }
 
+/// Image / video layer management with X-Ray reveal support — layer system not yet wired to the renderer.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LayersConfig {
+    /// Base (background) layer configuration.
     pub base: LayerConfig,
+    /// Reveal (foreground) layer configuration.
     pub reveal: LayerConfig,
+    /// Wallpaper synchronisation settings for fingerprint-based matching.
     #[serde(default)]
     pub sync: LayerSyncConfig,
 }
 
+/// Configuration for a single image/video layer.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LayerConfig {
+    /// Enable this layer.
     #[serde(default = "default_layer_enabled")]
     pub enabled: bool,
+    /// Source configuration (type, path, looping).
     pub source: LayerSourceConfig,
+    /// CSS-like fit mode: "cover", "contain", "fill", "none (only "cover" is implemented).
     #[serde(default = "default_layer_fit")]
     pub fit: String,
+    /// Layer opacity (0..1).
     #[serde(default = "default_layer_opacity")]
     pub opacity: f32,
+    /// Blend mode for compositing.
     #[serde(default)]
     pub blend_mode: BlendMode,
+    /// Maximum number of buffered video frames.
     #[serde(default = "default_max_buffered_frames")]
     pub max_buffered_frames: usize,
+    /// Frame cache size for decoded video.
     #[serde(default = "default_frame_cache_size")]
     pub frame_cache_size: usize,
 }
 
+/// Source specification for a layer (image, video, or GIF).
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LayerSourceConfig {
+    /// Source type: "static", "video", or "gif".
     #[serde(rename = "type")]
     pub r#type: LayerSourceType,
+    /// File path to the source asset.
     pub path: String,
+    /// Loop the video/GIF playback.
     #[serde(default = "default_looping")]
     pub looping: bool,
 }
 
+/// Supported layer source types.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayerSourceType {
+    /// Static image (PNG, JPEG, WebP, etc.).
     #[serde(rename = "static")]
     StaticImage,
+    /// Video file (MP4, WebM, MKV, etc.).
     #[serde(rename = "video")]
     Video,
+    /// Animated GIF.
     #[serde(rename = "gif")]
     Gif,
 }
 
+/// Wallpaper synchronisation settings for fingerprint-based layer matching.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LayerSyncConfig {
+    /// Automatically sync layers with the detected wallpaper.
     #[serde(default = "default_sync_with_wallpaper")]
     pub sync_with_wallpaper: bool,
+    /// Search window size for fingerprint matching (in wallpapers) — not yet implemented.
     #[serde(default = "default_fingerprint_search_window")]
     pub fingerprint_search_window: usize,
+    /// Minimum confidence score (0..1) for fingerprint matching — not yet implemented.
     #[serde(default = "default_fingerprint_min_confidence")]
     pub fingerprint_min_confidence: f32,
 }
@@ -772,14 +972,19 @@ impl Default for LayerSyncConfig {
     }
 }
 
+/// Wallpaper detection and synchronisation settings.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct WallpaperConfig {
+    /// Auto-detect the current wallpaper from the desktop environment.
     #[serde(default = "default_auto_detect_wallpaper")]
     pub auto_detect_wallpaper: bool,
+    /// Custom directory for X-Ray layer images.
     #[serde(default)]
     pub xray_layers_dir: Option<PathBuf>,
+    /// Custom directory containing wallpapers for detection.
     #[serde(default)]
     pub wallpapers_dir: Option<PathBuf>,
+    /// Interval (in seconds) between wallpaper checks.
     #[serde(default = "default_sync_interval_seconds")]
     pub sync_interval_seconds: f64,
 }
@@ -795,32 +1000,46 @@ impl Default for WallpaperConfig {
     }
 }
 
+/// Parallax scrolling layer system (audio- and mouse-reactive backgrounds).
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ParallaxConfig {
+    /// Enable parallax effects.
     #[serde(default)]
     pub enabled: bool,
-    #[serde(default)]
+    /// Parallax mode: AudioReactive, MouseReactive, Animated, Hybrid (not currently read by the renderer).
+    #[serde(default = "default_parallax_mode")]
     pub mode: ParallaxMode,
+    /// Enable 3D-like depth effect for parallax layers.
     #[serde(default)]
     pub enable_3d_depth: bool,
+    /// Mouse tracking settings for mouse-reactive parallax.
     #[serde(default)]
     pub mouse: ParallaxMouseConfig,
+    /// Performance tuning for parallax rendering.
     #[serde(default)]
     pub performance: ParallaxPerformanceConfig,
+    /// Quick preset override: SoftDepth, AudioPulse, Cinematic.
     #[serde(default)]
     pub preset: Option<ParallaxPreset>,
+    /// List of parallax layer definitions.
     #[serde(default)]
     pub layers: Vec<ParallaxLayerConfig>,
+    /// Show the audio visualiser on top of parallax layers.
     #[serde(default = "default_true")]
     pub show_visualizer: bool,
+    /// Treat the visualiser as a parallax layer.
     #[serde(default)]
     pub visualizer_as_parallax_layer: bool,
+    /// Z-index of the visualiser when treated as a parallax layer.
     #[serde(default)]
     pub visualizer_layer_index: usize,
+    /// Directory containing saved parallax profiles.
     #[serde(default)]
     pub profiles_dir: Option<PathBuf>,
+    /// Profile source mode: normal or from wallpaper auto-detection.
     #[serde(default)]
     pub profile_source: ProfileSource,
+    /// Name of the currently active parallax profile.
     #[serde(default)]
     pub active_profile: Option<String>,
 }
@@ -901,19 +1120,27 @@ impl ParallaxConfig {
     }
 }
 
+/// Parallax reactivity mode.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ParallaxMode {
+    /// Layers react to audio amplitude and frequency.
     #[default]
     AudioReactive,
+    /// Layers move in response to mouse position.
     MouseReactive,
+    /// Layers animate automatically without input.
     Animated,
+    /// Combination of audio-reactive and mouse-reactive modes.
     Hybrid,
 }
 
+/// Source mode for parallax profile selection.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ProfileSource {
+    /// Use a manually specified profile.
     #[serde(rename = "normal")]
     Normal,
+    /// Auto-detect profile from the current wallpaper name.
     #[serde(rename = "wallpaper")]
     #[default]
     FromWallpaper,
@@ -922,13 +1149,14 @@ pub enum ProfileSource {
 /// A saved parallax profile — a named collection of layers with config.
 /// Stored as {profiles_dir}/{name}/parallax.toml
 #[derive(Serialize, Deserialize, Debug, Clone)]
+#[cfg_attr(any(), config_doc(skip))]
 pub struct ParallaxProfile {
     #[serde(default)]
     pub name: String,
     /// Original image used to create this parallax (optional)
     #[serde(default)]
     pub source_image: Option<String>,
-    /// Name of the wallpaper this profile was created from (for auto_match)
+    /// Name of the wallpaper this profile was created from (stored, not used at runtime)
     #[serde(default)]
     pub wallpaper_name: Option<String>,
     /// Ordered list of layer image filenames within this profile's directory
@@ -1052,23 +1280,33 @@ impl ParallaxProfile {
     }
 }
 
+/// Quick parallax preset that overrides individual layer settings.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParallaxPreset {
+    /// Subtle depth-of-field style.
     SoftDepth,
+    /// Layers pulse with the audio beat.
     AudioPulse,
+    /// Cinematic widescreen-style parallax.
     Cinematic,
 }
 
+/// Mouse tracking settings for mouse-reactive parallax layers.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ParallaxMouseConfig {
+    /// Enable mouse tracking.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Mouse sensitivity (cursor movement → layer displacement).
     #[serde(default = "default_parallax_mouse_sensitivity")]
     pub sensitivity: f32,
+    /// Maximum displacement range in logical pixels.
     #[serde(default = "default_parallax_mouse_range")]
     pub range: f32,
+    /// Track mouse globally across all outputs.
     #[serde(default = "default_true")]
     pub global_tracking: bool,
+    /// Track mouse independently per output.
     #[serde(default = "default_true")]
     pub per_output_tracking: bool,
 }
@@ -1085,14 +1323,19 @@ impl Default for ParallaxMouseConfig {
     }
 }
 
+/// Performance tuning for parallax rendering.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ParallaxPerformanceConfig {
+    /// Disable parallax under system load.
     #[serde(default)]
     pub disable_under_load: bool,
+    /// Maximum frame time budget in ms.
     #[serde(default = "default_parallax_frame_time_budget_ms")]
     pub frame_time_budget_ms: f32,
+    /// Lazily load layer assets only when visible.
     #[serde(default = "default_true")]
     pub lazy_load_assets: bool,
+    /// Pause parallax animation when system is idle.
     #[serde(default = "default_true")]
     pub pause_on_idle: bool,
 }
@@ -1108,36 +1351,53 @@ impl Default for ParallaxPerformanceConfig {
     }
 }
 
+/// Frequency band selection for audio-reactive layers.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FrequencyZone {
+    /// React to the full frequency spectrum.
     #[default]
     FullSpectrum,
+    /// Low frequencies only (bass).
     Low,
+    /// Mid-range frequencies.
     Mid,
+    /// High frequencies (treble).
     High,
 }
 
+/// Response curve shape for audio-reactive animation.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AudioResponseCurve {
+    /// Linear response.
     Linear,
+    /// Smooth, eased response.
     #[default]
     Smooth,
+    /// Exponential (more sensitive to loud sounds).
     Exponential,
+    /// Punchy, fast-attack response.
     Punchy,
 }
 
+/// Audio reactivity settings for a single parallax layer.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ParallaxLayerAudioConfig {
+    /// Enable audio reactivity for this layer.
     #[serde(default)]
     pub enabled: bool,
+    /// Frequency zone to react to.
     #[serde(default)]
     pub frequency_zone: FrequencyZone,
+    /// Response curve shape.
     #[serde(default)]
     pub response_curve: AudioResponseCurve,
+    /// How strongly amplitude affects the layer.
     #[serde(default = "default_audio_reaction_intensity")]
     pub amplitude_sensitivity: f32,
+    /// How strongly frequency changes affect the layer.
     #[serde(default = "default_audio_frequency_sensitivity")]
     pub frequency_sensitivity: f32,
+    /// Audio-driven transform effects (shift, scale, rotate).
     #[serde(default)]
     pub transform: LayerAudioTransformConfig,
 }
@@ -1155,18 +1415,25 @@ impl Default for ParallaxLayerAudioConfig {
     }
 }
 
+/// Audio-driven transform effects.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LayerAudioTransformConfig {
+    /// Enable horizontal / vertical shifting.
     #[serde(default = "default_true")]
     pub shift: bool,
+    /// Enable scaling.
     #[serde(default)]
     pub scale: bool,
+    /// Enable rotation.
     #[serde(default)]
     pub rotate: bool,
+    /// Shift displacement in logical pixels.
     #[serde(default = "default_audio_shift_amount")]
     pub shift_amount: f32,
+    /// Scale factor.
     #[serde(default = "default_audio_scale_amount")]
     pub scale_amount: f32,
+    /// Rotation amount in degrees.
     #[serde(default = "default_audio_rotation_amount")]
     pub rotation_amount: f32,
 }
@@ -1184,12 +1451,16 @@ impl Default for LayerAudioTransformConfig {
     }
 }
 
+/// Mouse reactivity settings for a single parallax layer.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LayerMouseReactivityConfig {
+    /// Enable mouse tracking.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Mouse sensitivity.
     #[serde(default = "default_parallax_mouse_sensitivity")]
     pub sensitivity: f32,
+    /// Maximum displacement [x, y] in logical pixels.
     #[serde(default = "default_layer_mouse_max_offset")]
     pub max_offset: [f32; 2],
 }
@@ -1204,27 +1475,38 @@ impl Default for LayerMouseReactivityConfig {
     }
 }
 
+/// Type of cava visualiser effect used as a parallax layer source.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[allow(clippy::enum_variant_names)]
 pub enum ParallaxEffectType {
+    /// Standard bar visualiser.
     #[default]
     CavaBars,
+    /// Waveform-style visualiser.
     CavaWave,
+    /// Radial / ring visualiser.
     CavaRadial,
 }
 
+/// Configuration for a cava effect used as a parallax layer.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ParallaxEffectConfig {
+    /// Enable this effect.
     #[serde(default)]
     pub enabled: bool,
+    /// Visualiser effect type.
     #[serde(default)]
     pub effect_type: ParallaxEffectType,
+    /// Number of bars in the effect.
     #[serde(default = "default_effect_bars")]
     pub bars: u32,
+    /// Tint colour applied to the effect (RGBA).
     #[serde(default = "default_effect_tint")]
     pub tint: [f32; 4],
+    /// Gap between effect elements.
     #[serde(default)]
     pub gap: f32,
+    /// Height scale for the effect.
     #[serde(default)]
     pub height_scale: f32,
 }
@@ -1242,44 +1524,64 @@ impl Default for ParallaxEffectConfig {
     }
 }
 
+/// A single parallax layer with its source, position, and reactivity settings.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct ParallaxLayerConfig {
+    /// Layer display name.
     #[serde(default)]
     pub name: String,
+    /// Enable this layer.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Source path or effect reference (e.g. "effect:cava-bars").
     #[serde(default)]
     pub source: String,
+    /// Source type (auto-detected from extension if not set).
     #[serde(default)]
     pub layer_type: Option<LayerSourceType>,
+    /// Effect configuration when source starts with "effect:".
     #[serde(default)]
     pub effect: Option<ParallaxEffectConfig>,
+    /// Z-index for layer ordering (higher = on top).
     #[serde(default)]
     pub z_index: i32,
+    /// Parallax depth factor (0..1).
     #[serde(default = "default_parallax_depth")]
     pub depth: f32,
-    #[serde(default)]
+    /// Layer opacity (0..1).
+    #[serde(default = "default_layer_opacity")]
     pub opacity: f32,
-    #[serde(default)]
+    /// Blend mode for compositing.
+    #[serde(default = "default_xray_blend_mode")]
     pub blend_mode: BlendMode,
+    /// Base positional offset [x, y] in logical pixels.
     #[serde(default)]
     pub offset: [f32; 2],
-    #[serde(default)]
+    /// Parallax scroll speed multiplier.
+    #[serde(default = "default_parallax_speed")]
     pub parallax_speed: f32,
+    /// Audio reactivity settings.
     #[serde(default)]
     pub audio: ParallaxLayerAudioConfig,
+    /// Mouse reactivity settings.
     #[serde(default)]
     pub mouse: LayerMouseReactivityConfig,
+    /// Obsolete: enable audio reaction (use audio.enabled).
     #[serde(default)]
     pub react_to_audio: bool,
+    /// Obsolete: audio reaction intensity (use audio.amplitude_sensitivity).
     #[serde(default = "default_audio_reaction_intensity")]
     pub audio_reaction_intensity: f32,
+    /// Obsolete: enable mouse reaction (use mouse.enabled).
     #[serde(default)]
     pub react_to_mouse: bool,
+    /// Obsolete: mouse depth factor (use mouse.sensitivity).
     #[serde(default = "default_mouse_depth_factor")]
     pub mouse_depth_factor: f32,
+    /// Optional animation config for this layer.
     #[serde(default)]
     pub animation: Option<LayerAnimationConfig>,
+    /// Optional drop shadow config.
     #[serde(default)]
     pub drop_shadow: Option<DropShadowConfig>,
 }
@@ -1310,49 +1612,72 @@ impl Default for ParallaxLayerConfig {
     }
 }
 
+/// Drop shadow effect for parallax layers.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct DropShadowConfig {
+    /// Shadow colour as RGBA.
     pub color: [f32; 4],
+    /// Shadow offset [x, y] in logical pixels.
     pub offset: [f32; 2],
+    /// Blur radius in logical pixels.
     pub blur_radius: f32,
+    /// Spread of the shadow.
     #[serde(default)]
     pub spread: f32,
 }
 
+/// Animation configuration for a parallax layer.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct LayerAnimationConfig {
+    /// Enable animation.
     #[serde(default)]
     pub enabled: bool,
+    /// Animation type.
     #[serde(rename = "type", default)]
     pub animation_type: AnimationType,
+    /// Animation speed.
     #[serde(default = "default_animation_speed")]
     pub speed: f32,
+    /// Animation amplitude.
     #[serde(default = "default_animation_amplitude")]
     pub amplitude: f32,
 }
 
+/// Animation type for a parallax layer.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AnimationType {
+    /// Floating / bobbing motion.
     #[default]
     Float,
+    /// Rotation animation.
     Rotate,
+    /// Scaling (pulsing size).
     Scale,
+    /// Opacity pulse.
     Pulse,
+    /// Wiggling motion.
     Wiggle,
 }
 
+/// Performance and optimisation settings.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PerformanceConfig {
+    /// Enable V-Sync (limits to monitor refresh rate).
     #[serde(default = "default_vsync")]
     pub vsync: bool,
-    #[serde(default)]
+    /// Decode video frames on worker threads.
+    #[serde(default = "default_true")]
     pub multi_threaded_decode: bool,
+    /// Idle mode to save resources when no audio is playing.
     #[serde(default)]
     pub idle_mode: IdleModeConfig,
+    /// Video decoder performance tuning.
     #[serde(default)]
     pub video_decoder: VideoDecoderPerfConfig,
+    /// X-Ray mask performance settings.
     #[serde(default)]
     pub xray: XrayPerformanceConfig,
+    /// Performance telemetry and metrics.
     #[serde(default)]
     pub telemetry: PerformanceTelemetryConfig,
 }
@@ -1370,16 +1695,22 @@ impl Default for PerformanceConfig {
     }
 }
 
+/// Idle mode: reduces rendering when audio is silent for a period.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct IdleModeConfig {
+    /// Enable idle mode.
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// RMS audio threshold below which the system is considered idle.
     #[serde(default = "default_idle_audio_threshold")]
     pub audio_threshold: f32,
+    /// Seconds of silence before entering idle mode.
     #[serde(default = "default_idle_timeout_seconds")]
     pub timeout_seconds: f32,
+    /// Target framerate while idle.
     #[serde(default = "default_idle_fps")]
     pub idle_fps: u32,
+    /// Transition time (ms) when exiting idle mode.
     #[serde(default = "default_idle_exit_transition_ms")]
     pub exit_transition_ms: u32,
 }
@@ -1396,16 +1727,22 @@ impl Default for IdleModeConfig {
     }
 }
 
+/// Video decoder performance configuration.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct VideoDecoderPerfConfig {
+    /// Lazily initialise the decoder on first use.
     #[serde(default = "default_true")]
     pub lazy_init: bool,
+    /// Automatically shut down the decoder when not in use.
     #[serde(default = "default_true")]
     pub auto_shutdown: bool,
+    /// Seconds of inactivity before decoder shutdown.
     #[serde(default = "default_decoder_shutdown_seconds")]
     pub shutdown_after_seconds: f32,
+    /// Pause decoder when system is idle.
     #[serde(default = "default_true")]
     pub pause_on_idle: bool,
+    /// Log decoder performance metrics.
     #[serde(default)]
     pub debug_telemetry: bool,
 }
@@ -1422,20 +1759,28 @@ impl Default for VideoDecoderPerfConfig {
     }
 }
 
+/// Compute mode for X-Ray mask generation.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum MaskComputeMode {
+    /// Automatically select CPU or GPU.
     #[default]
     Auto,
+    /// Force CPU-based mask computation.
     Cpu,
+    /// Force GPU-based mask computation.
     Gpu,
 }
 
+/// Performance settings for X-Ray mask rendering.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct XrayPerformanceConfig {
+    /// Maximum image dimension (px) for pre-scaling before mask computation.
     #[serde(default = "default_xray_prescale_max_dimension")]
     pub prescale_max_dimension: u32,
+    /// Generate mipmaps for mask images.
     #[serde(default = "default_true")]
     pub generate_mipmaps: bool,
+    /// Mask computation mode (Auto / CPU / GPU).
     #[serde(default)]
     pub mask_compute_mode: MaskComputeMode,
 }
@@ -1450,12 +1795,16 @@ impl Default for XrayPerformanceConfig {
     }
 }
 
+/// Performance telemetry / metrics configuration.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct PerformanceTelemetryConfig {
+    /// Enable performance metrics collection.
     #[serde(default)]
     pub enabled: bool,
+    /// Number of frames in the rolling metrics window.
     #[serde(default = "default_perf_metrics_window")]
     pub metrics_window: usize,
+    /// Interval (seconds) between telemetry log writes.
     #[serde(default = "default_perf_log_interval_seconds")]
     pub log_interval_seconds: u64,
 }
@@ -1470,48 +1819,73 @@ impl Default for PerformanceTelemetryConfig {
     }
 }
 
+/// Visual effect applied to a hidden image layer.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Default)]
 pub enum HiddenImageEffect {
+    /// No effect.
     #[default]
     None,
+    /// Convert to grayscale.
     Grayscale,
+    /// Invert colours.
     Invert,
+    /// Apply sepia tone.
     Sepia,
+    /// Apply a preset colour palette.
     #[serde(rename = "palette")]
     Palette(PaletteType),
 }
 
+/// Preset colour palette for palette-based effects.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq)]
 pub enum PaletteType {
+    /// Catppuccin Mocha palette.
     Catppuccin,
+    /// Nord palette.
     Nord,
+    /// Gruvbox palette.
     Gruvbox,
+    /// Solarized palette.
     Solarized,
 }
 
+/// Compositing blend mode for layers.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Default)]
 pub enum BlendMode {
+    /// Reveal the base layer through the foreground (functionally identical to Normal in current renderer).
     #[default]
     Reveal,
+    /// Normal alpha blending.
     Normal,
+    /// Additive blending.
     Add,
+    /// Multiplicative blending.
     Multiply,
+    /// Screen blending.
     Screen,
+    /// Overlay blending.
     Overlay,
 }
 
+/// X-Ray mask effect parameters controlling reveal intensity and appearance.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct XrayMaskConfig {
+    /// Mask intensity (0..1).
     #[serde(default = "default_xray_intensity", alias = "reveal_threshold")]
     pub intensity: f32,
+    /// Gamma correction for the mask.
     #[serde(default = "default_mask_gamma")]
     pub gamma: f32,
+    /// Mask opacity (0..1).
     #[serde(default = "default_mask_opacity")]
     pub opacity: f32,
+    /// Blend mode for the mask.
     #[serde(default = "default_xray_blend_mode")]
     pub blend_mode: BlendMode,
+    /// Custom background colour for the mask overlay (RGBA).
     #[serde(default)]
     pub xray_background_color: Option<[f32; 4]>,
+    /// Use [`xray_background_color`] as the mask background.
     #[serde(default)]
     pub use_background: bool,
 }
@@ -1529,12 +1903,16 @@ impl Default for XrayMaskConfig {
     }
 }
 
+/// Advanced / debugging settings.
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct AdvancedConfig {
+    /// Enable verbose logging output.
     #[serde(default)]
     pub verbose_logging: bool,
+    /// Hard framerate cap for the render loop.
     #[serde(default = "default_frame_rate_limit")]
     pub frame_rate_limit: u32,
+    /// Maximum number of layers to keep cached in memory.
     #[serde(default = "default_layer_cache_size")]
     pub layer_cache_size: usize,
 }
@@ -1644,6 +2022,12 @@ fn default_parallax_mouse_range() -> f32 {
 }
 fn default_layer_mouse_max_offset() -> [f32; 2] {
     [32.0, 32.0]
+}
+fn default_parallax_mode() -> ParallaxMode {
+    ParallaxMode::Hybrid
+}
+fn default_parallax_speed() -> f32 {
+    0.5
 }
 fn default_parallax_depth() -> f32 {
     0.5
@@ -2010,40 +2394,49 @@ impl Config {
     }
 }
 
-// ============================================================================
-// XRayConfig - Optional X-Ray effect with animation (OFF by default)
-// ============================================================================
-
+/// X-Ray effect configuration (base + reveal image compositing).
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct XRayConfig {
+    /// Enable the X-Ray effect.
     #[serde(default)]
     pub enabled: bool,
+    /// X-Ray intensity (0..1).
     #[serde(default = "default_xray_intensity")]
     pub intensity: f32,
-    #[serde(default)]
+    /// Blend mode for the X-Ray overlay.
+    #[serde(default = "default_xray_blend_mode")]
     pub blend_mode: BlendMode,
+    /// Path to the base layer image.
     #[serde(default)]
     pub base_layer_path: String,
+    /// Path to the reveal layer image.
     #[serde(default)]
     pub reveal_layer_path: String,
+    /// Auto-detect layers from wallpaper.
     #[serde(default = "default_true")]
     pub auto_detect: bool,
+    /// Use a solid background colour instead of the blurred wallpaper.
     #[serde(default)]
     pub use_background_color: bool,
+    /// Background colour when `use_background_color` is true.
     #[serde(default = "default_bg_color")]
     pub background_color: [f32; 4],
-    // Xray images directory (counterpart hidden images)
+    /// Directory containing X-Ray images (for auto-detection).
     #[serde(default)]
     pub images_dir: Option<String>,
-    // Animation
+    /// Enable X-Ray animation.
     #[serde(default)]
     pub animation_enabled: bool,
+    /// Animation type for the X-Ray effect.
     #[serde(default)]
     pub animation_type: XRayAnimationType,
+    /// Animation speed multiplier.
     #[serde(default = "default_anim_speed")]
     pub animation_speed: f32,
+    /// Audio sensitivity for audio-reactive animation.
     #[serde(default = "default_audio_sens")]
     pub audio_sensitivity: f32,
+    /// Sync X-Ray animation FPS with wallpaper detection rate.
     #[serde(default = "default_true")]
     pub auto_detect_wallpaper_fps: bool,
 }
@@ -2069,14 +2462,21 @@ impl Default for XRayConfig {
     }
 }
 
+/// Animation type for the legacy X-Ray effect.
 #[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum XRayAnimationType {
+    /// No animation.
     #[default]
     None,
+    /// Fade in/out.
     Fade,
+    /// Pulsing effect.
     Pulse,
+    /// Wave reveal effect.
     WaveReveal,
+    /// Audio-synchronised animation.
     AudioSync,
+    /// Synced with wallpaper changes.
     WallpaperSync,
 }
 

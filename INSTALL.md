@@ -139,25 +139,60 @@ echo $XDG_SESSION_TYPE
 ### Permission denied
 Make binary executable:
 ```bash
-chmod +x /path/to/cavabg
+chmod +x /path/to/cava-bg
+```
+
+## Systemd Service
+
+Install the systemd user service for automatic startup:
+
+```bash
+# Copy the service file
+cp cava-bg.service ~/.config/systemd/user/
+
+# Enable and start
+systemctl --user enable --now cava-bg
+
+# Check status
+systemctl --user status cava-bg
+```
+
+The service file supports both single-process mode (default) and per-output supervisor mode (uncomment `--supervisor`). Hardware watchdog can be enabled by uncommenting `WatchdogSec=30`.
+
+## Shell Completions
+
+Shell completions (bash/zsh/fish) are automatically generated at build time. Install via `./install.sh` or copy manually from `target/release/completions/`:
+
+```bash
+# Bash
+mkdir -p ~/.local/share/bash-completion/completions
+cp target/release/completions/cava-bg.bash ~/.local/share/bash-completion/completions/cava-bg
+
+# Zsh
+mkdir -p ~/.local/share/zsh/site-functions
+cp target/release/completions/_cava-bg ~/.local/share/zsh/site-functions/_cava-bg
+
+# Fish
+mkdir -p ~/.config/fish/completions
+cp target/release/completions/cava-bg.fish ~/.config/fish/completions/cava-bg.fish
 ```
 
 ## Uninstallation
 
 ### Binary installation
 ```bash
-sudo rm /usr/local/bin/cavabg
+sudo rm /usr/local/bin/cava-bg
 # or
-rm ~/.local/bin/cavabg
+rm ~/.local/bin/cava-bg
 ```
 
 ### Source installation
 ```bash
 # Remove binary
-sudo rm /usr/local/bin/cavabg
+sudo rm /usr/local/bin/cava-bg
 
 # Remove configuration (optional)
-rm -rf ~/.config/cavabg
+rm -rf ~/.config/cava-bg
 ```
 
 ## Next Steps

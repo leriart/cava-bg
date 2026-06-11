@@ -47,6 +47,14 @@ in
         '';
       };
 
+      supervisor = mkOption {
+        type = types.bool;
+        default = false;
+        description = ''
+          Enable supervisor mode (per-output child processes).
+        '';
+      };
+
       memoryMax = mkOption {
         type = types.nullOr types.str;
         default = "500M";
@@ -54,6 +62,17 @@ in
         description = ''
           Hard memory limit for the cava-bg daemon (systemd `MemoryMax`).
           Set to `null` or `"infinity"` to disable.
+        '';
+      };
+
+      watchdogSec = mkOption {
+        type = types.nullOr types.int;
+        default = null;
+        example = 30;
+        description = ''
+          Systemd watchdog interval in seconds. If set, the daemon will signal
+          readiness periodically. The service is restarted if the watchdog
+          ping is not received within this interval.
         '';
       };
     };
@@ -88,14 +107,16 @@ in
         };
 
         Service = {
-          ExecStart = "${cfg.package}/bin/cava-bg on --debug";
-
-          ExecStop = "${cfg.package}/bin/cava-bg off";
+          Type = "notify";
+          ExecStart = "${cfg.package}/bin/cava-bg on --systemd${lib.optionalString cfg.systemd.supervisor " --supervisor"}";
 
           Restart = "on-failure";
           RestartSec = 5;
+          NotifyAccess = "main";
         } // lib.optionalAttrs (cfg.systemd.memoryMax != null) {
           MemoryMax = cfg.systemd.memoryMax;
+        } // lib.optionalAttrs (cfg.systemd.watchdogSec != null) {
+          WatchdogSec = cfg.systemd.watchdogSec;
         };
 
         Install = {

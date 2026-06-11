@@ -83,6 +83,7 @@ use crate::app_config::{
     OutputDescriptor, PaletteType, ProfileSource, VisualizationMode, XRayConfig,
 };
 use crate::bar_geometry;
+use crate::heartbeat_tick;
 use crate::parallax_system::{AudioBands, ComputedParallaxLayer, ParallaxSystem};
 use crate::perf_monitor::PerfMonitor;
 use crate::video_decoder::{VideoDecoder, VideoDecoderConfig};
@@ -420,16 +421,23 @@ pub struct WaylandRenderer {
     config_path: Option<PathBuf>,
     cava_handle: Option<std::process::Child>,
     last_cava_config_hash: u64,
+    supervised: bool,
 }
 
 impl WaylandRenderer {
-    pub fn new(config: Config, running: Arc<AtomicBool>, config_path: Option<PathBuf>) -> Self {
+    pub fn new(
+        config: Config,
+        running: Arc<AtomicBool>,
+        config_path: Option<PathBuf>,
+        supervised: bool,
+    ) -> Self {
         Self {
             config,
             running,
             config_path,
             cava_handle: None,
             last_cava_config_hash: 0,
+            supervised,
         }
     }
 
@@ -923,10 +931,13 @@ impl WaylandRenderer {
             None
         };
 
-        let runtime_outputs_path = self
-            .config_path
-            .as_ref()
-            .and_then(|p| p.parent().map(|dir| dir.join("runtime-outputs.json")));
+        let runtime_outputs_path = if !self.supervised {
+            self.config_path
+                .as_ref()
+                .and_then(|p| p.parent().map(|dir| dir.join("runtime-outputs.json")))
+        } else {
+            None
+        };
 
         let mut app_state = AppState {
             registry_state: RegistryState::new(&globals),
@@ -1026,6 +1037,7 @@ impl WaylandRenderer {
         }
 
         event_loop.run(Some(event_tick), &mut app_state, |state| {
+            heartbeat_tick();
             if let Ok(new_framerate) = state.framerate_receiver.try_recv() {
                 state.framerate = new_framerate;
                 info!("Framerate updated dynamically to {}", new_framerate);
@@ -1263,6 +1275,16 @@ fn validate_hidden_image_available(
     }
 
     false
+}
+
+#[derive(serde::Serialize)]
+pub struct RuntimeOutputStatus {
+    pub name: String,
+    pub index: u32,
+    pub width: u32,
+    pub height: u32,
+    pub position: [i32; 2],
+    pub configured: bool,
 }
 
 struct AppState {
@@ -1569,16 +1591,6 @@ impl AppState {
     }
 
     fn persist_runtime_outputs(&self) {
-        #[derive(serde::Serialize)]
-        struct RuntimeOutputStatus {
-            name: String,
-            index: u32,
-            width: u32,
-            height: u32,
-            position: [i32; 2],
-            configured: bool,
-        }
-
         let Some(path) = &self.runtime_outputs_path else {
             return;
         };
@@ -2442,7 +2454,10 @@ impl AppState {
                 return Ok(());
             }
         };
-        let name = info.name.clone().unwrap_or_else(|| "unknown".to_string());
+        let name = info
+            .name
+            .clone()
+            .unwrap_or_else(|| format!("unknown-{}", output.id().protocol_id()));
 
         if self.per_output.contains_key(&name) {
             return Ok(());
@@ -3183,7 +3198,7 @@ impl AppState {
 
             let frame = match state.wgpu_surface.get_current_texture() {
                 Ok(f) => f,
-                Err(wgpu::SurfaceError::Lost) => {
+                Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                     state
                         .wgpu_surface
                         .configure(&state.wgpu_device, &state.wgpu_config);

@@ -60,6 +60,11 @@ install -Dm644 config.toml %{buildroot}%{_docdir}/%{name}/config.toml
 install -Dm644 README.md %{buildroot}%{_docdir}/%{name}/README.md
 install -Dm644 LICENSE %{buildroot}%{_datadir}/licenses/%{name}/LICENSE
 
+# Shell completions
+install -Dm644 target/release/completions/cava-bg.bash %{buildroot}%{_datadir}/bash-completion/completions/cava-bg
+install -Dm644 target/release/completions/_cava-bg %{buildroot}%{_datadir}/zsh/site-functions/_cava-bg
+install -Dm644 target/release/completions/cava-bg.fish %{buildroot}%{_datadir}/fish/vendor_completions.d/cava-bg.fish
+
 # Desktop entry
 mkdir -p %{buildroot}%{_datadir}/applications
 cat > %{buildroot}%{_datadir}/applications/%{name}.desktop << 'EOF'
@@ -79,6 +84,9 @@ EOF
 %{_bindir}/cava-bg
 %{_datadir}/applications/cava-bg.desktop
 %{_docdir}/%{name}/
+%{_datadir}/bash-completion/completions/cava-bg
+%{_datadir}/zsh/site-functions/_cava-bg
+%{_datadir}/fish/vendor_completions.d/cava-bg.fish
 
 %changelog
 * Tue Jun 02 2026 Leriart - 0.2.4-1

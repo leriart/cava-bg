@@ -40,6 +40,21 @@ fi
 echo "Building cava-bg..."
 cargo build --release
 
+# Install shell completions
+echo "Installing shell completions..."
+COMPLETIONS_DIR="target/release/completions"
+if [ -d "$COMPLETIONS_DIR" ]; then
+    mkdir -p ~/.local/share/bash-completion/completions
+    cp "$COMPLETIONS_DIR/cava-bg.bash" ~/.local/share/bash-completion/completions/cava-bg
+    mkdir -p ~/.local/share/zsh/site-functions
+    cp "$COMPLETIONS_DIR/_cava-bg" ~/.local/share/zsh/site-functions/_cava-bg
+    mkdir -p ~/.config/fish/completions
+    cp "$COMPLETIONS_DIR/cava-bg.fish" ~/.config/fish/completions/cava-bg.fish
+    echo "  → bash: ~/.local/share/bash-completion/completions/cava-bg"
+    echo "  → zsh:  ~/.local/share/zsh/site-functions/_cava-bg"
+    echo "  → fish: ~/.config/fish/completions/cava-bg.fish"
+fi
+
 # Create config directory
 echo "Creating config directory..."
 mkdir -p ~/.config/cava-bg
@@ -58,6 +73,15 @@ echo
 if [[ $REPLY =~ ^[Yy]$ ]]; then
     echo "Installing to /usr/local/bin..."
     sudo cp target/release/cava-bg /usr/local/bin/
+    echo "Installing shell completions..."
+    if [ -d "$COMPLETIONS_DIR" ]; then
+        sudo mkdir -p /usr/share/bash-completion/completions
+        sudo cp "$COMPLETIONS_DIR/cava-bg.bash" /usr/share/bash-completion/completions/cava-bg
+        sudo mkdir -p /usr/share/zsh/site-functions
+        sudo cp "$COMPLETIONS_DIR/_cava-bg" /usr/share/zsh/site-functions/_cava-bg
+        sudo mkdir -p /usr/share/fish/vendor_completions.d
+        sudo cp "$COMPLETIONS_DIR/cava-bg.fish" /usr/share/fish/vendor_completions.d/cava-bg.fish
+    fi
     echo "Installation complete! Run 'cava-bg' to start."
 else
     echo "Installation complete! Run './target/release/cava-bg' to start."
