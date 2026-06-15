@@ -93,6 +93,31 @@ The visualizer can save resources when no audio is playing:
 
 ## Installation
 
+### One-line Install (curl)
+
+The fastest way to install `cava-bg` on any Linux distribution. The script auto-detects your package manager, installs `cava`, builds the release binary, and installs completions.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/leriart/cava-bg/main/install.sh | bash
+```
+
+By default the binary is installed to `~/.local/bin/cava-bg`. To install system-wide to `/usr/local/bin/cava-bg` instead, use `--system`:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/leriart/cava-bg/main/install.sh | bash -s -- --system
+```
+
+Additional flags:
+- `--user` (default) – install to `~/.local/bin`
+- `--system` – install to `/usr/local/bin` (requires `sudo`)
+- `--no-cava` – skip `cava` installation
+- `--no-config` – skip creating `~/.config/cava-bg/config.toml`
+- `--no-completions` – skip installing shell completions
+- `--branch <name>` – install from a specific branch or tag
+- `--help` – show all options
+
+> Requirements: `git`, `curl`, `sudo`, and a C toolchain (for Rust dependencies). Rust is installed automatically via `rustup` if missing.
+
 ### Arch Linux (AUR)
 #### Using yay
 ```bash
