@@ -22,10 +22,7 @@ fn main() {
     fs::create_dir_all(&target_completions).expect("failed to create completions dir in target");
 
     let nix_build_top = std::env::var("NIX_BUILD_TOP").ok();
-    let extra_dirs: [PathBuf; 2] = [
-        completions_dir.clone(),
-        target_completions.clone(),
-    ];
+    let extra_dirs: [PathBuf; 2] = [completions_dir.clone(), target_completions.clone()];
 
     let mut cmd = cli();
 

@@ -77,6 +77,113 @@ fn cava_config_hash(config: &Config) -> u64 {
     h.finish()
 }
 
+/// Spawns the `cava` CLI with the given config piped via stdin.
+///
+/// cava's stderr is captured and forwarded to the log, and an early-exit probe
+/// detects immediate failures (missing binary, unloadable shared libraries
+/// such as libcava, or a rejected config) so they surface as actionable errors
+/// instead of a silent, frozen visualizer.
+fn spawn_cava_process(config: &Config) -> Result<std::process::Child> {
+    let cava_config_str = build_cava_config(config);
+    debug!("cava config:\n{}", cava_config_str);
+
+    let mut cmd = Command::new("cava")
+        .arg("-p")
+        .arg("/dev/stdin")
+        .stdout(Stdio::piped())
+        .stdin(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .context("Failed to spawn cava process. Is cava installed and in PATH?")?;
+
+    if let Some(mut stdin) = cmd.stdin.take() {
+        stdin
+            .write_all(cava_config_str.as_bytes())
+            .context("Failed to write config to cava stdin")?;
+        stdin.flush()?;
+    }
+
+    if let Some(stderr) = cmd.stderr.take() {
+        thread::spawn(move || {
+            use std::io::BufRead;
+            let mut reader = BufReader::new(stderr);
+            let mut line = String::new();
+            loop {
+                line.clear();
+                match reader.read_line(&mut line) {
+                    Ok(0) => break,
+                    Ok(_) => {
+                        let msg = line.trim();
+                        if !msg.is_empty() {
+                            warn!("cava: {}", msg);
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+    }
+
+    // Brief probe: if cava dies right after startup (e.g. shared library load
+    // errors or an unsupported config option), report it instead of hanging.
+    thread::sleep(Duration::from_millis(150));
+    if let Ok(Some(status)) = cmd.try_wait() {
+        anyhow::bail!(
+            "cava exited immediately with {}. Check that the cava binary runs \
+             standalone (`cava -v`) and that its shared libraries resolve.",
+            status
+        );
+    }
+
+    Ok(cmd)
+}
+
+/// Reads raw 16-bit LE bar frames from cava's stdout and forwards them.
+/// On stream end (cava exited/crashed) a final silent frame is emitted so the
+/// visualizer drops to idle instead of freezing, then the thread terminates.
+fn spawn_cava_reader(
+    cava_stdout: impl Read + Send + 'static,
+    bar_count: usize,
+    silence_threshold: f32,
+    cava_tx: Sender<CavaFramePacket>,
+) {
+    thread::spawn(move || {
+        let mut reader = BufReader::new(cava_stdout);
+        let mut buffer = vec![0u8; bar_count * 2];
+        loop {
+            match reader.read_exact(&mut buffer) {
+                Ok(()) => {
+                    let mut bar_heights = vec![0.0f32; bar_count];
+                    let mut peak = 0.0f32;
+                    for (i, chunk) in buffer.chunks_exact(2).enumerate() {
+                        let num = u16::from_le_bytes([chunk[0], chunk[1]]);
+                        let value = (num as f32) / 65530.0;
+                        peak = peak.max(value);
+                        bar_heights[i] = value;
+                    }
+                    let packet = CavaFramePacket {
+                        bars: bar_heights,
+                        peak,
+                        silent: peak < silence_threshold,
+                    };
+                    if cava_tx.send(packet).is_err() {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    warn!("cava audio stream ended: {}", e);
+                    let _ = cava_tx.send(CavaFramePacket {
+                        bars: vec![0.0; bar_count],
+                        peak: 0.0,
+                        silent: true,
+                    });
+                    break;
+                }
+            }
+        }
+    });
+}
+
 use crate::app_config::{
     array_from_config_color, BarShape, BlendMode, CavaConfig, CavaGeneralConfig,
     CavaSmoothingConfig, Config, HiddenImageConfig, HiddenImageEffect, LayerChoice,
@@ -690,21 +797,7 @@ impl WaylandRenderer {
     pub fn run(mut self) -> Result<()> {
         info!("Starting cava-bg with wgpu backend");
 
-        let cava_config_str = build_cava_config(&self.config);
-        debug!("cava config:\n{}", cava_config_str);
-
-        let mut cmd = Command::new("cava")
-            .arg("-p")
-            .arg("/dev/stdin")
-            .stdout(Stdio::piped())
-            .stdin(Stdio::piped())
-            .spawn()
-            .context("Failed to spawn cava process")?;
-
-        if let Some(mut stdin) = cmd.stdin.take() {
-            stdin.write_all(cava_config_str.as_bytes())?;
-            stdin.flush()?;
-        }
+        let mut cmd = spawn_cava_process(&self.config)?;
 
         let (_framerate_tx, framerate_rx) = channel::<f64>();
         let (config_update_tx, config_update_rx): (Sender<Config>, Receiver<Config>) = channel();
@@ -727,44 +820,13 @@ impl WaylandRenderer {
         let cava_stdout = cmd.stdout.take().context("Failed to get cava stdout")?;
         let bar_count = self.config.audio.bar_count as usize;
         let bar_alpha = self.config.audio.bar_alpha;
-        let idle_cfg = self.config.performance.idle_mode.clone();
+        let silence_threshold = self.config.performance.idle_mode.audio_threshold.max(0.0);
 
         self.cava_handle = Some(cmd);
         self.last_cava_config_hash = cava_config_hash(&self.config);
 
         let (cava_tx, cava_rx): (Sender<CavaFramePacket>, Receiver<CavaFramePacket>) = channel();
-        let reader_cava_tx = cava_tx.clone();
-        thread::spawn(move || {
-            let mut reader = BufReader::new(cava_stdout);
-            let mut buffer = vec![0u8; bar_count * 2];
-            let threshold = idle_cfg.audio_threshold.max(0.0);
-            loop {
-                match reader.read_exact(&mut buffer) {
-                    Ok(()) => {
-                        let mut bar_heights = vec![0.0f32; bar_count];
-                        let mut peak = 0.0f32;
-                        for (i, chunk) in buffer.chunks_exact(2).enumerate() {
-                            let num = u16::from_le_bytes([chunk[0], chunk[1]]);
-                            let value = (num as f32) / 65530.0;
-                            peak = peak.max(value);
-                            bar_heights[i] = value;
-                        }
-                        let packet = CavaFramePacket {
-                            bars: bar_heights,
-                            peak,
-                            silent: peak < threshold,
-                        };
-                        if reader_cava_tx.send(packet).is_err() {
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        error!("Error reading cava data: {}", e);
-                        std::thread::sleep(Duration::from_millis(10));
-                    }
-                }
-            }
-        });
+        spawn_cava_reader(cava_stdout, bar_count, silence_threshold, cava_tx);
 
         // Always set up wallpaper monitor so extract_from_wallpaper works
         let num_colors = if !self.config.colors.palette.is_empty() {
@@ -1782,64 +1844,25 @@ impl AppState {
                 let _ = child.kill();
                 let _ = child.wait();
             }
-            let cava_config_str = build_cava_config(&new_config);
-            match Command::new("cava")
-                .arg("-p")
-                .arg("/dev/stdin")
-                .stdout(Stdio::piped())
-                .stdin(Stdio::piped())
-                .spawn()
-            {
+            match spawn_cava_process(&new_config) {
                 Ok(mut child) => {
-                    if let Some(mut stdin) = child.stdin.take() {
-                        let _ = stdin.write_all(cava_config_str.as_bytes());
-                        let _ = stdin.flush();
-                    }
                     // Create new reader thread for the new pipe
                     if let Some(cava_stdout) = child.stdout.take() {
                         let (new_tx, new_rx): (Sender<CavaFramePacket>, Receiver<CavaFramePacket>) =
                             channel();
-                        let reader_cava_tx = new_tx.clone();
-                        let bar_count = new_config.audio.bar_count as usize;
-                        let threshold = new_config.performance.idle_mode.audio_threshold.max(0.0);
-                        thread::spawn(move || {
-                            let mut reader = BufReader::new(cava_stdout);
-                            let mut buffer = vec![0u8; bar_count * 2];
-                            loop {
-                                match reader.read_exact(&mut buffer) {
-                                    Ok(()) => {
-                                        let mut bar_heights = vec![0.0f32; bar_count];
-                                        let mut peak = 0.0f32;
-                                        for (i, chunk) in buffer.chunks_exact(2).enumerate() {
-                                            let num = u16::from_le_bytes([chunk[0], chunk[1]]);
-                                            let value = (num as f32) / 65530.0;
-                                            peak = peak.max(value);
-                                            bar_heights[i] = value;
-                                        }
-                                        let packet = CavaFramePacket {
-                                            bars: bar_heights,
-                                            peak,
-                                            silent: peak < threshold,
-                                        };
-                                        if reader_cava_tx.send(packet).is_err() {
-                                            break;
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("Error reading cava data: {}", e);
-                                        std::thread::sleep(Duration::from_millis(10));
-                                    }
-                                }
-                            }
-                        });
+                        spawn_cava_reader(
+                            cava_stdout,
+                            new_config.audio.bar_count as usize,
+                            new_config.performance.idle_mode.audio_threshold.max(0.0),
+                            new_tx,
+                        );
                         self.cava_data_receiver = new_rx;
-                        // Keep old cava_tx for possible use
                     }
                     self.cava_handle = Some(child);
                     self.last_cava_config_hash = new_hash;
                 }
                 Err(e) => {
-                    error!("Failed to restart cava: {e}");
+                    error!("Failed to restart cava: {e:#}");
                 }
             }
         }

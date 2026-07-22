@@ -132,6 +132,9 @@ impl WallpaperAnalyzer {
             [0.922, 0.627, 0.675, 1.0],
             [0.953, 0.545, 0.659, 1.0],
         ];
+        if num_colors == 0 {
+            return catppuccin[0..1].to_vec();
+        }
         if num_colors <= catppuccin.len() {
             catppuccin[0..num_colors].to_vec()
         } else {
@@ -163,19 +166,31 @@ impl WallpaperAnalyzer {
         let rgb_img = img.to_rgb8();
         let pixels = rgb_img.as_raw();
 
-        let mut new_colors: Vec<[f32; 4]> =
-            get_palette(pixels, ColorFormat::Rgb, 10, num_colors as u8)
-                .context("Failed to extract color palette")?
-                .iter()
-                .map(|c| {
-                    [
-                        c.r as f32 / 255.0,
-                        c.g as f32 / 255.0,
-                        c.b as f32 / 255.0,
-                        1.0,
-                    ]
-                })
-                .collect();
+        // color_thief panics unless max_colors is in 2..=255, and requesting more
+        // colors than distinct pixels can also fail — clamp defensively.
+        let requested = num_colors.clamp(2, 255) as u8;
+        let extracted: Vec<[f32; 4]> = get_palette(pixels, ColorFormat::Rgb, 10, requested)
+            .context("Failed to extract color palette")?
+            .iter()
+            .map(|c| {
+                [
+                    c.r as f32 / 255.0,
+                    c.g as f32 / 255.0,
+                    c.b as f32 / 255.0,
+                    1.0,
+                ]
+            })
+            .collect();
+
+        if extracted.is_empty() {
+            anyhow::bail!("Palette extraction returned no colors");
+        }
+
+        // Match the requested count: truncate or repeat the last color to fill.
+        let mut new_colors: Vec<[f32; 4]> = Vec::with_capacity(num_colors.max(1));
+        for i in 0..num_colors.max(1) {
+            new_colors.push(extracted[i.min(extracted.len() - 1)]);
+        }
 
         match mode {
             ColorExtractionMode::Dominant | ColorExtractionMode::Palette => {
@@ -327,5 +342,48 @@ impl WallpaperAnalyzer {
                 thread::sleep(Duration::from_millis(80));
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_test_image(path: &PathBuf) {
+        let mut img = image::RgbImage::new(8, 8);
+        for (x, y, p) in img.enumerate_pixels_mut() {
+            *p = if (x + y) % 2 == 0 {
+                image::Rgb([200, 30, 30])
+            } else {
+                image::Rgb([30, 30, 200])
+            };
+        }
+        img.save(path).unwrap();
+    }
+
+    #[test]
+    fn extract_colors_does_not_panic_for_edge_counts() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("cava_bg_test_wallpaper.png");
+        write_test_image(&path);
+
+        for n in [0usize, 1, 2, 8, 300] {
+            let colors = WallpaperAnalyzer::extract_colors(
+                &path,
+                ColorExtractionMode::Dominant,
+                n,
+            )
+            .unwrap_or_else(|e| panic!("extract_colors failed for n={}: {}", n, e));
+            assert_eq!(colors.len(), n.max(1), "wrong color count for n={}", n);
+        }
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn default_colors_handles_zero() {
+        assert_eq!(WallpaperAnalyzer::default_colors(0).len(), 1);
+        assert_eq!(WallpaperAnalyzer::default_colors(8).len(), 8);
+        assert_eq!(WallpaperAnalyzer::default_colors(16).len(), 16);
     }
 }

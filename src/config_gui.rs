@@ -1039,7 +1039,7 @@ impl ConfigEditorApp {
                                 self.available_profiles = ParallaxProfile::discover_profiles(&dir);
                                 self.selected_profile = name;
                                 self.status =
-                                    format!("Created profile '{}'", &self.selected_profile);
+                                    format!("Created profile '{}'", self.selected_profile);
                             }
                             Err(e) => {
                                 self.status = format!("Failed to create profile: {e}");
@@ -1176,7 +1176,7 @@ impl ConfigEditorApp {
                         }
                         match profile.save(&dir) {
                             Ok(_) => {
-                                self.status = format!("Saved profile '{}'", &self.selected_profile)
+                                self.status = format!("Saved profile '{}'", self.selected_profile)
                             }
                             Err(e) => self.status = format!("Failed to save profile: {e}"),
                         }
@@ -2412,7 +2412,7 @@ fn draw_gradient_preview(
         painter.rect_filled(segment, 0.0, c);
     }
 
-    painter.rect_stroke(rect, 4.0, egui::Stroke::new(1.0, Color32::DARK_GRAY));
+    painter.rect_stroke(rect, 4.0, egui::Stroke::new(1.0_f32, Color32::DARK_GRAY));
 }
 
 fn sample_gradient_color(colors: &[[f32; 4]], t: f32) -> [f32; 4] {

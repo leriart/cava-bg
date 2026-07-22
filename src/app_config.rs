@@ -113,8 +113,8 @@ impl ConfigOverride {
             if colors.palette.is_empty() {
                 let parsed = colors
                     .legacy_gradient_colors
-                    .iter()
-                    .filter_map(|(_, value)| parse_legacy_color(value))
+                    .values()
+                    .filter_map(|value| parse_legacy_color(value))
                     .collect::<Vec<_>>();
                 if !parsed.is_empty() {
                     colors.palette = parsed;
@@ -2233,8 +2233,8 @@ impl Config {
             let mut parsed = self
                 .colors
                 .legacy_gradient_colors
-                .iter()
-                .filter_map(|(_, value)| parse_legacy_color(value))
+                .values()
+                .filter_map(|value| parse_legacy_color(value))
                 .collect::<Vec<_>>();
             if parsed.is_empty() {
                 parsed = default_palette_colors();
