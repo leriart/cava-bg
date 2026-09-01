@@ -2,7 +2,7 @@
 %global __requires_exclude ^.*$
 
 Name:           cava-bg
-Version:        0.2.5
+Version:        0.2.6
 Release:        1%{?dist}
 Summary:        Audio visualizer for Wayland — background layer
 
@@ -89,5 +89,11 @@ EOF
 %{_datadir}/fish/vendor_completions.d/cava-bg.fish
 
 %changelog
+* Tue Sep 01 2026 Leriart - 0.2.6-1
+- Bump ffmpeg-next to 9.0 so the binary links against FFmpeg 9
+  libraries shipped by current Arch / Fedora / rolling distros.
+  Fixes `error while loading shared libraries: libavutil.so.60` on
+  any system that has already moved past FFmpeg 8.
+
 * Tue Jun 02 2026 Leriart - 0.2.4-1
 - Initial RPM packaging

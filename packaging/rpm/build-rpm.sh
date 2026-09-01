@@ -3,7 +3,7 @@
 # Run this on a Fedora/RHEL/openSUSE system with rpmbuild available
 set -e
 
-VERSION="0.2.5"
+VERSION="0.2.6"
 PKG_NAME="cava-bg"
 BUILD_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$BUILD_DIR/../.." && pwd)"

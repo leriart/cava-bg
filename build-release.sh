@@ -3,7 +3,7 @@
 # cava-bg Release Builder
 set -e
 
-VERSION="0.2.5"
+VERSION="0.2.6"
 RELEASE_DIR="target/release"
 DIST_DIR="dist"
 ARCH="x86_64-unknown-linux-gnu"
