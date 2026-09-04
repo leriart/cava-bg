@@ -2,31 +2,38 @@
 #
 # cava-bg installation script
 #
+# Always builds from source so what you run always matches the tree on
+# `main` (or the branch / tag you pin with --version). The prebuilt
+# GitHub release tarball is opt-in via --binary, but the default
+# path is the deterministic "git clone + cargo build --locked" so a
+# broken release attachment or stale cache cannot leak a binary that
+# no longer matches the source code.
+#
 # Usage:
 #   Local:        ./install.sh [OPTIONS]
 #   Remote:       curl -fsSL https://raw.githubusercontent.com/leriart/cava-bg/main/install.sh | bash -s -- [OPTIONS]
 #
 # Options:
-#   --system              Install binary to /usr/local/bin (overwrites system copy)
-#   --user                Install binary to ~/.local/bin (overwrites user copy)
+#   --system              Install binary to /usr/local/bin (requires sudo)
+#   --user                Install binary to ~/.local/bin (default in non-tty)
 #   --no-cava             Skip cava installation
 #   --no-config           Skip creating the user configuration file
 #   --no-completions      Skip installing shell completions
-#   --source              Force building from source instead of downloading the
-#                         prebuilt release binary
-#   --version <tag>       cava-bg release to install (default: latest from GitHub,
-#                         falls back to "main" if no releases exist). Examples:
-#                         --version v0.2.6, --version main
+#   --binary              Try the GitHub release prebuilt tarball first,
+#                         fall back to source build if the asset is missing.
+#                         Off by default; the curl | bash flow always
+#                         builds from source.
+#   --version <ref>       Ref to build from (default: main). Examples:
+#                         --version main, --version v0.2.6, --version <sha>
 #   --repo <url>          Git repository (default: https://github.com/leriart/cava-bg.git)
-#   --arch <triple>       Target architecture for the prebuilt binary
-#                         (default: x86_64-unknown-linux-gnu)
+#   --arch <triple>       Target arch for --binary (default: x86_64-unknown-linux-gnu)
 #   --help                Show this help message and exit
 #
 # Examples:
 #   curl -fsSL https://raw.githubusercontent.com/leriart/cava-bg/main/install.sh | bash
 #   curl -fsSL .../install.sh | bash -s -- --system
-#   curl -fsSL .../install.sh | bash -s -- --version v0.2.6 --user
-#   curl -fsSL .../install.sh | bash -s -- --source --system
+#   curl -fsSL .../install.sh | bash -s -- --version v0.2.6
+#   curl -fsSL .../install.sh | bash -s -- --binary       # opt into prebuilt
 #
 
 set -e
@@ -36,8 +43,8 @@ INSTALL_MODE=""
 SKIP_CAVA=0
 SKIP_CONFIG=0
 SKIP_COMPLETIONS=0
-FORCE_SOURCE=0
-REQUESTED_VERSION=""
+USE_BINARY=0
+REQUESTED_REF="main"
 ARCH="x86_64-unknown-linux-gnu"
 GITHUB_API="https://api.github.com"
 SCRIPT_DIR=""
@@ -84,12 +91,12 @@ while [[ $# -gt 0 ]]; do
             SKIP_COMPLETIONS=1
             shift
             ;;
-        --source)
-            FORCE_SOURCE=1
+        --binary)
+            USE_BINARY=1
             shift
             ;;
         --version)
-            REQUESTED_VERSION="$2"
+            REQUESTED_REF="$2"
             shift 2
             ;;
         --repo)
@@ -113,53 +120,13 @@ done
 
 print_banner
 
-# ─── Determine target version ──────────────────────────────────────────────
-# Order of preference:
-#   1. --version (explicit tag or "main")
-#   2. Latest GitHub release tag (queries api.github.com)
-#   3. Fall back to "main" if the API is unreachable or has no releases
-TARGET_VERSION="${REQUESTED_VERSION}"
-TARGET_TAG=""
-SOURCE_BUILD=0
-
-resolve_latest_release_tag() {
-    local repo_path="${REPO_URL#https://github.com/}"
-    repo_path="${repo_path%.git}"
-    if ! command -v curl &> /dev/null; then
-        return 1
-    fi
-    local api_url="${GITHUB_API}/repos/${repo_path}/releases/latest"
-    local tag
-    tag=$(curl --proto '=https' --tlsv1.2 -sSf -H "Accept: application/json" "$api_url" 2>/dev/null \
-            | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n1)
-    if [ -n "$tag" ]; then
-        echo "$tag"
-        return 0
-    fi
-    return 1
-}
-
-if [ -z "$TARGET_VERSION" ]; then
-    echo "==> Resolving latest cava-bg release..."
-    if TARGET_TAG=$(resolve_latest_release_tag); then
-        TARGET_VERSION="$TARGET_TAG"
-        echo "    → using release $TARGET_VERSION"
-    else
-        TARGET_VERSION="main"
-        echo "    → GitHub API unreachable, falling back to branch: $TARGET_VERSION"
-    fi
-else
-    if [ "$TARGET_VERSION" = "main" ] || [ "$TARGET_VERSION" = "master" ]; then
-        TARGET_TAG=""
-        echo "==> Using branch: $TARGET_VERSION"
-    else
-        TARGET_TAG="$TARGET_VERSION"
-        echo "==> Using pinned release: $TARGET_TAG"
-    fi
-fi
-
-ARCHIVE_NAME="cava-bg-${TARGET_VERSION/v/}-${ARCH}"
-ARCHIVE_URL="https://github.com/leriart/cava-bg/releases/download/${TARGET_VERSION}/${ARCHIVE_NAME}.tar.gz"
+# ─── Always build from the requested ref via git + cargo ────────────────
+# The default --version is "main", so the canonical curl|bash flow
+# always rebuilds from whatever is currently at the tip of the main
+# branch. A specific tag/sha can be pinned with --version.
+TARGET_REF="$REQUESTED_REF"
+ARCHIVE_NAME="cava-bg-${TARGET_REF/v/}-${ARCH}"
+ARCHIVE_URL="https://github.com/leriart/cava-bg/releases/download/${TARGET_REF}/${ARCHIVE_NAME}.tar.gz"
 CHECKSUM_URL="${ARCHIVE_URL}.sha256"
 
 # ─── Decide install mode (system vs user) ─────────────────────────────────
@@ -186,18 +153,20 @@ choose_install_dest() {
     fi
 }
 
-# ─── Path A: download prebuilt release binary ─────────────────────────────
+# ─── Optional: download prebuilt release binary (opt-in via --binary) ─────
 download_prebuilt() {
-    if [ "$FORCE_SOURCE" -eq 1 ]; then
-        log_info "--source was passed, skipping binary download."
-        return 1
-    fi
-    if [ -z "$TARGET_TAG" ]; then
-        log_info "No release tag resolved, skipping binary download."
+    if [ "$USE_BINARY" -eq 0 ]; then
         return 1
     fi
     if ! command -v curl &> /dev/null; then
-        log_info "curl not available, skipping binary download."
+        log_warn "curl not available, falling back to source build."
+        return 1
+    fi
+
+    # Only attempt a download when --version looks like a release tag
+    # (e.g. v0.2.6). Branches like "main" don't have release tarballs.
+    if [[ ! "$TARGET_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        log_info "--binary needs a release tag (e.g. --version v0.2.6); got '$TARGET_REF'."
         return 1
     fi
 
@@ -205,9 +174,9 @@ download_prebuilt() {
     ARCHIVE_PATH="$TMP_DIR/$ARCHIVE_NAME.tar.gz"
     EXTRACT_DIR="$TMP_DIR/extract"
 
-    log_info "Downloading prebuilt release $TARGET_TAG ($ARCH)..."
+    log_info "Downloading prebuilt release $TARGET_REF ($ARCH)..."
     if ! curl --proto '=https' --tlsv1.2 -sSfL -o "$ARCHIVE_PATH" "$ARCHIVE_URL"; then
-        log_warn "Prebuilt binary not available for $TARGET_TAG on $ARCH."
+        log_warn "Prebuilt binary not available for $TARGET_REF on $ARCH."
         rm -rf "$TMP_DIR"
         return 1
     fi
@@ -235,37 +204,53 @@ download_prebuilt() {
     return 0
 }
 
-# ─── Path B: build from source (clone + cargo build --release --locked) ──
+# ─── Default: build from source (git clone + cargo build --release --locked) ─
 build_from_source() {
-    if [ ! -f "./Cargo.toml" ] || [ ! -f "./config.toml" ]; then
-        echo "==> No local source found, cloning repository..."
-        if ! command -v git &> /dev/null; then
-            echo "Error: git is required to install cava-bg."
-            exit 1
-        fi
-
-        TMP_DIR="$(mktemp -d -t cava-bg-XXXXXX)"
-        trap 'rm -rf "$TMP_DIR"' EXIT
-
-        # When TARGET_VERSION is "main"/"master", clone that branch.
-        # When it's a tag, clone with --branch <tag>.
-        if [ "$TARGET_VERSION" = "main" ] || [ "$TARGET_VERSION" = "master" ]; then
-            git clone --depth 1 "$REPO_URL" "$TMP_DIR/cava-bg"
-        else
-            git clone --depth 1 --branch "$TARGET_VERSION" "$REPO_URL" "$TMP_DIR/cava-bg"
-        fi
-        cd "$TMP_DIR/cava-bg"
-        SCRIPT_DIR="$TMP_DIR/cava-bg"
-    else
+    if [ -f "./Cargo.toml" ] && [ -f "./config.toml" ]; then
+        # Local checkout detected; use it as-is. Setting CAVA_BG_SOURCE_DIR
+        # also forces the path even when the script is run from elsewhere.
         if [ -n "${CAVA_BG_SOURCE_DIR:-}" ]; then
             cd "$CAVA_BG_SOURCE_DIR"
             SCRIPT_DIR="$CAVA_BG_SOURCE_DIR"
         else
             SCRIPT_DIR="$(pwd)"
         fi
+        echo "==> Using local source: $SCRIPT_DIR"
+        echo "    (CARGO_TERM_COLOR=always cargo will pick up the existing target/)"
+    else
+        echo "==> No local source found, cloning repository..."
+        if ! command -v git &> /dev/null; then
+            echo "Error: git is required to install cava-bg."
+            echo "Install git or clone the repository manually first."
+            exit 1
+        fi
+
+        TMP_DIR="$(mktemp -d -t cava-bg-XXXXXX)"
+        trap 'rm -rf "$TMP_DIR"' EXIT
+
+        # For branch-like refs (main, master, dev/feature) use --branch.
+        # For tag-like refs (v0.2.6) or commit SHAs, just use the rev directly
+        # via git's --branch (which accepts tags too) or fall back to
+        # shallow-clone + checkout.
+        if [[ "$TARGET_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+            || [[ "$TARGET_REF" =~ ^[0-9a-f]{7,40}$ ]] \
+            || [[ "$TARGET_REF" == "main" ]] \
+            || [[ "$TARGET_REF" == "master" ]]; then
+            git clone --depth 1 --branch "$TARGET_REF" "$REPO_URL" "$TMP_DIR/cava-bg"
+        else
+            git clone --depth 1 "$REPO_URL" "$TMP_DIR/cava-bg"
+            (cd "$TMP_DIR/cava-bg" && git fetch --depth 1 origin "$TARGET_REF" \
+                && git checkout FETCH_HEAD) || {
+                echo "Error: failed to fetch ref '$TARGET_REF'."
+                exit 1
+            }
+        fi
+        cd "$TMP_DIR/cava-bg"
+        SCRIPT_DIR="$TMP_DIR/cava-bg"
     fi
 
     echo "==> Working in: $SCRIPT_DIR"
+    echo "==> Building cava-bg from $TARGET_REF (this may take a few minutes)..."
 
     # Check for Rust toolchain
     if ! command -v cargo &> /dev/null; then
@@ -279,10 +264,24 @@ build_from_source() {
         source "$HOME/.cargo/env"
     fi
 
-    echo "==> Building cava-bg (this may take a few minutes)..."
-    # --locked enforces Cargo.lock so a downstream tweak to Cargo.toml won't
-    # silently pull a new ffmpeg-next or any other dependency at build time.
-    cargo build --release --locked
+    # --locked enforces Cargo.lock so a downstream tweak to Cargo.toml
+    # cannot silently pull a newer ffmpeg-next or any other dependency
+    # at install time. The first run on a fresh checkout may briefly
+    # need `cargo update -p ffmpeg-next` if the system FFmpeg headers
+    # are newer than what Cargo.lock was generated against; install.sh
+    # surfaces a clear error in that case rather than silently fetching
+    # a different version.
+    if ! cargo build --release --locked; then
+        echo ""
+        echo "Error: 'cargo build --release --locked' failed."
+        echo "This usually means the system FFmpeg headers are newer than"
+        echo "the locked versions in Cargo.lock. The fix is to update the"
+        echo "ffmpeg-next lockfile from the project root and re-run:"
+        echo ""
+        echo "    cargo update -p ffmpeg-next"
+        echo "    $0"
+        exit 1
+    fi
 
     BIN_PATH="target/release/cava-bg"
     COMPLETIONS_DIR="target/release/completions"
@@ -299,10 +298,10 @@ log_info() { printf '   · %s\n' "$*"; }
 log_warn() { printf '   ! %s\n' "$*" >&2; }
 
 if download_prebuilt; then
-    INSTALL_SOURCE="prebuilt $TARGET_TAG"
+    INSTALL_SOURCE="prebuilt $TARGET_REF"
 else
     build_from_source
-    INSTALL_SOURCE="built from source ($TARGET_VERSION)"
+    INSTALL_SOURCE="built from source ($TARGET_REF)"
 fi
 
 # Detect dynamic linkage mismatch with the system FFmpeg so a wrong binary
