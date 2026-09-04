@@ -20,13 +20,14 @@ The AUR package will automatically:
 ### 1. Download the latest release
 
 ```bash
-# Download the binary archive
-VERSION="0.2.4"
+# Download the binary archive (0.2.6 is the first release that links
+# against FFmpeg 9 — earlier 0.2.x binaries need FFmpeg 8 installed)
+VERSION="0.2.6"
 ARCH="x86_64-unknown-linux-gnu"
-wget https://github.com/leriart/cava-bg/releases/download/${VERSION}/cava-bg-${VERSION}-${ARCH}.tar.gz
+wget https://github.com/leriart/cava-bg/releases/download/v${VERSION}/cava-bg-${VERSION}-${ARCH}.tar.gz
 
 # Verify checksum
-wget https://github.com/leriart/cava-bg/releases/download/${VERSION}/cava-bg-${VERSION}-${ARCH}.tar.gz.sha256
+wget https://github.com/leriart/cava-bg/releases/download/v${VERSION}/cava-bg-${VERSION}-${ARCH}.tar.gz.sha256
 sha256sum -c cava-bg-${VERSION}-${ARCH}.tar.gz.sha256
 
 # Extract
