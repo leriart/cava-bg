@@ -201,17 +201,8 @@ jobs:
         with:
           ref: ${{ needs.plan.outputs.tag }}
       - name: Install build dependencies
-        run: |
-          sudo apt-get update
-          # FFmpeg -dev packages are mandatory: ffmpeg-sys-next resolves
-          # libavutil & friends through pkg-config and fails the build script
-          # without them. libclang is needed by the bindgen step.
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config clang libclang-dev \
-            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
-            libavdevice-dev libswscale-dev libswresample-dev libpostproc-dev \
-            libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev \
-            libdbus-1-dev rpm fakeroot dpkg-dev
+        # Shared list; extras for the packaging steps.
+        run: bash scripts/ci-deps.sh rpm fakeroot dpkg-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

@@ -36,18 +36,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          # ffmpeg-sys-next runs pkg-config for libavutil, libavformat,
-          # libavfilter, libavdevice, libswscale, libswresample and libavcodec.
-          # Without these -dev packages every job that compiles the binary dies
-          # in the build script with "FFmpeg library libavcodec not found".
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config clang libclang-dev \
-            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
-            libavdevice-dev libswscale-dev libswresample-dev libpostproc-dev \
-            libwayland-dev libxkbcommon-dev libegl1-mesa-dev \
-            libgl1-mesa-dev libdbus-1-dev
+        run: bash scripts/ci-deps.sh
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -63,18 +52,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          # ffmpeg-sys-next runs pkg-config for libavutil, libavformat,
-          # libavfilter, libavdevice, libswscale, libswresample and libavcodec.
-          # Without these -dev packages every job that compiles the binary dies
-          # in the build script with "FFmpeg library libavcodec not found".
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config clang libclang-dev \
-            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
-            libavdevice-dev libswscale-dev libswresample-dev libpostproc-dev \
-            libwayland-dev libxkbcommon-dev libegl1-mesa-dev \
-            libgl1-mesa-dev libdbus-1-dev
+        run: bash scripts/ci-deps.sh
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo test
@@ -113,7 +91,8 @@ jobs:
           set -e
           for s in install.sh packaging/build-all.sh \
                    packaging/deb/build-deb.sh packaging/rpm/build-rpm.sh \
-                   packaging/aur/render-pkgbuild.sh scripts/version.sh; do
+                   packaging/aur/render-pkgbuild.sh \
+                   scripts/version.sh scripts/ci-deps.sh; do
             echo "--- $s"
             bash -n "$s"
           done
@@ -183,7 +162,8 @@ jobs:
             packaging/systemd/cava-bg.service \
             packaging/cava-bg.desktop \
             docs/INSTALL.md \
-            scripts/version.sh
+            scripts/version.sh \
+            scripts/ci-deps.sh
           do
             if [ ! -f "$p" ]; then echo "::error::missing: $p"; missing=1; fi
           done
@@ -203,9 +183,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install build + packaging dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends             libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev             libdbus-1-dev pkg-config dpkg-dev fakeroot
+        run: bash scripts/ci-deps.sh dpkg-dev fakeroot
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
