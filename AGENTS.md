@@ -76,7 +76,8 @@ second script for something that already exists.
 4. **Serialize configs with `app_config::serialize_config`, not
    `toml::to_string_pretty`.** The wrapper rounds `f32` widening noise
    (`0.1` → `0.10000000149011612`); every write path goes through it.
-5. **Work happens on `dev`.** `main` is release-only. See *Branching and releases*.
+5. **Work happens on `dev`.** `main` is release-only, and merging into it is the
+   only release trigger. See *Branching and releases*.
 6. **Every merge to `dev` must keep CI green** (fmt, clippy `-D warnings`, tests,
    `cargo xtask -- --check`, and the packaging job).
 7. **Don't add dependencies without discussing it.** The tree is already ~1.5M lines
@@ -188,7 +189,8 @@ Use `#[cfg_attr(any(), config_doc(hide_defaults))]` or
 
 ```
 feature branch ──▶ dev ──▶ (CI) ──▶ main ──▶ release.yml
-                                            ├─ tag v<version>
+                                            ├─ version decided automatically
+                                            ├─ tag <version>
                                             ├─ source + binary tarballs (+sha256)
                                             ├─ .deb   (Debian/Ubuntu)
                                             ├─ .rpm   (Fedora/openSUSE)
@@ -198,15 +200,27 @@ feature branch ──▶ dev ──▶ (CI) ──▶ main ──▶ release.yml
 
 * Work lands on **`dev`**.
 * When `dev` is merged into **`main`**, `.github/workflows/release.yml` runs
-  automatically. It reads the version from `Cargo.toml`, skips if the tag already
-  exists, creates + pushes `v<version>`, builds every artifact, publishes the GitHub
-  release, and (when the `aur` environment gate passes) pushes the rendered `PKGBUILD`
-  and `.SRCINFO` to the AUR.
-* Bump the release by editing `version` in `Cargo.toml` **only**, then land that on
-  `dev` and merge to `main`.
+  automatically and **decides the version itself** — you never edit it by hand:
+
+  | State at merge | Released |
+  |---|---|
+  | newest tag is `0.2.6`, `Cargo.toml` says `0.2.6` | `0.2.7` (Cargo.toml is bumped and committed to `main`) |
+  | `dev` bumped `Cargo.toml` to `0.3.0` | `0.3.0` (explicit bump honoured) |
+  | `--force` on a manual run | the newest tag, re-released unchanged |
+  | `Cargo.toml` is *behind* the newest tag | **refuses to release** |
+
+* The bump commit carries `[skip ci]`. Without it the push to `main` would start a
+  second run, which would see "`Cargo.toml` == newest tag" and bump again, forever.
+* Tags are **bare** (`0.2.7`), matching the repository history. A leading `v` is
+  accepted when reading so older links keep working.
+* If the release fails, re-run it with
+  `gh workflow run release.yml --ref main -f force=true -f publish_aur=true`
+  instead of deleting the tag and re-merging.
 * `packaging/build-all.sh` reproduces every artifact locally. It refuses to run on a
   dirty tree (`--allow-dirty` overrides) because a tarball from uncommitted files is
   not reproducible.
+* The version arithmetic lives in `scripts/version.sh` and is covered by
+  `bash scripts/version.sh --test`, which CI runs.
 
 ### AUR
 

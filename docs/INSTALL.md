@@ -14,7 +14,7 @@ the moment of the install.
 curl -fsSL https://raw.githubusercontent.com/leriart/cava-bg/main/install.sh | bash
 ```
 
-The installer accepts `--version v0.2.6` (or any tag / commit; see the
+The installer accepts `--version 0.2.6` (or any tag / commit; see the
 [releases page](https://github.com/leriart/cava-bg/releases) for the current one) to
 pin a specific revision, and `--system` for a sudo'd install into
 `/usr/local/bin`. See "From Source" below for the full option list
@@ -50,8 +50,8 @@ install without a Rust toolchain.
 ```bash
 VERSION="<version>"            # e.g. 0.2.6
 ARCH="x86_64-unknown-linux-gnu"
-wget https://github.com/leriart/cava-bg/releases/download/v${VERSION}/cava-bg-${VERSION}-${ARCH}.tar.gz
-wget https://github.com/leriart/cava-bg/releases/download/v${VERSION}/cava-bg-${VERSION}-${ARCH}.tar.gz.sha256
+wget https://github.com/leriart/cava-bg/releases/download/${VERSION}/cava-bg-${VERSION}-${ARCH}.tar.gz
+wget https://github.com/leriart/cava-bg/releases/download/${VERSION}/cava-bg-${VERSION}-${ARCH}.tar.gz.sha256
 sha256sum -c cava-bg-${VERSION}-${ARCH}.tar.gz.sha256
 tar -xzf cava-bg-${VERSION}-${ARCH}.tar.gz
 ```
@@ -113,7 +113,7 @@ but the default `curl | bash` flow does not use it.
 curl -fsSL https://raw.githubusercontent.com/leriart/cava-bg/main/install.sh | bash
 
 # Pin to a specific release tag
-curl -fsSL https://raw.githubusercontent.com/leriart/cava-bg/main/install.sh | bash -s -- --version v<version>
+curl -fsSL https://raw.githubusercontent.com/leriart/cava-bg/main/install.sh | bash -s -- --version <version>
 
 # System-wide install (needs sudo)
 curl -fsSL https://raw.githubusercontent.com/leriart/cava-bg/main/install.sh | bash -s -- --system

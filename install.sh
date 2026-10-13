@@ -24,7 +24,7 @@
 #                         Off by default; the curl | bash flow always
 #                         builds from source.
 #   --version <ref>       Ref to build from (default: main). Examples:
-#                         --version main, --version v0.2.6, --version <sha>
+#                         --version main, --version 0.2.6, --version <sha>
 #   --repo <url>          Git repository (default: https://github.com/leriart/cava-bg.git)
 #   --arch <triple>       Target arch for --binary (default: x86_64-unknown-linux-gnu)
 #   --help                Show this help message and exit
@@ -32,7 +32,7 @@
 # Examples:
 #   curl -fsSL https://raw.githubusercontent.com/leriart/cava-bg/main/install.sh | bash
 #   curl -fsSL .../install.sh | bash -s -- --system
-#   curl -fsSL .../install.sh | bash -s -- --version v0.2.6
+#   curl -fsSL .../install.sh | bash -s -- --version 0.2.6
 #   curl -fsSL .../install.sh | bash -s -- --binary       # opt into prebuilt
 #
 
@@ -125,9 +125,7 @@ print_banner
 # always rebuilds from whatever is currently at the tip of the main
 # branch. A specific tag/sha can be pinned with --version.
 TARGET_REF="$REQUESTED_REF"
-ARCHIVE_NAME="cava-bg-${TARGET_REF/v/}-${ARCH}"
-ARCHIVE_URL="https://github.com/leriart/cava-bg/releases/download/${TARGET_REF}/${ARCHIVE_NAME}.tar.gz"
-CHECKSUM_URL="${ARCHIVE_URL}.sha256"
+ARCHIVE_NAME="cava-bg-${TARGET_REF#v}-${ARCH}"
 
 # ─── Decide install mode (system vs user) ─────────────────────────────────
 if [ -z "$INSTALL_MODE" ]; then
@@ -164,9 +162,9 @@ download_prebuilt() {
     fi
 
     # Only attempt a download when --version looks like a release tag
-    # (e.g. v0.2.6). Branches like "main" don't have release tarballs.
-    if [[ ! "$TARGET_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-        log_info "--binary needs a release tag (e.g. --version v0.2.6); got '$TARGET_REF'."
+    # (e.g. 0.2.6 or v0.2.6). Branches like "main" have no release tarballs.
+    if [[ ! "$TARGET_REF" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        log_info "--binary needs a release tag (e.g. --version 0.2.6); got '$TARGET_REF'."
         return 1
     fi
 
@@ -174,14 +172,24 @@ download_prebuilt() {
     ARCHIVE_PATH="$TMP_DIR/$ARCHIVE_NAME.tar.gz"
     EXTRACT_DIR="$TMP_DIR/extract"
 
+    # Releases are tagged bare (0.2.6) but a `v`-prefixed ref is accepted too,
+    # and older releases were published under both names, so try both.
     log_info "Downloading prebuilt release $TARGET_REF ($ARCH)..."
-    if ! curl --proto '=https' --tlsv1.2 -sSfL -o "$ARCHIVE_PATH" "$ARCHIVE_URL"; then
+    local downloaded=1
+    for candidate_ref in "${TARGET_REF#v}" "$TARGET_REF"; do
+        local url="https://github.com/leriart/cava-bg/releases/download/${candidate_ref}/${ARCHIVE_NAME}.tar.gz"
+        if curl --proto '=https' --tlsv1.2 -sSfL -o "$ARCHIVE_PATH" "$url"; then
+            downloaded=0
+            break
+        fi
+    done
+    if [ "$downloaded" -ne 0 ]; then
         log_warn "Prebuilt binary not available for $TARGET_REF on $ARCH."
         rm -rf "$TMP_DIR"
         return 1
     fi
 
-    if curl --proto '=https' --tlsv1.2 -sSfL -o "$ARCHIVE_PATH.sha256" "$CHECKSUM_URL" 2>/dev/null; then
+    if curl --proto '=https' --tlsv1.2 -sSfL -o "$ARCHIVE_PATH.sha256" "${url}.sha256" 2>/dev/null; then
         (cd "$TMP_DIR" && sha256sum -c "$ARCHIVE_PATH.sha256" 2>/dev/null) \
             && log_info "Checksum OK" \
             || log_warn "Checksum verification failed (continuing anyway)"
@@ -228,10 +236,10 @@ build_from_source() {
         trap 'rm -rf "$TMP_DIR"' EXIT
 
         # For branch-like refs (main, master, dev/feature) use --branch.
-        # For tag-like refs (v0.2.6) or commit SHAs, just use the rev directly
+        # For tag-like refs (0.2.6) or commit SHAs, just use the rev directly
         # via git's --branch (which accepts tags too) or fall back to
         # shallow-clone + checkout.
-        if [[ "$TARGET_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+        if [[ "$TARGET_REF" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]] \
             || [[ "$TARGET_REF" =~ ^[0-9a-f]{7,40}$ ]] \
             || [[ "$TARGET_REF" == "main" ]] \
             || [[ "$TARGET_REF" == "master" ]]; then

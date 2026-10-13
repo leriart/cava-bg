@@ -223,7 +223,8 @@ Releases are cut automatically when a change lands on `main`:
 
 ```text
 dev  ──▶  CI (fmt / clippy / tests)  ──▶  main  ──▶  release workflow
-                                                          ├─ tag v<version>
+                                                          ├─ version decided automatically
+                                                          ├─ tag <version>
                                                           ├─ source + binary tarballs
                                                           ├─ .deb          (Debian / Ubuntu)
                                                           ├─ .rpm          (Fedora / openSUSE)
@@ -231,8 +232,9 @@ dev  ──▶  CI (fmt / clippy / tests)  ──▶  main  ──▶  release w
                                                           └─ AUR           (cava-bg)
 ```
 
-The workflow reads the version from `Cargo.toml`, skips if the tag already exists,
-and pushes the rendered `PKGBUILD` + `.SRCINFO` to the AUR repository.
+Nothing about the version is manual: merging `dev` into `main` reads the newest tag,
+works out the next version, writes it back to `Cargo.toml`, tags it, and publishes
+everything including the rendered `PKGBUILD` + `.SRCINFO` for the AUR.
 
 To reproduce every artifact locally:
 
@@ -364,10 +366,12 @@ feature branch  ──▶  dev  ──▶  main  ──▶  release
 ```
 
 * `dev` is the integration branch — every PR targets it and CI must be green.
-* `main` is release-only. Merging into it triggers the release workflow.
-* To cut a release, bump `version` in `Cargo.toml` on `dev`, then merge to `main`.
-  Never hardcode a version anywhere else; scripts read it through
-  `scripts/version.sh`.
+* `main` is release-only. Merging into it is the release trigger; the workflow
+  picks the version, so there is nothing to bump by hand.
+* If a release fails, re-run it instead of re-merging:
+  ```bash
+  gh workflow run release.yml --ref main -f force=true -f publish_aur=true
+  ```
 
 See [AGENTS.md](AGENTS.md) for the architecture, the config schema rules and the
 list of landmines to read before touching the renderer.

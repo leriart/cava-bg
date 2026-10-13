@@ -35,7 +35,7 @@ done
 
 VERSION="$(cava_bg_version)"
 PKG_NAME="$CAVA_BG_NAME"
-TAG="$(cava_bg_tag)"
+TAG="${VERSION}"
 DIST_DIR="$PROJECT_DIR/target/dist"
 ARCH="${CAVA_BG_ARCH:-$(rustc -vV | sed -n 's/^host: //p')}"
 
@@ -131,5 +131,5 @@ echo "║  Artifacts in target/dist/                     ║"
 echo "╚════════════════════════════════════════════════╝"
 ls -lh "$DIST_DIR/"
 echo ""
-echo "Release tag to push:  ${TAG}"
+echo "Release tag (cut by CI on merge to main):  ${TAG}"
 echo "AUR: https://aur.archlinux.org/packages/${PKG_NAME}"

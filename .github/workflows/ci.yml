@@ -97,6 +97,8 @@ jobs:
             echo "--- $s"
             bash -n "$s"
           done
+      - name: version.sh unit tests
+        run: bash scripts/version.sh --test
       - name: PKGBUILD must render from Cargo.toml
         run: |
           set -e
