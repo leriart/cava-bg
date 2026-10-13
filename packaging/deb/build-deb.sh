@@ -37,6 +37,10 @@ mkdir -p "$DEB_DIR/usr/bin"
 mkdir -p "$DEB_DIR/usr/share/doc/${PKG_NAME}"
 mkdir -p "$DEB_DIR/usr/share/applications"
 mkdir -p "$DEB_DIR/usr/share/licenses/${PKG_NAME}"
+# dpkg-deb --build does not create the destination directory, so this has to
+# exist before it runs or the whole package build fails at the very last step,
+# after the two-minute release compile.
+mkdir -p "$DIST_DIR"
 
 cp "target/release/${PKG_NAME}" "$DEB_DIR/usr/bin/"
 
