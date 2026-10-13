@@ -36,9 +36,16 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
+          # ffmpeg-sys-next runs pkg-config for libavutil, libavformat,
+          # libavfilter, libavdevice, libswscale, libswresample and libavcodec.
+          # Without these -dev packages every job that compiles the binary dies
+          # in the build script with "FFmpeg library libavcodec not found".
           sudo apt-get install -y --no-install-recommends \
+            pkg-config clang libclang-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
+            libavdevice-dev libswscale-dev libswresample-dev libpostproc-dev \
             libwayland-dev libxkbcommon-dev libegl1-mesa-dev \
-            libgl1-mesa-dev libdbus-1-dev pkg-config
+            libgl1-mesa-dev libdbus-1-dev
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -56,9 +63,16 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
+          # ffmpeg-sys-next runs pkg-config for libavutil, libavformat,
+          # libavfilter, libavdevice, libswscale, libswresample and libavcodec.
+          # Without these -dev packages every job that compiles the binary dies
+          # in the build script with "FFmpeg library libavcodec not found".
           sudo apt-get install -y --no-install-recommends \
+            pkg-config clang libclang-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
+            libavdevice-dev libswscale-dev libswresample-dev libpostproc-dev \
             libwayland-dev libxkbcommon-dev libegl1-mesa-dev \
-            libgl1-mesa-dev libdbus-1-dev pkg-config
+            libgl1-mesa-dev libdbus-1-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: cargo test
@@ -87,7 +101,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+        with:
+          # version.sh reads the release tags to decide what the next version
+          # would be, and its test suite asserts on them. A shallow checkout
+          # fetches no tags at all.
+          fetch-depth: 0
       - name: Every packaging script must be syntactically valid
         run: |
           set -e
@@ -135,17 +153,10 @@ jobs:
             echo "::error::Generate it with 'cargo run -- __default-config'."
             exit 1
           fi
-          cargo run --quiet -- __default-config > /tmp/default-config.toml
-          echo "--- generated default config (first 12 lines)"
-          head -12 /tmp/default-config.toml
-          if grep -qE '[0-9]\.[0-9]{6,}' /tmp/default-config.toml; then
-            echo "::error::Generated config contains f32 precision noise"
-            exit 1
-          fi
-          if grep -q '_legacy_' /tmp/default-config.toml; then
-            echo "::error::Generated config leaks internal legacy fields"
-            exit 1
-          fi
+          # The *contents* of the generated config are checked by the `deb`
+          # job, which builds the binary. This job deliberately compiles
+          # nothing: it needs no Rust toolchain and no system libraries, so it
+          # stays fast and cannot rot when the dependency set changes.
       - name: Debian dependencies must use Debian package names
         run: |
           set -euo pipefail
@@ -245,11 +256,17 @@ jobs:
         run: |
           set -euo pipefail
           cava-bg __default-config > /tmp/default.toml
+          echo "--- generated default config (first 12 lines)"
+          head -12 /tmp/default.toml
           if grep -qE '[0-9]\.[0-9]{6,}' /tmp/default.toml; then
             echo "::error::config contains f32 precision noise"; exit 1
           fi
-          grep -q '_legacy_' /tmp/default.toml && {
-            echo "::error::config leaks internal legacy fields"; exit 1; } || true
+          if grep -q '_legacy_' /tmp/default.toml; then
+            echo "::error::config leaks internal legacy fields"; exit 1
+          fi
+          # Every runtime path must follow the config, so a non-default config
+          # must not leave a pid file next to the shipped config dir.
+          cava-bg outputs --config /tmp/cava-bg-devtest/config.toml
 
   nix:
     name: nix flake check
@@ -257,7 +274,7 @@ jobs:
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v27
-      - uses: DeterminateSystems/nix-installer-action@v9
+      - uses: cachix/install-nix-action@v31
+      - uses: DeterminateSystems/magic-nix-cache-action@v9
       - name: nix flake check
         run: nix flake check --no-build
