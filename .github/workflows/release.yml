@@ -200,9 +200,6 @@ jobs:
           name: cava-bg-release
           path: upload/
 
-      - name: Install AUR tooling
-        run: sudo pacman -Syu --noconfirm git base-devel 2>/dev/null || sudo apt-get update && sudo apt-get install -y --no-install-recommends git
-
       - name: Configure SSH for aur.archlinux.org
         env:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
