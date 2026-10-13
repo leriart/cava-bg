@@ -1,8 +1,7 @@
 #!/bin/sh
 set -e
 
-# Create default config if not present
-CONFIG_DIR="$HOME/.config/cava-bg"
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/cava-bg"
 if [ ! -d "$CONFIG_DIR" ]; then
     mkdir -p "$CONFIG_DIR"
 fi
@@ -11,6 +10,20 @@ if [ ! -f "$CONFIG_DIR/config.toml" ]; then
     cp /usr/share/doc/cava-bg/config.toml "$CONFIG_DIR/config.toml" 2>/dev/null || true
 fi
 
-echo "cava-bg installed! Run 'cava-bg' to start the visualizer."
-echo "Configure with: cava-bg --config"
-echo "Config file: ~/.config/cava-bg/config.toml"
+echo "cava-bg installed."
+echo "  Start:      cava-bg on"
+echo "  Configure:  cava-bg gui"
+echo "  Status:     cava-bg status"
+echo "  Config:     $CONFIG_DIR/config.toml"
+
+case "${1:-configure}" in
+    abort-upgrade|abort-remove|abort-deconfigure) ;;
+    *)
+        # Only offer to launch on a real desktop install.
+        if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
+            echo "Run 'cava-bg on' in a Wayland session to start the visualizer."
+        fi
+        ;;
+esac
+
+exit 0

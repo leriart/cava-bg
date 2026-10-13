@@ -59,7 +59,13 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 strip = "symbols"
-panic = "abort"
+# NOTE: deliberately NOT `panic = "abort"`.
+#
+# `main.rs::run_foreground` wraps the renderer in `panic::catch_unwind` and
+# restarts it after 2 s. That recovery is a no-op when aborting is on, so a
+# single panic in a GPU driver callback would take the whole daemon down. The
+# unwinding tables cost a few hundred KB and buy a daemon that survives a
+# transient fault instead of leaving the user with a black bar.
 debug = false
 incremental = false
 overflow-checks = false
@@ -68,50 +74,18 @@ overflow-checks = false
 opt-level = 3
 codegen-units = 1
 
-[package.metadata.deb]
-maintainer = "Leriart"
-copyright = "2026, Leriart"
-license-file = ["LICENSE", "0"]
-depends = "libc6, wayland, cava"
-extended-description = """\
-cava-bg is an audio visualizer for Wayland that is drawn as a background layer. 
-Supports multiple desktop environments and window managers.
-"""
-section = "sound"
-priority = "optional"
-assets = [
-    ["target/release/cava-bg", "/usr/bin/cava-bg", "755"],
-    ["README.md", "/usr/share/doc/cava-bg/README.md", "644"],
-    ["target/release/completions/cava-bg.bash", "/usr/share/bash-completion/completions/cava-bg", "644"],
-    ["target/release/completions/_cava-bg", "/usr/share/zsh/site-functions/_cava-bg", "644"],
-    ["target/release/completions/cava-bg.fish", "/usr/share/fish/vendor_completions.d/cava-bg.fish", "644"],
-]
-
-
-[package.metadata.generate-rpm]
-license = "MIT"
-release = "1"
-packager = "Leriart"
-summary = "Audio visualizer for Wayland"
-description = "cava-bg draws audio bars over the wallpaper in Wayland environments."
-
-
-[package.metadata.generate-rpm.requires]
-cava = "*"
-wayland = "*"
-
-[[package.metadata.generate-rpm.assets]]
-source = "target/release/cava-bg"
-dest = "/usr/bin/cava-bg"
-mode = "755"
-
-[package.metadata.aur]
-depends = ["cava", "wayland"]
-[package.metadata.rpm]
-package = "cava-bg"
-
-[package.metadata.rpm.cargo]
-buildflags = ["--release"]
-
-[package.metadata.rpm.targets]
-cava-bg = { path = "/usr/bin/cava-bg" }
+# NOTE: there is deliberately no `[package.metadata.deb]`,
+# `[package.metadata.generate-rpm]` or `[package.metadata.rpm]` block here.
+#
+# `cargo deb` and `cargo generate-rpm` would read dependency lists from these
+# tables, making them a second source of truth that silently drifts from
+# packaging/deb/control and packaging/rpm/cava-bg.spec. That drift is how a
+# `Depends: wayland` line — a package name that exists on Fedora and Arch but
+# NOT on Debian — reached a published .deb and broke `apt install`.
+#
+# These tables also cannot express wgpu's real requirements: EGL,
+# libwayland-client, libwayland-egl and libxkbcommon are dlopen'd at runtime
+# and never appear in the ELF NEEDED list, so no linker-driven tool would find
+# them. packaging/ lists them explicitly.
+#
+# To produce packages, use ./packaging/build-all.sh.

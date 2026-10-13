@@ -83,4 +83,9 @@ pub fn cli() -> clap::Command {
                 .about("Internal: supervisor for per-output processes")
                 .hide(true),
         )
+        .subcommand(
+            clap::Command::new("__default-config")
+                .about("Internal: print the default configuration to stdout")
+                .hide(true),
+        )
 }

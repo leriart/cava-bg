@@ -1,0 +1,261 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  fmt:
+    name: rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt --check
+        run: cargo fmt --all -- --check
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwayland-dev libxkbcommon-dev libegl1-mesa-dev \
+            libgl1-mesa-dev libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: clippy
+      - name: cargo clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwayland-dev libxkbcommon-dev libegl1-mesa-dev \
+            libgl1-mesa-dev libdbus-1-dev pkg-config
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test
+        run: cargo test --workspace --locked
+      - name: cargo test (dbus-detection feature)
+        run: cargo test --workspace --locked --features dbus-detection
+
+  config-docs:
+    name: CONFIG.md is up to date
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Verify CONFIG.md matches src/app_config.rs
+        run: cargo xtask -- --check
+      - name: Regenerate if stale
+        if: failure()
+        run: |
+          cargo xtask
+          git --no-pager diff --stat
+          echo "::error::CONFIG.md is stale. Run 'cargo xtask' and commit the result."
+
+  packaging:
+    name: packaging sanity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Every packaging script must be syntactically valid
+        run: |
+          set -e
+          for s in install.sh packaging/build-all.sh \
+                   packaging/deb/build-deb.sh packaging/rpm/build-rpm.sh \
+                   packaging/aur/render-pkgbuild.sh scripts/version.sh; do
+            echo "--- $s"
+            bash -n "$s"
+          done
+      - name: PKGBUILD must render from Cargo.toml
+        run: |
+          set -e
+          VERSION="$(bash scripts/version.sh)"
+          VERSION="$VERSION" ARCH=x86_64 bash packaging/aur/render-pkgbuild.sh
+          grep -q "^pkgver=$VERSION\$" target/dist/aur-files/PKGBUILD
+          echo "PKGBUILD renders pkgver=$VERSION"
+      - name: Version must be single-sourced
+        run: |
+          set -e
+          VERSION="$(bash scripts/version.sh)"
+          echo "canonical version: $VERSION"
+          # No script or template may hardcode a version anymore.
+          if grep -rnE '(VERSION="|pkgver=|^Version:)[0-9]+\.[0-9]+\.[0-9]+' \
+               --include='*.sh' --include='*.spec' --include='PKGBUILD.in' \
+               --exclude-dir=target . ; then
+            echo "::error::Found a hardcoded version outside Cargo.toml"
+            exit 1
+          fi
+      - name: No hand-maintained default config in the tree
+        run: |
+          set -e
+          # The shipped config must come from `cava-bg __default-config`,
+          # otherwise it silently drifts from `Config::default()`. The old
+          # root-level `config.toml` disagreed with the code defaults on
+          # bar_width, max_bar_height, bar_alpha, use_gradient and palette.
+          # `.cargo/config.toml` is cargo's own file and stays put.
+          offenders="$(git ls-files \
+            | grep -E '(^|/)config\.toml$' \
+            | grep -v '^\.cargo/config\.toml$' || true)"
+          if [ -n "$offenders" ]; then
+            echo "::error::Hand-maintained config.toml tracked again:"
+            echo "$offenders"
+            echo "::error::Generate it with 'cargo run -- __default-config'."
+            exit 1
+          fi
+          cargo run --quiet -- __default-config > /tmp/default-config.toml
+          echo "--- generated default config (first 12 lines)"
+          head -12 /tmp/default-config.toml
+          if grep -qE '[0-9]\.[0-9]{6,}' /tmp/default-config.toml; then
+            echo "::error::Generated config contains f32 precision noise"
+            exit 1
+          fi
+          if grep -q '_legacy_' /tmp/default-config.toml; then
+            echo "::error::Generated config leaks internal legacy fields"
+            exit 1
+          fi
+      - name: Debian dependencies must use Debian package names
+        run: |
+          set -euo pipefail
+          # `wayland` is a real package on Fedora and Arch but does NOT exist in
+          # Debian, where apt would fail with "Unable to locate package".
+          # Debian splits it into libwayland-client0 / libwayland-egl1.
+          if grep -nE '^\s*Depends:.*\bwayland\b' packaging/deb/control; then
+            echo "::error::packaging/deb/control depends on the non-Debian package 'wayland'"
+            echo "::error::Use libwayland-client0 / libwayland-egl1 instead."
+            exit 1
+          fi
+          for pkg in libwayland-client0 libwayland-egl1 libxkbcommon0 libc6; do
+            grep -qE "(^|[ ,])$pkg([ ,]|$)" packaging/deb/control || {
+              echo "::error::missing expected Debian dependency: $pkg"; exit 1; }
+          done
+          echo "==> Debian dependency names look correct"
+      - name: Every referenced path in docs and packaging exists
+        run: |
+          set -e
+          missing=0
+          for p in \
+            packaging/systemd/cava-bg.service \
+            packaging/cava-bg.desktop \
+            docs/INSTALL.md \
+            scripts/version.sh
+          do
+            if [ ! -f "$p" ]; then echo "::error::missing: $p"; missing=1; fi
+          done
+          # Media linked from the README must exist too.
+          for p in docs/media/demo.gif docs/media/parallax.gif \
+                   docs/media/xray-1.gif docs/media/xray-2.gif docs/media/simple.webm; do
+            if [ ! -f "$p" ]; then echo "::error::missing: $p"; missing=1; fi
+          done
+          exit $missing
+
+  deb:
+    name: deb installs on a real Debian
+    runs-on: ubuntu-latest
+    # This is the check that would have caught the `Depends: wayland` bug: that
+    # package exists on Fedora and Arch but not on Debian, so `apt install`
+    # failed with "Unable to locate package wayland".
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build + packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends             libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev             libdbus-1-dev pkg-config dpkg-dev fakeroot
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: deb
+
+      - name: Build the .deb
+        run: bash packaging/deb/build-deb.sh
+
+      - name: Every dependency must resolve on Debian
+        run: |
+          set -euo pipefail
+          DEB="$(ls target/dist/*.deb)"
+          echo "==> $DEB"
+          dpkg-deb -I "$DEB" | sed -n '/Depends:/,/^ [A-Z]/p'
+          # Fails loudly on any dependency name Debian does not have.
+          deps="$(dpkg-deb -f "$DEB" Depends | tr ',' '\n' | sed 's/^ *//' | cut -d' ' -f1 | grep -v '^$')"
+          missing=0
+          for dep in $deps; do
+            if ! apt-cache show "$dep" >/dev/null 2>&1; then
+              echo "::error::unknown Debian package in Depends: $dep"
+              missing=1
+            fi
+          done
+          exit $missing
+
+      - name: Resolve dependencies with apt (dry run)
+        run: |
+          set -euo pipefail
+          DEB="$(pwd)/$(ls target/dist/*.deb | xargs basename)"
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends "$DEB" || {
+            echo "::error::apt could not satisfy the .deb dependencies"
+            exit 1
+          }
+          echo "==> .deb installed cleanly"
+
+      - name: The installed binary runs
+        run: |
+          set -euo pipefail
+          command -v cava-bg
+          cava-bg --version
+          test -f /usr/lib/systemd/user/cava-bg.service
+          test -f /usr/share/applications/cava-bg.desktop
+          grep -q "^Exec=cava-bg gui$" /usr/share/applications/cava-bg.desktop
+          # The desktop entry used to say `Exec=cava-bg --config`, which starts
+          # the visualiser instead of the configurator.
+          echo "==> installed artefacts look right"
+
+      - name: Default config has no float noise
+        run: |
+          set -euo pipefail
+          cava-bg __default-config > /tmp/default.toml
+          if grep -qE '[0-9]\.[0-9]{6,}' /tmp/default.toml; then
+            echo "::error::config contains f32 precision noise"; exit 1
+          fi
+          grep -q '_legacy_' /tmp/default.toml && {
+            echo "::error::config leaks internal legacy fields"; exit 1; } || true
+
+  nix:
+    name: nix flake check
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: cachix/install-nix-action@v27
+      - uses: DeterminateSystems/nix-installer-action@v9
+      - name: nix flake check
+        run: nix flake check --no-build

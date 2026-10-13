@@ -1,7 +1,7 @@
 # <p align="center">cava-bg - Native CAVA Visualizer for Wayland</p>
 
 <p align="center">
-  <img src="multimedia/Cava-BG.gif" width="100%">
+  <img src="docs/media/demo.gif" width="100%">
 </p>
 
 <p align="center">
@@ -51,7 +51,7 @@ If `dynamic_colors = false`, the visualizer uses user-defined colors from the `[
     - `preferred_outputs`: List of target monitor names (e.g. `["DP-1", "HDMI-A-1"]`).
     - `background_color`: Background color for the overlay layer (fully transparent by default).
 
-[Example Simple.webm](https://github.com/user-attachments/assets/4bb512ac-20aa-481f-be9f-94050b2d798a)
+[▶ simple.webm](docs/media/simple.webm) · [watch on GitHub](https://github.com/user-attachments/assets/4bb512ac-20aa-481f-be9f-94050b2d798a)
 
 ### Advanced Hidden Image / X-Ray System
 Displays a fixed or animated layer that is "revealed" by the bars as they move up and down.
@@ -59,7 +59,7 @@ Displays a fixed or animated layer that is "revealed" by the bars as they move u
 - **Advanced Features:** You can use your current wallpaper as the hidden image or enable an automatic "x-ray" search in a specific directory to find stylized versions of your wallpaper (`basename.*` and `basename_reveal.*`) for special visual effects, for both x-rays and parallax layers.
 
 <p align="center">
-  <img src="multimedia/Example%20Xray1.gif" alt="Xray Effect Example" width="100%">
+  <img src="docs/media/xray-1.gif" alt="Xray Effect Example" width="100%">
 </p>
 
 ### Multi-layer Parallax System
@@ -70,7 +70,7 @@ Create a 3D depth effect by moving independent layers at different speeds.
 - **Performance:** Lazy loading of assets, pausing on idle mode, disabling under high load.
 
 <p align="center">
-  <img src="multimedia/Example%20Parallax.gif" alt="Parallax Examples" width="100%">
+  <img src="docs/media/parallax.gif" alt="Parallax Examples" width="100%">
 </p>
 
 ### GUI Configuration Interface
@@ -92,6 +92,9 @@ The visualizer can save resources when no audio is playing:
 - **Transitions:** Smoothly restores performance when audio is detected again (configurable exit/enter duration).
 
 ## Installation
+
+> For manual and long-form install paths (prebuilt tarballs, systemd, NixOS,
+> building by hand) see **[docs/INSTALL.md](docs/INSTALL.md)**.
 
 ### One-line Install (curl)
 
@@ -198,22 +201,43 @@ Before installing from source or pre-built packages, ensure you have the followi
 - Rust toolchain (if building from source)
 ### Debian/Ubuntu (DEB packages)
 
-Download the `.deb` package from the releases section and install it with:
+Every release publishes a `.deb`. Install the latest with:
 
 ```bash
-sudo dpkg -i cava-bg_<version>_amd64.deb
-sudo apt-get install -f  # To fix dependencies if needed
+sudo apt install ./cava-bg_<version>_amd64.deb
+# or
+sudo dpkg -i cava-bg_<version>_amd64.deb && sudo apt-get install -f
 ```
-### Fedora (RPM packages)
 
-Download the `.rpm` package from the releases section and install it with:
+### Fedora / openSUSE (RPM packages)
+
+Every release publishes an `.rpm`:
 
 ```bash
-sudo rpm -i cava-bg-<version>.rpm
+sudo dnf install cava-bg-<version>-1.x86_64.rpm
 ```
-#### or using dnf
+
+### Releases are automatic
+
+Releases are cut automatically when a change lands on `main`:
+
+```text
+dev  ──▶  CI (fmt / clippy / tests)  ──▶  main  ──▶  release workflow
+                                                          ├─ tag v<version>
+                                                          ├─ source + binary tarballs
+                                                          ├─ .deb          (Debian / Ubuntu)
+                                                          ├─ .rpm          (Fedora / openSUSE)
+                                                          ├─ GitHub Release
+                                                          └─ AUR           (cava-bg)
+```
+
+The workflow reads the version from `Cargo.toml`, skips if the tag already exists,
+and pushes the rendered `PKGBUILD` + `.SRCINFO` to the AUR repository.
+
+To reproduce every artifact locally:
+
 ```bash
-sudo dnf install cava-bg-<version>.rpm
+./packaging/build-all.sh
 ```
 
 ### From Source
@@ -259,6 +283,9 @@ cava-bg on --systemd
 
 # Run in the foreground with a custom config
 cava-bg --config /path/to/config.toml
+
+# Open the GUI configurator (all state lives next to the config file)
+cava-bg gui
 
 # Run in foreground with debugging logs
 cava-bg on --debug
@@ -329,6 +356,26 @@ For custom and fallback color palettes, see the `[colors]` block.
 - LXQt (Wayland)
 - Deepin (Wayland)
 - Enlightenment (Wayland)
+
+## Contributing
+
+```text
+feature branch  ──▶  dev  ──▶  main  ──▶  release
+```
+
+* `dev` is the integration branch — every PR targets it and CI must be green.
+* `main` is release-only. Merging into it triggers the release workflow.
+* To cut a release, bump `version` in `Cargo.toml` on `dev`, then merge to `main`.
+  Never hardcode a version anywhere else; scripts read it through
+  `scripts/version.sh`.
+
+See [AGENTS.md](AGENTS.md) for the architecture, the config schema rules and the
+list of landmines to read before touching the renderer.
+
+```bash
+cargo xtask            # regenerate CONFIG.md after editing the config schema
+cargo xtask -- --check # CI runs this; fails when CONFIG.md is stale
+```
 
 ## Acknowledgments
 

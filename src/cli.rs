@@ -22,6 +22,7 @@ pub enum Command {
     Gui,
     __Run,
     __Supervisor,
+    __DefaultConfig,
 }
 
 impl Cli {
@@ -53,6 +54,7 @@ impl Cli {
             "gui" => Command::Gui,
             "__run" => Command::__Run,
             "__supervisor" => Command::__Supervisor,
+            "__default-config" => Command::__DefaultConfig,
             _ => unreachable!(),
         });
         Self {

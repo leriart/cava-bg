@@ -161,7 +161,7 @@ impl SupervisorState {
         let log_file = if self.systemd_mode {
             None
         } else {
-            let log_path = daemon_log_path(Some(name));
+            let log_path = daemon_log_path(&self.config_path, Some(name));
             match OpenOptions::new().create(true).append(true).open(&log_path) {
                 Ok(f) => Some(f),
                 Err(e) => {
@@ -197,7 +197,7 @@ impl SupervisorState {
         if let Some(mut child) = self.children.remove(name) {
             let _ = child.kill();
             let _ = child.wait();
-            let _ = fs::remove_file(pid_file_path(Some(name)));
+            let _ = fs::remove_file(pid_file_path(&self.config_path, Some(name)));
             daemon_debug_log(
                 self.debug_mode,
                 self.systemd_mode,
@@ -225,7 +225,7 @@ impl SupervisorState {
         for (name, status) in exited {
             self.children.remove(&name);
             self.dirty = true;
-            let _ = fs::remove_file(pid_file_path(Some(&name)));
+            let _ = fs::remove_file(pid_file_path(&self.config_path, Some(&name)));
             if self.active_outputs.contains_key(&name) {
                 warn!(
                     "[SUPERVISOR] Child '{}' exited with {}, restarting...",
@@ -281,7 +281,7 @@ impl SupervisorState {
             .collect();
         match serde_json::to_string_pretty(&payload) {
             Ok(json) => {
-                if let Err(err) = std::fs::write(&path, json) {
+                if let Err(err) = crate::paths::atomic_write(&path, json.as_bytes()) {
                     error!(
                         "[SUPERVISOR] Failed to write runtime output state {}: {err}",
                         path.display()
@@ -596,10 +596,11 @@ pub fn run_supervisor(daemon_context: DaemonContext) -> Result<()> {
         "[SUPERVISOR] Shutting down children...",
         None,
     );
+    let config_path = state.config_path.clone();
     for (name, mut child) in state.children.drain() {
         let _ = child.kill();
         let _ = child.wait();
-        let _ = fs::remove_file(pid_file_path(Some(&name)));
+        let _ = fs::remove_file(pid_file_path(&config_path, Some(&name)));
     }
 
     if systemd_mode {

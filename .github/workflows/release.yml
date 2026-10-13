@@ -1,0 +1,246 @@
+name: Release
+
+# dev -> main is the release trigger: every push to `main` that moves the
+# version in Cargo.toml produces a full set of artifacts, a GitHub release and
+# an AUR package bump. Tag pushes (`v*`) and manual runs are also supported.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      publish_aur:
+        description: 'Also push to the AUR repository'
+        type: boolean
+        default: true
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_BUILD_ARGS: --locked
+
+jobs:
+  plan:
+    name: Plan release
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.plan.outputs.version }}
+      tag: ${{ steps.plan.outputs.tag }}
+      release: ${{ steps.plan.outputs.release }}
+      publish_aur: ${{ steps.plan.outputs.publish_aur }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: plan
+        run: |
+          set -euo pipefail
+          source scripts/version.sh
+          VERSION="$(cava_bg_version)"
+          TAG="v${VERSION}"
+
+          # For a tag push the tag must agree with Cargo.toml.
+          if [ "${GITHUB_REF_TYPE}" = "tag" ] && [ "${GITHUB_REF_NAME}" != "$TAG" ]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match Cargo.toml version ${TAG}"
+            exit 1
+          fi
+
+          # On main, only release when the version actually moved.
+          RELEASE=false
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            RELEASE=true
+          elif git rev-parse "v${VERSION}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists — nothing to release."
+          else
+            RELEASE=true
+          fi
+
+          PUBLISH_AUR="$RELEASE"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            PUBLISH_AUR="${{ inputs.publish_aur }}"
+          fi
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            PUBLISH_AUR=false
+          fi
+
+          echo "version=${VERSION}"   >>"$GITHUB_OUTPUT"
+          echo "tag=${TAG}"           >>"$GITHUB_OUTPUT"
+          echo "release=${RELEASE}"   >>"$GITHUB_OUTPUT"
+          echo "publish_aur=${PUBLISH_AUR}" >>"$GITHUB_OUTPUT"
+          echo "::notice::cava-bg ${TAG} release=${RELEASE} publish_aur=${PUBLISH_AUR}"
+
+      - name: Ensure the tag points at main
+        if: steps.plan.outputs.release == 'true' && github.ref_type != 'tag'
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${{ steps.plan.outputs.tag }}" -m "cava-bg ${{ steps.plan.outputs.version }}"
+          git push origin "${{ steps.plan.outputs.tag }}"
+          echo "::notice::Created and pushed ${{ steps.plan.outputs.tag }}"
+
+  build:
+    name: Build all artifacts
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.tag }}
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev \
+            libdbus-1-dev pkg-config rpm fakeroot dpkg-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+
+      - name: Verify tests pass before packaging
+        run: cargo test --workspace --locked
+
+      - name: Build source + binary tarballs, .deb, .rpm, AUR files
+        run: |
+          # build-all.sh renders the PKGBUILD with an @SHA256SUM@ placeholder;
+          # it is re-rendered with the real checksum in the AUR job.
+          CARGO_BUILD_ARGS="--locked" bash packaging/build-all.sh --allow-dirty
+
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p upload
+          cp target/dist/*.tar.gz target/dist/*.sha256 upload/ 2>/dev/null || true
+          cp target/dist/*.deb upload/ 2>/dev/null || true
+          cp target/dist/*.rpm upload/ 2>/dev/null || true
+          ls -lh upload/
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: cava-bg-release
+          path: upload/
+          retention-days: 7
+          if-no-files-found: error
+
+  github-release:
+    name: Publish GitHub release
+    needs: [plan, build]
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: cava-bg-release
+          path: upload/
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          {
+            echo "## cava-bg ${TAG}"
+            echo
+            echo "Audio visualizer for Wayland, rendered as a wlr-layer-shell background layer."
+            echo
+            echo "### Install"
+            echo
+            echo '```bash'
+            echo "curl -fsSL https://raw.githubusercontent.com/leriart/cava-bg/main/install.sh | bash"
+            echo '```'
+            echo
+            echo "### Artifacts"
+            echo
+            echo "| File | Target distro |"
+            echo "|------|---------------|"
+            echo "| \`.deb\` | Debian / Ubuntu |"
+            echo "| \`.rpm\` | Fedora / openSUSE |"
+            echo "| \`-x86_64-unknown-linux-gnu.tar.gz\` | Arch / NixOS / manual |"
+            echo "| \`aur-*.tar.gz\` | Arch (AUR) |"
+            echo "| \`.tar.gz\` (no arch) | source |"
+          } >release-notes.md
+          gh release create "$TAG" upload/* --title "cava-bg ${TAG}" \
+            --notes-file release-notes.md --verify-tag
+          echo "::notice::Published https://github.com/leriart/cava-bg/releases/tag/${TAG}"
+
+  aur:
+    name: Publish to AUR
+    needs: [plan, build]
+    if: needs.plan.outputs.release == 'true' && needs.plan.outputs.publish_aur == 'true'
+    runs-on: ubuntu-latest
+    environment: aur
+    steps:
+      - name: Fail early when AUR credentials are missing
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          AUR_SSH_KNOWN_HOSTS: ${{ secrets.AUR_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          if [ -z "${AUR_SSH_PRIVATE_KEY}" ] || [ -z "${AUR_SSH_KNOWN_HOSTS}" ]; then
+            echo "::error::AUR_SSH_PRIVATE_KEY / AUR_SSH_KNOWN_HOSTS secrets are not set."
+            echo "::error::Add them under Settings -> Secrets (or Actions -> Environments -> aur)."
+            exit 1
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          path: source
+      - uses: actions/download-artifact@v4
+        with:
+          name: cava-bg-release
+          path: upload/
+
+      - name: Install AUR tooling
+        run: sudo pacman -Syu --noconfirm git base-devel 2>/dev/null || sudo apt-get update && sudo apt-get install -y --no-install-recommends git
+
+      - name: Configure SSH for aur.archlinux.org
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+          AUR_SSH_KNOWN_HOSTS: ${{ secrets.AUR_SSH_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" >~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          printf '%s\n' "$AUR_SSH_KNOWN_HOSTS" >~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Render PKGBUILD with the real checksum and push
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          ARCH: x86_64
+        run: |
+          set -euo pipefail
+
+          SRC_TAR="upload/cava-bg-${VERSION}.tar.gz"
+          test -f "$SRC_TAR" || { echo "::error::missing ${SRC_TAR}"; exit 1; }
+          SHA256="$(sha256sum "$SRC_TAR" | cut -d' ' -f1)"
+          echo "::notice::cava-bg-${VERSION}.tar.gz sha256=${SHA256}"
+
+          rm -rf /tmp/aur && git clone --quiet aur://aur.archlinux.org/cava-bg.git /tmp/aur
+          cd /tmp/aur
+
+          VERSION="$VERSION" ARCH=x86_64 SHA256="$SHA256" \
+            OUT_DIR=/tmp/aur bash source/packaging/aur/render-pkgbuild.sh
+
+          git add PKGBUILD .SRCINFO 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "::notice::AUR already up to date at ${VERSION}; nothing to push."
+            exit 0
+          fi
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "cava-bg ${VERSION}: update PKGBUILD and .SRCINFO" --quiet
+          git push --quiet
+          echo "::notice::Pushed cava-bg ${VERSION} to the AUR"

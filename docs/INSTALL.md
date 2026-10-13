@@ -1,5 +1,8 @@
 # Installation Guide
 
+Detailed and manual install paths. The quick options live in the
+[README](../README.md#installation); this document covers the long form.
+
 ## Recommended: source build from `main`
 
 By design, the canonical install path always builds from the current
@@ -11,7 +14,8 @@ the moment of the install.
 curl -fsSL https://raw.githubusercontent.com/leriart/cava-bg/main/install.sh | bash
 ```
 
-The installer accepts `--version v0.2.6` (or any tag / commit) to
+The installer accepts `--version v0.2.6` (or any tag / commit; see the
+[releases page](https://github.com/leriart/cava-bg/releases) for the current one) to
 pin a specific revision, and `--system` for a sudo'd install into
 `/usr/local/bin`. See "From Source" below for the full option list
 and the equivalent manual steps.
@@ -35,15 +39,16 @@ The AUR package automatically:
 
 The GitHub Releases attach a prebuilt `x86_64-unknown-linux-gnu`
 tarball for every published version. Use this if you want a 2-second
-install without a Rust toolchain. The 0.2.5 binary is linked
-against FFmpeg 8 (`libavutil.so.60`) and **will not work on a
-system that has already moved to FFmpeg 9** — use 0.2.6 or newer
-on FFmpeg 9 hosts.
+install without a Rust toolchain.
+
+> **FFmpeg ABI:** releases before 0.2.6 link against FFmpeg 8
+> (`libavutil.so.60`) and will not start on a host that has already moved to
+> FFmpeg 9. Check with `ldd ./cava-bg | grep libavutil`. Use 0.2.6 or newer.
 
 ### 1. Download the release you want
 
 ```bash
-VERSION="0.2.6"
+VERSION="<version>"            # e.g. 0.2.6
 ARCH="x86_64-unknown-linux-gnu"
 wget https://github.com/leriart/cava-bg/releases/download/v${VERSION}/cava-bg-${VERSION}-${ARCH}.tar.gz
 wget https://github.com/leriart/cava-bg/releases/download/v${VERSION}/cava-bg-${VERSION}-${ARCH}.tar.gz.sha256
@@ -77,10 +82,12 @@ sudo dnf install cava
 
 ### 4. Create configuration
 
+There is no `config.toml` to copy: the daemon writes a fully commented default
+the first time it starts. You can also emit one explicitly:
+
 ```bash
-mkdir -p ~/.config/cava-bg
-cp config.toml ~/.config/cava-bg/
-# Edit ~/.config/cava-bg/config.toml as needed
+cava-bg __default-config > ~/.config/cava-bg/config.toml
+# Then edit it, or launch the GUI with:  cava-bg gui
 ```
 
 ## From Source
@@ -106,7 +113,7 @@ but the default `curl | bash` flow does not use it.
 curl -fsSL https://raw.githubusercontent.com/leriart/cava-bg/main/install.sh | bash
 
 # Pin to a specific release tag
-curl -fsSL https://raw.githubusercontent.com/leriart/cava-bg/main/install.sh | bash -s -- --version v0.2.6
+curl -fsSL https://raw.githubusercontent.com/leriart/cava-bg/main/install.sh | bash -s -- --version v<version>
 
 # System-wide install (needs sudo)
 curl -fsSL https://raw.githubusercontent.com/leriart/cava-bg/main/install.sh | bash -s -- --system
@@ -195,7 +202,7 @@ Install the systemd user service for automatic startup:
 
 ```bash
 # Copy the service file
-cp cava-bg.service ~/.config/systemd/user/
+cp packaging/systemd/cava-bg.service ~/.config/systemd/user/
 
 # Enable and start
 systemctl --user enable --now cava-bg

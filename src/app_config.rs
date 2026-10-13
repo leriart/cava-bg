@@ -110,6 +110,9 @@ impl ConfigOverride {
         }
 
         if let Some(colors) = self.colors.as_mut() {
+            if !colors.legacy_gradient_colors.is_empty() {
+                report_unknown_color_keys(&colors.legacy_gradient_colors);
+            }
             if colors.palette.is_empty() {
                 let parsed = colors
                     .legacy_gradient_colors
@@ -268,7 +271,10 @@ pub struct AudioConfig {
     #[serde(default = "default_corner_segments")]
     pub corner_segments: u32,
     /// Legacy: enable bar gradient (replaced by `[colors]`).
-    #[serde(default, alias = "bar_gradient")]
+    // `skip_serializing` keeps internal back-compat state out of the config we
+    // ship and out of every rewrite the GUI performs; the alias is what makes
+    // an old `bar_gradient = true` still parse.
+    #[serde(default, alias = "bar_gradient", skip_serializing)]
     pub _legacy_bar_gradient: bool,
     /// Legacy: gradient config (replaced by `[colors]`).
     #[serde(default, alias = "gradient", skip_serializing)]
@@ -1255,8 +1261,8 @@ impl ParallaxProfile {
         let dir = profiles_dir.join(&self.name);
         std::fs::create_dir_all(&dir)?;
         let path = dir.join("parallax.toml");
-        let content = toml::to_string_pretty(self)
-            .map_err(|e| anyhow::anyhow!("Failed to serialize: {}", e))?;
+        let content =
+            serialize_config(self).map_err(|e| anyhow::anyhow!("Failed to serialize: {}", e))?;
         std::fs::write(&path, content)?;
         Ok(())
     }
@@ -2057,11 +2063,264 @@ fn default_effect_tint() -> [f32; 4] {
     [0.75, 0.85, 1.0, 0.95]
 }
 
+/// Decimal places kept when re-rendering `f32` values into TOML.
+///
+/// Six is far more precision than any config slider needs and matches what
+/// `CONFIG.md` documents.
+const CONFIG_FLOAT_PRECISION: usize = 6;
+
+/// Rewrite `f32` noise out of a freshly serialized TOML document.
+///
+/// `toml` widens `f32` to `f64` before printing, so a value the user set to
+/// `0.1` is written back as `0.10000000149011612`. Every save from the GUI, every
+/// `output-on` toggle and every default config shipped to a new user carried
+/// this. Rounding here keeps generated configs readable and diff-stable.
+///
+/// Quoted and literal strings are skipped, so a path like `"/srv/1.5000/"`
+/// is never touched.
+fn sanitize_floats(toml_text: &str) -> String {
+    let bytes: Vec<char> = toml_text.chars().collect();
+    let mut out = String::with_capacity(toml_text.len());
+    let mut i = 0;
+
+    // Tracks which quote character, if any, currently delimits a string so that
+    // a number-looking substring inside a value is left alone.
+    let mut quote: Option<char> = None;
+    // True while we are on a continuation line of an array or inline table.
+    let mut in_array = false;
+
+    while i < bytes.len() {
+        let c = bytes[i];
+
+        match quote {
+            Some(q) => {
+                out.push(c);
+                if c == q {
+                    quote = None;
+                } else if c == '\\' && q == '"' && i + 1 < bytes.len() {
+                    out.push(bytes[i + 1]);
+                    i += 1;
+                }
+                i += 1;
+            }
+            None => match c {
+                '"' | '\'' => {
+                    quote = Some(c);
+                    out.push(c);
+                    i += 1;
+                }
+                '[' => {
+                    in_array = true;
+                    out.push(c);
+                    i += 1;
+                }
+                ']' => {
+                    in_array = false;
+                    out.push(c);
+                    i += 1;
+                }
+                _ => {
+                    if let Some(consumed) = round_float_at(&bytes, i, &mut out) {
+                        i = consumed;
+                    } else if !in_array && c == '#' {
+                        // Comment: copy verbatim to end of line.
+                        while i < bytes.len() && bytes[i] != '\n' {
+                            out.push(bytes[i]);
+                            i += 1;
+                        }
+                        continue;
+                    } else {
+                        out.push(c);
+                        i += 1;
+                    }
+                }
+            },
+        }
+    }
+
+    out
+}
+
+/// If a TOML float literal starts at `start`, write its rounded form into `out`
+/// and return the index just past it. Otherwise return `None` and leave `out`
+/// untouched.
+fn round_float_at(chars: &[char], start: usize, out: &mut String) -> Option<usize> {
+    let mut i = start;
+    if i < chars.len() && (chars[i] == '-' || chars[i] == '+') {
+        i += 1;
+    }
+    let digits_start = i;
+    while i < chars.len() && chars[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i == digits_start {
+        return None;
+    }
+    // Must be a float, not the integer part of a bare number or a date.
+    if i >= chars.len() || chars[i] != '.' {
+        return None;
+    }
+    let frac_start = i + 1;
+    let mut j = frac_start;
+    while j < chars.len() && chars[j].is_ascii_digit() {
+        j += 1;
+    }
+    if j == frac_start {
+        return None;
+    }
+    // Exponent part must be copied through unchanged.
+    let mut end = j;
+    if j < chars.len() && (chars[j] == 'e' || chars[j] == 'E') {
+        let mut k = j + 1;
+        if k < chars.len() && (chars[k] == '-' || chars[k] == '+') {
+            k += 1;
+        }
+        let exp_start = k;
+        while k < chars.len() && chars[k].is_ascii_digit() {
+            k += 1;
+        }
+        if k > exp_start {
+            end = k;
+        }
+    }
+    // Do not swallow a trailing identifier character (e.g. `1.5abc`).
+    if end < chars.len() && (chars[end].is_ascii_alphanumeric() || chars[end] == '_') {
+        return None;
+    }
+
+    let literal: String = chars[start..end].iter().collect();
+    let value: f64 = literal.parse().ok()?;
+
+    // Fixed notation with N decimals silently destroys very small values
+    // (1.5e-7 rounds to 0.0), so anything that cannot survive that is emitted
+    // in scientific notation with N significant digits instead.
+    let fixed = format!("{:.*}", CONFIG_FLOAT_PRECISION, value);
+    let rendered = if fixed.parse::<f64>().map(|v| v == 0.0) == Ok(true) && value != 0.0 {
+        let scientific = format!("{:.*e}", CONFIG_FLOAT_PRECISION - 1, value);
+        if scientific.contains('e') {
+            scientific
+        } else {
+            fixed
+        }
+    } else {
+        fixed
+    };
+
+    let trimmed = trim_float_literal(&rendered);
+    let rendered = if trimmed.contains('.') || trimmed.contains('e') || trimmed.contains('E') {
+        trimmed
+    } else {
+        format!("{trimmed}.0")
+    };
+
+    out.push_str(&rendered);
+    Some(end)
+}
+
+/// Drop trailing zeros from a float literal's mantissa, keeping it a float.
+///
+/// The exponent has to be split off first: `"1.50000e-7"` does not end in a
+/// zero, so a plain `trim_end_matches('0')` would leave the noise in place.
+fn trim_float_literal(literal: &str) -> String {
+    let (mantissa, exponent) = match literal.find(['e', 'E']) {
+        Some(idx) => (&literal[..idx], &literal[idx..]),
+        None => (literal, ""),
+    };
+    let trimmed = if mantissa.contains('.') {
+        mantissa.trim_end_matches('0').trim_end_matches('.')
+    } else {
+        mantissa
+    };
+    format!("{trimmed}{exponent}")
+}
+
+/// Serialize a config (or any part of one) to TOML with readable floats.
+///
+/// Every write path in the project goes through this so that generated configs
+/// never accumulate `f32` widening artefacts.
+pub fn serialize_config<T: serde::Serialize>(value: &T) -> Result<String, toml::ser::Error> {
+    toml::to_string_pretty(value).map(|text| sanitize_floats(&text))
+}
+
+/// Parse a `#rrggbb` (or `rrggbb`) string into normalised RGBA.
+///
+/// Accepts 3-digit (`#f0a`), 6-digit and 8-digit (`#rrggbbaa`) forms and is
+/// total: unparseable input falls back to `fallback` instead of panicking.
+///
+/// This previously did `&hex[1..3]` + `u8::from_str_radix(..).unwrap()`, which
+/// aborted the whole daemon on a typo in `config.toml` — a hard crash during
+/// hot-reload rather than a recoverable error.
+pub fn parse_color(hex: &str, alpha: f32, fallback: [f32; 4]) -> [f32; 4] {
+    let value = hex.trim().trim_start_matches('#');
+
+    let parsed = match value.len() {
+        3 => value
+            .chars()
+            .map(|c| c.to_digit(16))
+            .collect::<Option<Vec<u32>>>()
+            .map(|d| {
+                let e = |c: u32| (c * 17) as f32 / 255.0;
+                [e(d[0]), e(d[1]), e(d[2]), alpha]
+            }),
+        6 | 8 => {
+            let byte = |i: usize| -> Option<f32> {
+                value
+                    .get(i * 2..i * 2 + 2)
+                    .and_then(|s| u8::from_str_radix(s, 16).ok())
+                    .map(|v| v as f32 / 255.0)
+            };
+            let rgb = match (byte(0), byte(1), byte(2)) {
+                (Some(r), Some(g), Some(b)) => [r, g, b],
+                _ => return warn_bad_color(hex, fallback),
+            };
+            let a = if value.len() == 8 {
+                match byte(3) {
+                    Some(a) => a,
+                    None => return warn_bad_color(hex, fallback),
+                }
+            } else {
+                alpha
+            };
+            Some([rgb[0], rgb[1], rgb[2], a])
+        }
+        _ => None,
+    };
+
+    parsed.unwrap_or_else(|| warn_bad_color(hex, fallback))
+}
+
+fn warn_bad_color(hex: &str, fallback: [f32; 4]) -> [f32; 4] {
+    eprintln!("warning: invalid colour \"{hex}\" (expected #rrggbb), using fallback");
+    fallback
+}
+
+/// Warn once per key about `[colors]` entries that the flattened legacy map
+/// swallowed but that are not actually legacy gradient colours.
+///
+/// `#[serde(flatten)] HashMap<String, String>` is required for backward
+/// compatibility with old `gradient_color_*` keys, but it also captures *any*
+/// unknown key — so `gradient_directin = "LeftToRight"` used to be accepted
+/// silently and did nothing.
+fn report_unknown_color_keys(map: &HashMap<String, String>) {
+    static REPORTED: once_cell::sync::Lazy<std::sync::Mutex<std::collections::HashSet<String>>> =
+        once_cell::sync::Lazy::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+    for (key, value) in map {
+        if parse_legacy_color(value).is_some() {
+            continue;
+        }
+        let mut seen = match REPORTED.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        if seen.insert(key.clone()) {
+            eprintln!("warning: ignoring unknown key in [colors]: \"{key}\" (value: \"{value}\")");
+        }
+    }
+}
+
 pub fn color_from_hex(hex: String, a: f32) -> [f32; 4] {
-    let r = u8::from_str_radix(&hex[1..3], 16).unwrap() as f32 / 255f32;
-    let g = u8::from_str_radix(&hex[3..5], 16).unwrap() as f32 / 255f32;
-    let b = u8::from_str_radix(&hex[5..7], 16).unwrap() as f32 / 255f32;
-    [r, g, b, a]
+    parse_color(&hex, a, [0.0, 0.0, 0.0, a])
 }
 
 pub fn array_from_config_color(color: ConfigColor) -> [f32; 4] {
@@ -2227,6 +2486,10 @@ impl Config {
                 self.display.margin_left = margin_u32;
                 self.display.margin_right = margin_u32;
             }
+        }
+
+        if !self.colors.legacy_gradient_colors.is_empty() {
+            report_unknown_color_keys(&self.colors.legacy_gradient_colors);
         }
 
         if self.colors.palette.is_empty() {
@@ -2501,4 +2764,267 @@ fn expand_tilde_path(path: &Path) -> PathBuf {
         }
     }
     path.to_path_buf()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn approx(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-5
+    }
+
+    #[test]
+    fn parse_color_accepts_six_digit_hex() {
+        let c = parse_color("#ff8000", 1.0, [0.0; 4]);
+        assert!(approx(c[0], 1.0) && approx(c[1], 128.0 / 255.0) && approx(c[2], 0.0));
+        assert!(approx(c[3], 1.0));
+    }
+
+    #[test]
+    fn parse_color_accepts_missing_hash_and_surrounding_space() {
+        let a = parse_color("#ffffff", 1.0, [0.0; 4]);
+        let b = parse_color("  ffffff ", 1.0, [0.0; 4]);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn parse_color_accepts_three_and_eight_digit_forms() {
+        let short = parse_color("#f0a", 0.5, [0.0; 4]);
+        assert!(approx(short[0], 1.0) && approx(short[1], 0.0) && approx(short[2], 170.0 / 255.0));
+        assert!(approx(short[3], 0.5), "short form keeps the passed alpha");
+
+        let long = parse_color("#ff000080", 1.0, [0.0; 4]);
+        assert!(
+            approx(long[3], 128.0 / 255.0),
+            "8-digit form overrides alpha"
+        );
+    }
+
+    #[test]
+    fn parse_color_never_panics_on_garbage() {
+        // Regression: this used to `unwrap()` a slice index and abort the daemon
+        // when a user typo'd a colour in config.toml.
+        for bad in ["", "#", "#gg", "#12345", "nonsense", "#zzzzzz", "#ff 00 00"] {
+            let c = parse_color(bad, 0.25, [9.0, 9.0, 9.0, 9.0]);
+            assert_eq!(c, [9.0, 9.0, 9.0, 9.0], "input {bad:?} should fall back");
+        }
+    }
+
+    #[test]
+    fn parse_color_tolerates_extra_hash_prefixes() {
+        // `trim_start_matches` is not `strip_prefix`; a doubled '#' is harmless.
+        assert_eq!(
+            parse_color("##ff0000", 1.0, [0.0; 4]),
+            parse_color("#ff0000", 1.0, [0.0; 4])
+        );
+    }
+
+    #[test]
+    fn color_from_hex_keeps_callers_alpha() {
+        assert!(approx(color_from_hex("#00ff00".into(), 0.5)[3], 0.5));
+    }
+
+    #[test]
+    fn wildcard_matching() {
+        assert!(wildcard_matches("DP-1", "DP-1"));
+        assert!(wildcard_matches("DP-*", "DP-1"));
+        assert!(wildcard_matches("*", "anything"));
+        assert!(wildcard_matches("DP-?", "DP-1"));
+        assert!(!wildcard_matches("DP-?", "DP-10"));
+        assert!(!wildcard_matches("DP-1", "DP-2"));
+        assert!(
+            wildcard_matches("dp-1", "DP-1"),
+            "matching is case insensitive"
+        );
+        assert!(
+            !wildcard_matches("", "DP-1"),
+            "empty pattern matches nothing"
+        );
+    }
+
+    #[test]
+    fn more_specific_output_override_wins() {
+        let toml_str = r#"
+            [output."DP-1"]
+            audio = { bar_count = 10 }
+
+            [output."DP-*"]
+            audio = { bar_count = 20 }
+        "#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        let dp1 = OutputDescriptor {
+            name: "DP-1".into(),
+            connector: Some("DP-1".into()),
+            index: Some(0),
+        };
+        let resolved = cfg.resolve_for_output(&dp1).unwrap();
+        assert_eq!(
+            resolved.audio.bar_count, 10,
+            "exact name beats the wildcard"
+        );
+    }
+
+    #[test]
+    fn wildcard_fallback_applies_when_no_exact_match() {
+        let toml_str = r#"
+            [output."DP-*"]
+            audio = { bar_count = 20 }
+        "#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        let hdmi = OutputDescriptor {
+            name: "HDMI-A-1".into(),
+            connector: Some("HDMI-A-1".into()),
+            index: Some(1),
+        };
+        // No match at all -> base config, untouched bar_count default.
+        assert_eq!(cfg.resolve_for_output(&hdmi).unwrap().audio.bar_count, 76);
+    }
+
+    #[test]
+    fn disabled_output_resolves_to_none() {
+        let toml_str = r#"
+            [output."HDMI-A-1"]
+            enabled = false
+        "#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        let hdmi = OutputDescriptor {
+            name: "HDMI-A-1".into(),
+            connector: Some("HDMI-A-1".into()),
+            index: Some(0),
+        };
+        assert!(cfg.resolve_for_output(&hdmi).is_none());
+    }
+
+    #[test]
+    fn global_override_applies_to_every_output() {
+        let toml_str = r#"
+            [global]
+            audio = { bar_count = 42 }
+        "#;
+        let cfg: Config = toml::from_str(toml_str).unwrap();
+        let out = OutputDescriptor {
+            name: "ANY".into(),
+            connector: None,
+            index: None,
+        };
+        assert_eq!(cfg.resolve_for_output(&out).unwrap().audio.bar_count, 42);
+    }
+
+    #[test]
+    fn unknown_enum_value_falls_back_instead_of_failing_the_whole_config() {
+        let cfg: Config = toml::from_str("[audio]\nvisualization_mode = \"NotAMode\"\n").unwrap();
+        assert_eq!(cfg.audio.visualization_mode, VisualizationMode::Bars);
+    }
+
+    #[test]
+    fn unknown_visualization_mode_alias_is_accepted() {
+        for alias in ["bars", "BARS", "Bars"] {
+            let cfg: Config =
+                toml::from_str(&format!("[audio]\nvisualization_mode = \"{alias}\"\n")).unwrap();
+            assert_eq!(cfg.audio.visualization_mode, VisualizationMode::Bars);
+        }
+    }
+
+    #[test]
+    fn config_round_trips_through_toml() {
+        let original = Config::default();
+        let text = serialize_config(&original).unwrap();
+        let parsed: Config = toml::from_str(&text).unwrap();
+        assert_eq!(
+            serialize_config(&parsed).unwrap(),
+            text,
+            "Config must survive a serialize/deserialize cycle"
+        );
+    }
+
+    #[test]
+    fn sanitize_floats_removes_f32_widening_noise() {
+        let input = "gap = 0.10000000149011612\nsmoothing = 0.800000011920929\n";
+        assert_eq!(sanitize_floats(input), "gap = 0.1\nsmoothing = 0.8\n");
+    }
+
+    #[test]
+    fn sanitize_floats_keeps_whole_numbers_as_floats() {
+        // `framerate`-style values must not silently become integers: the
+        // schema declares them as f32 and a bare `0` would still parse, but
+        // `bar_width = 5` reads as a mistake next to the rest of the file.
+        assert_eq!(sanitize_floats("bar_width = 5.0\n"), "bar_width = 5.0\n");
+        assert_eq!(sanitize_floats("opacity = 0.0\n"), "opacity = 0.0\n");
+    }
+
+    #[test]
+    fn sanitize_floats_handles_arrays_and_exponents() {
+        assert_eq!(
+            sanitize_floats("palette = [\n    0.5799999833106995,\n    0.8899999856948853,\n]\n"),
+            "palette = [\n    0.58,\n    0.89,\n]\n"
+        );
+        assert_eq!(sanitize_floats("x = 1.5000005e-7\n"), "x = 1.5e-7\n");
+    }
+
+    #[test]
+    fn sanitize_floats_never_touches_strings_or_comments() {
+        let input = concat!(
+            "path = \"/srv/1.5000/music\"\n",
+            "name = \'v1.2.3\'\n",
+            "# a comment mentioning 3.14159265358979\n",
+            "real = 3.14159265358979\n",
+        );
+        let out = sanitize_floats(input);
+        assert!(
+            out.contains("\"/srv/1.5000/music\""),
+            "basic string changed"
+        );
+        assert!(out.contains("\'v1.2.3\'"), "literal string changed");
+        assert!(
+            out.contains("# a comment mentioning 3.14159265358979"),
+            "comment changed"
+        );
+        assert!(
+            out.contains("real = 3.141593"),
+            "actual float was not rounded"
+        );
+    }
+
+    #[test]
+    fn generated_default_config_has_no_float_noise() {
+        let text = serialize_config(&Config::default()).unwrap();
+        for line in text.lines() {
+            let after_equals = line.split('=').nth(1).unwrap_or("");
+            for token in after_equals.split([',', ']', '}', '#']) {
+                let t = token.trim();
+                if let Some((_, frac)) = t.split_once('.') {
+                    assert!(
+                        frac.len() <= CONFIG_FLOAT_PRECISION,
+                        "line has untrimmed float precision: {line:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shipped_default_config_does_not_leak_internal_legacy_fields() {
+        // `_legacy_*` fields exist only to read old configs; writing them back
+        // put noise like `_legacy_bar_gradient = false` in every user file.
+        let text = serialize_config(&Config::default()).unwrap();
+        assert!(
+            !text.contains("_legacy_"),
+            "legacy internals leaked into config"
+        );
+        // ...but an old config using the legacy alias still parses.
+        let mut legacy: Config =
+            toml::from_str("[audio]\nbar_gradient = true\nglow_intensity = 2.0\n").unwrap();
+        legacy.normalize_compat_fields();
+        assert!(legacy.audio._legacy_bar_gradient);
+        assert!((legacy.audio._legacy_glow_intensity - 2.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn empty_toml_yields_defaults() {
+        let cfg: Config = toml::from_str("").unwrap();
+        assert_eq!(cfg.audio.bar_count, 76);
+        assert_eq!(cfg.general.framerate, 60);
+        assert!(cfg.colors.use_gradient);
+    }
 }

@@ -155,8 +155,8 @@ fn spawn_cava_reader(
                 Ok(()) => {
                     let mut bar_heights = vec![0.0f32; bar_count];
                     let mut peak = 0.0f32;
-                    for (i, chunk) in buffer.chunks_exact(2).enumerate() {
-                        let num = u16::from_le_bytes([chunk[0], chunk[1]]);
+                    for (i, pair) in buffer.as_chunks::<2>().0.iter().enumerate() {
+                        let num = u16::from_le_bytes(*pair);
                         let value = (num as f32) / 65530.0;
                         peak = peak.max(value);
                         bar_heights[i] = value;
@@ -554,11 +554,15 @@ impl WaylandRenderer {
         color_update_tx: Sender<ColorUpdatePayload>,
     ) {
         thread::spawn(move || {
-            let config_dir = config_path
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("/tmp"))
-                .to_path_buf();
-            let socket_path = config_dir.join("runtime-color-update.sock");
+            let paths = crate::paths::RuntimePaths::new(&config_path);
+            let socket_path = paths.color_socket();
+            if let Err(e) = paths.ensure_dir() {
+                error!(
+                    "Failed to create config dir {} for colour socket: {e}",
+                    paths.dir().display()
+                );
+                return;
+            }
             let _ = std::fs::remove_file(&socket_path);
             let socket = match std::os::unix::net::UnixDatagram::bind(&socket_path) {
                 Ok(s) => s,
@@ -568,7 +572,7 @@ impl WaylandRenderer {
                 }
             };
             info!(
-                "Push directo de color habilitado en socket (datagram) {}",
+                "Live colour push enabled on datagram socket {}",
                 socket_path.display()
             );
             socket.set_nonblocking(true).ok();
@@ -622,64 +626,66 @@ impl WaylandRenderer {
                 if !running.load(Ordering::SeqCst) {
                     break;
                 }
-                let modified = match std::fs::metadata(&config_path).and_then(|m| m.modified()) {
-                    Ok(m) => m,
-                    Err(_) => continue,
-                };
-                if modified > last_modified {
-                    info!("Config file modified, reloading…");
-                    match std::fs::read_to_string(&config_path) {
-                        Ok(content) => match toml::from_str::<Config>(&content) {
-                            Ok(new_config) => {
-                                if config_update_tx.send(new_config).is_err() {
-                                    break;
-                                }
-                                last_modified = modified;
-                                info!("Config hot-reloaded successfully");
+                if !crate::paths::modified_since(&config_path, last_modified) {
+                    continue;
+                }
+                // Re-stat once we know something changed so that a burst of
+                // writes only triggers a single reload.
+                let modified = std::fs::metadata(&config_path)
+                    .and_then(|m| m.modified())
+                    .unwrap_or(last_modified);
+                info!("Config file modified, reloading…");
+                match std::fs::read_to_string(&config_path) {
+                    Ok(content) => match toml::from_str::<Config>(&content) {
+                        Ok(new_config) => {
+                            if config_update_tx.send(new_config).is_err() {
+                                break;
                             }
-                            Err(e) => {
-                                error!("Failed to parse updated config: {}", e);
-                            }
-                        },
-                        Err(e) => {
-                            error!("Failed to read updated config: {}", e);
+                            last_modified = modified;
+                            info!("Config hot-reloaded successfully");
                         }
+                        Err(e) => {
+                            // Keep the old mtime so the next retry re-reads it;
+                            // a half-written file will be picked up on retry.
+                            error!("Failed to parse updated config: {}", e);
+                        }
+                    },
+                    Err(e) => {
+                        error!("Failed to read updated config: {}", e);
                     }
                 }
             }
         });
     }
 
-    #[allow(dead_code)]
-    pub fn push_live_color_update(config: &Config) -> Result<()> {
-        let config_dir = dirs::config_dir()
-            .unwrap_or_else(|| PathBuf::from("~/.config"))
-            .join("cava-bg");
-        let socket_path = config_dir.join("runtime-color-update.sock");
+    /// Push a colour palette to a running daemon's live-update socket.
+    ///
+    /// The socket lives next to the *daemon's* config file, so the caller must
+    /// pass the same config path the daemon was started with.
+    #[allow(dead_code)] // exercised by integration harnesses, not by the binary
+    pub fn push_live_color_update(config: &Config, config_path: &Path) -> Result<()> {
+        let socket_path = crate::paths::RuntimePaths::new(config_path).color_socket();
         if !socket_path.exists() {
             return Err(anyhow::anyhow!(
-                "Socket no encontrado (daemon no corriendo?)"
+                "Socket not found at {} (daemon not running?)",
+                socket_path.display()
             ));
         }
 
         let payload = ColorUpdatePayload {
-            colors: if !config.colors.palette.is_empty() {
-                config.colors.palette.clone()
-            } else {
-                Vec::new()
-            },
+            colors: config.colors.palette.clone(),
             bar_alpha: Some(config.audio.bar_alpha),
         };
 
         let message = serde_json::to_vec(&payload)
-            .map_err(|e| anyhow::anyhow!("Error serializando payload: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to serialize payload: {}", e))?;
 
         let socket = std::os::unix::net::UnixDatagram::unbound()
-            .map_err(|e| anyhow::anyhow!("Error creando socket datagram: {}", e))?;
+            .map_err(|e| anyhow::anyhow!("Failed to create datagram socket: {}", e))?;
 
-        socket
-            .send_to(&message, &socket_path)
-            .map_err(|e| anyhow::anyhow!("Error enviando datagrama al socket: {}", e))?;
+        socket.send_to(&message, &socket_path).map_err(|e| {
+            anyhow::anyhow!("Failed to send datagram to {}: {e}", socket_path.display())
+        })?;
 
         Ok(())
     }
@@ -1416,6 +1422,55 @@ struct AppState {
 }
 
 impl AppState {
+    /// Interval used by the external cursor pollers while the pointer is moving.
+    const CURSOR_POLL_ACTIVE: Duration = Duration::from_millis(16);
+    /// Interval used once the pointer has stopped moving.
+    ///
+    /// `hyprctl cursorpos` / `wlrctl pointer` fork a process per poll, so a
+    /// fixed 16 ms loop cost ~3600 spawns per minute for the entire life of the
+    /// daemon even while the user never touches the mouse. Backing off to 10 Hz
+    /// when the reported position stops changing removes the vast majority of
+    /// those spawns without any visible latency: the moment the pointer moves
+    /// again the next poll (at most 100 ms later) reports the new position and
+    /// the interval drops straight back to 16 ms.
+    const CURSOR_POLL_IDLE: Duration = Duration::from_millis(100);
+
+    /// Spawn a poller that runs `poll` and forwards every `(x, y)` it yields,
+    /// adapting its own cadence to whether the value is actually changing.
+    ///
+    /// `poll` returns `Option<(f32, f32)>` in normalised 0..1 coordinates.
+    fn spawn_adaptive_cursor_poller(
+        name: &'static str,
+        poll: impl Fn() -> Option<(f32, f32)> + Send + 'static,
+        tx: Sender<(f32, f32)>,
+    ) {
+        std::thread::spawn(move || {
+            let mut last: Option<(f32, f32)> = None;
+            loop {
+                if let Some(pos) = poll() {
+                    let moved = last
+                        .map(|p| (p.0 - pos.0).abs() > 1e-4 || (p.1 - pos.1).abs() > 1e-4)
+                        .unwrap_or(true);
+                    if moved {
+                        if tx.send(pos).is_err() {
+                            break;
+                        }
+                        last = Some(pos);
+                    }
+                    std::thread::sleep(if moved {
+                        Self::CURSOR_POLL_ACTIVE
+                    } else {
+                        Self::CURSOR_POLL_IDLE
+                    });
+                } else {
+                    // Source temporarily unavailable; do not hammer it.
+                    std::thread::sleep(Self::CURSOR_POLL_IDLE);
+                }
+            }
+            debug!("[CURSOR] {name} poller stopped");
+        });
+    }
+
     /// Starts a background thread that periodically reads the cursor position
     /// via `hyprctl cursorpos`. Works across all windows, not just cava-bg's surface.
     /// Falls back silently if hyprctl isn't available.
@@ -1484,23 +1539,20 @@ impl AppState {
         );
 
         let (res_w, res_h) = resolution;
-        std::thread::spawn(move || loop {
-            let output = std::process::Command::new("hyprctl")
-                .args(["cursorpos"])
-                .output();
-
-            if let Ok(output) = output {
-                if output.status.success() {
-                    let text = String::from_utf8_lossy(&output.stdout).to_string();
-                    if let Some((nx, ny)) = Self::parse_xy_csv(&text, res_w, res_h) {
-                        if tx.send((nx, ny)).is_err() {
-                            break;
-                        }
-                    }
+        Self::spawn_adaptive_cursor_poller(
+            "hyprctl",
+            move || {
+                let output = std::process::Command::new("hyprctl")
+                    .args(["cursorpos"])
+                    .output()
+                    .ok()?;
+                if !output.status.success() {
+                    return None;
                 }
-            }
-            std::thread::sleep(std::time::Duration::from_millis(16));
-        });
+                Self::parse_xy_csv(&String::from_utf8_lossy(&output.stdout), res_w, res_h)
+            },
+            tx,
+        );
         Some(())
     }
 
@@ -1548,29 +1600,25 @@ impl AppState {
         );
 
         let (res_w, res_h) = resolution;
-        std::thread::spawn(move || {
-            loop {
+        Self::spawn_adaptive_cursor_poller(
+            "wlrctl",
+            move || {
                 let output = std::process::Command::new("wlrctl")
                     .args(["pointer"])
-                    .output();
-
-                if let Ok(output) = output {
-                    let text = String::from_utf8_lossy(&output.stdout).to_string();
-                    // wlrctl outputs: "x y" separated by space or tab
-                    let parts: Vec<&str> = text.trim().splitn(2, [' ', '\t']).collect();
-                    if parts.len() == 2 {
-                        let x: f32 = parts[0].trim().parse().unwrap_or(0.0);
-                        let y: f32 = parts[1].trim().parse().unwrap_or(0.0);
-                        let nx = (x / res_w).clamp(0.0, 1.0);
-                        let ny = (y / res_h).clamp(0.0, 1.0);
-                        if tx.send((nx, ny)).is_err() {
-                            break;
-                        }
-                    }
+                    .output()
+                    .ok()?;
+                // wlrctl outputs: "x y" separated by space or tab
+                let text = String::from_utf8_lossy(&output.stdout);
+                let parts: Vec<&str> = text.trim().splitn(2, [' ', '\t']).collect();
+                if parts.len() != 2 {
+                    return None;
                 }
-                std::thread::sleep(std::time::Duration::from_millis(16));
-            }
-        });
+                let x: f32 = parts[0].trim().parse().ok()?;
+                let y: f32 = parts[1].trim().parse().ok()?;
+                Some(((x / res_w).clamp(0.0, 1.0), (y / res_h).clamp(0.0, 1.0)))
+            },
+            tx,
+        );
         Some(())
     }
 
@@ -1676,7 +1724,7 @@ impl AppState {
 
         match serde_json::to_string_pretty(&payload) {
             Ok(json) => {
-                if let Err(err) = std::fs::write(path, json) {
+                if let Err(err) = crate::paths::atomic_write(path, json.as_bytes()) {
                     warn!(
                         "Failed to write runtime output state {}: {err}",
                         path.display()

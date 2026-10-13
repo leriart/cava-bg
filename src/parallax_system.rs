@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::app_config::{
@@ -92,12 +93,16 @@ pub struct ComputedParallaxLayer {
     pub depth: f32,
     pub z_index: i32,
     pub transform: LayerRenderTransform,
-    pub frame: Option<VideoFrame>,
+    /// Shared so that cloning a layer never copies the RGBA payload: a parallax
+    /// stack hands the same frame to the cached copy and to the per-output
+    /// consumer every tick, and at 640x360 that used to be several MB/s of
+    /// pointless memcpy plus one 900 KB allocation per effect layer.
+    pub frame: Option<Arc<VideoFrame>>,
 }
 
 #[derive(Debug)]
 enum LayerAsset {
-    Static(VideoFrame),
+    Static(Arc<VideoFrame>),
     Dynamic(VideoDecoder),
     Effect,
 }
@@ -109,7 +114,7 @@ struct RuntimeLayer {
     source: PathBuf,
     inferred_type: LayerSourceType,
     asset: Option<LayerAsset>,
-    last_frame: Option<VideoFrame>,
+    last_frame: Option<Arc<VideoFrame>>,
 }
 
 impl RuntimeLayer {
@@ -118,11 +123,11 @@ impl RuntimeLayer {
         audio_cfg: Option<&AudioConfig>,
         playback_time: f64,
         audio: AudioBands,
-    ) -> Option<VideoFrame> {
+    ) -> Option<Arc<VideoFrame>> {
         match self.asset.as_mut() {
             Some(LayerAsset::Static(frame)) => {
                 self.last_frame = Some(frame.clone());
-                self.last_frame.clone()
+                Some(frame.clone())
             }
             Some(LayerAsset::Dynamic(decoder)) => {
                 let maybe_frame = if let Some(duration) = decoder.stream_duration_seconds() {
@@ -136,6 +141,7 @@ impl RuntimeLayer {
                 };
 
                 if let Some(frame) = maybe_frame {
+                    let frame = Arc::new(frame);
                     self.last_frame = Some(frame.clone());
                     Some(frame)
                 } else {
@@ -144,6 +150,7 @@ impl RuntimeLayer {
             }
             Some(LayerAsset::Effect) => {
                 let frame = self.generate_effect_frame(audio_cfg, playback_time, audio);
+                let frame = Arc::new(frame);
                 self.last_frame = Some(frame.clone());
                 Some(frame)
             }
@@ -151,15 +158,64 @@ impl RuntimeLayer {
         }
     }
 
+    /// Reuses the previous frame's RGBA buffer when nothing else still holds a
+    /// reference to it (i.e. the renderer already uploaded it).
+    ///
+    /// At 640x360 a fresh allocation per effect layer per frame is ~900 KB; at
+    /// 60 fps with two effect layers that is well over 100 MB/s of allocator
+    /// traffic for pixels that were just freed.
+    fn take_reusable_buffer(&mut self, needed: usize, playback_time: f64) -> VideoFrame {
+        let mut reused = self
+            .last_frame
+            .take()
+            .and_then(|prev| Arc::try_unwrap(prev).ok())
+            .filter(|f| f.rgba.len() == needed);
+
+        match reused.as_mut() {
+            Some(frame) => {
+                frame.rgba.fill(0);
+                frame.pts_seconds = playback_time;
+                frame.duration_seconds = 1.0 / 60.0;
+                frame.sequence = (playback_time * 1000.0) as u64;
+            }
+            None => reused = None,
+        }
+
+        reused.unwrap_or_else(|| VideoFrame {
+            rgba: vec![0u8; needed],
+            width: 0,
+            height: 0,
+            pts_seconds: playback_time,
+            duration_seconds: 1.0 / 60.0,
+            sequence: (playback_time * 1000.0) as u64,
+        })
+    }
+
     fn generate_effect_frame(
-        &self,
+        &mut self,
         audio_cfg: Option<&AudioConfig>,
         playback_time: f64,
         audio: AudioBands,
     ) -> VideoFrame {
         let width = 640u32;
         let height = 360u32;
-        let mut rgba = vec![0u8; (width * height * 4) as usize];
+        let mut frame = self.take_reusable_buffer((width * height * 4) as usize, playback_time);
+        frame.width = width;
+        frame.height = height;
+        let rgba = &mut frame.rgba;
+        self.render_effect_into(rgba, width, height, audio_cfg, playback_time, audio);
+        frame
+    }
+
+    fn render_effect_into(
+        &self,
+        rgba: &mut [u8],
+        width: u32,
+        height: u32,
+        audio_cfg: Option<&AudioConfig>,
+        playback_time: f64,
+        audio: AudioBands,
+    ) {
         let effect = self.cfg.effect.clone().unwrap_or_default();
         let bars = if effect.bars > 0 {
             effect.bars as usize
@@ -234,27 +290,9 @@ impl RuntimeLayer {
                     let len = base + zone * 140.0 + amp * 40.0;
                     let x1 = cx + angle.cos() * len;
                     let y1 = cy + angle.sin() * len;
-                    draw_line_rgba(
-                        &mut rgba,
-                        width as usize,
-                        height as usize,
-                        cx,
-                        cy,
-                        x1,
-                        y1,
-                        tint,
-                    );
+                    draw_line_rgba(rgba, width as usize, height as usize, cx, cy, x1, y1, tint);
                 }
             }
-        }
-
-        VideoFrame {
-            rgba,
-            width,
-            height,
-            pts_seconds: playback_time,
-            duration_seconds: 1.0 / 60.0,
-            sequence: (playback_time * 1000.0) as u64,
         }
     }
 }
@@ -560,7 +598,7 @@ impl ParallaxSystem {
             .cfg
             .profiles_dir
             .clone()
-            .or_else(|| dirs::config_dir().map(|d| d.join("cava-bg").join("parallax")))
+            .or_else(|| Some(crate::paths::RuntimePaths::default().parallax_dir()))
             .filter(|d| d.exists());
 
         if let Some(ref pd) = profiles_dir {
@@ -702,8 +740,8 @@ impl ParallaxSystem {
                         layer.source.display()
                     )
                 })?;
-                layer.asset = Some(LayerAsset::Static(frame.clone()));
-                layer.last_frame = Some(frame);
+                layer.asset = Some(LayerAsset::Static(Arc::new(frame.clone())));
+                layer.last_frame = Some(Arc::new(frame));
             }
             LayerSourceType::Video | LayerSourceType::Gif => {
                 let decoder = VideoDecoder::new(

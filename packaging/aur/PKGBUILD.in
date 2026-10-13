@@ -1,0 +1,62 @@
+# Maintainer: Leriart
+# Generated from packaging/aur/PKGBUILD.in by packaging/aur/render-pkgbuild.sh.
+# Do not edit by hand: `pkgver` and `sha256sums` are filled in by CI from
+# Cargo.toml and from the uploaded release tarball checksum.
+
+pkgname=cava-bg
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc="Audio visualizer for Wayland, rendered as a background layer"
+arch=('@ARCH@')
+url="https://github.com/leriart/cava-bg"
+license=('MIT')
+depends=('cava' 'wayland' 'ffmpeg' 'libxkbcommon')
+makedepends=('cargo')
+optdepends=(
+    'hyprctl: with hyprland, for wallpaper detection and cursor tracking'
+    'wlrctl: cursor tracking on wlroots compositors'
+    'swaybg: wallpaper detection fallback'
+)
+source=("$pkgname-$pkgver.tar.gz")
+sha256sums=('@SHA256SUM@')
+
+# cava-bg spawns the external `cava` binary and talks to compositor IPC helpers,
+# so the binary is installed straight into /usr/bin without conflicting paths.
+build() {
+    cd "$srcdir/$pkgname-$pkgver"
+    # The tarball ships a Cargo.lock; keep builds reproducible and offline-capable.
+    cargo build --release --locked
+}
+
+check() {
+    cd "$srcdir/$pkgname-$pkgver"
+    cargo test --locked
+}
+
+package() {
+    cd "$srcdir/$pkgname-$pkgver"
+
+    install -Dm755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+
+    # Default config, emitted by the binary so it can never drift from
+    # Config::default().
+    target/release/cava-bg __default-config >"$pkgdir/usr/share/doc/$pkgname/config.toml"
+
+    # Shell completions produced by build.rs.
+    if [ -d target/release/completions ]; then
+        install -Dm644 target/release/completions/cava-bg.bash \
+            "$pkgdir/usr/share/bash-completion/completions/cava-bg"
+        install -Dm644 target/release/completions/_cava-bg \
+            "$pkgdir/usr/share/zsh/site-functions/_cava-bg"
+        install -Dm644 target/release/completions/cava-bg.fish \
+            "$pkgdir/usr/share/fish/vendor_completions.d/cava-bg.fish"
+    fi
+
+    install -Dm644 "$srcdir/$pkgname-$pkgver/packaging/cava-bg.desktop" \
+        "$pkgdir/usr/share/applications/cava-bg.desktop"
+
+    install -Dm644 "$srcdir/$pkgname-$pkgver/packaging/systemd/cava-bg.service" \
+        "$pkgdir/usr/lib/systemd/user/cava-bg.service"
+}

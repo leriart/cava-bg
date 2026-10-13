@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=Cava BG
+GenericName=Audio Visualizer
+Comment=Audio visualizer for Wayland, rendered as a background layer
+Exec=cava-bg gui
+TryExec=cava-bg
+Icon=multimedia-volume-control
+Terminal=false
+Categories=AudioVideo;Audio;Visualization;
+Keywords=cava;audio;visualizer;wayland;wallpaper;bars;
+StartupNotify=true

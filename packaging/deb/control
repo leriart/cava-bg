@@ -1,21 +1,28 @@
 Package: cava-bg
-Version: 0.2.6
-Architecture: amd64
+Version: @VERSION@
+Architecture: @ARCH@
 Maintainer: Leriart <leriart@github.com>
 Section: sound
 Priority: optional
-Depends: libc6, wayland, cava, ffmpeg, libxkbcommon0, libegl1, libgl1, libdbus-1-3
+Depends: libc6, cava, ffmpeg,
+ libegl1, libgl1, libdrm2, libgbm1,
+ libwayland-client0, libwayland-egl1,
+ libxkbcommon0, libxkbcommon-x11-0,
+ libx11-6, libxcb1, libxext6, libxrender1, libxfixes3,
+ libglib2.0-0, libfontconfig1
+Suggests: hyprland, wlrctl, swaybg, wpaperd, mpvpaper
+Homepage: https://github.com/leriart/cava-bg
 Description: Audio visualizer for Wayland — background layer
  cava-bg draws real-time audio visualization bars over the wallpaper
  in Wayland compositors. It acts as a wlr-layer-shell background layer,
- supporting Hyprland, Sway, and other wlroots-based environments.
+ supporting any compositor that implements wlr-layer-shell: Hyprland,
+ Sway, river, niri, labwc and others.
  .
  Features:
   * Real-time audio bars via cava
   * Adaptive gradient colors from wallpaper
   * Automatic wallpaper change detection
-  * GUI configurator (--config)
+  * GUI configurator (cava-bg gui)
   * Wallpaper X-ray mode
   * Parallax effects
   * Multiple bar shapes and display modes
-Homepage: https://github.com/leriart/cava-bg

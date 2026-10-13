@@ -10,7 +10,7 @@ use std::process::Command;
 use std::sync::mpsc::Sender;
 use std::sync::Mutex;
 use std::thread;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::app_config::ColorExtractionMode;
 use crate::wallpaper_detector;
@@ -251,58 +251,125 @@ impl WallpaperAnalyzer {
             }
         }
     }
+}
 
+/// Cadence for the wallpaper watchers.
+///
+/// Wallpaper changes are not a sub-second event, but after one *is* observed we
+/// poll quickly for a while so that a daemon which writes the image in pieces,
+/// or a compositor that reports a half-written path, still converges quickly.
+/// In steady state this drops the wakeups from ~12/s per thread to 1/s per
+/// thread while keeping reaction time under ~100 ms right after a change.
+fn poll_interval(stable_for: Duration) -> Duration {
+    if stable_for < Duration::from_secs(5) {
+        Duration::from_millis(100)
+    } else {
+        Duration::from_millis(1000)
+    }
+}
+
+/// Shared between the colour monitor and the path monitor.
+///
+/// Both threads watch the same wallpaper, so without this they each run their
+/// own `find_wallpaper` loop *and* each perform palette extraction for the same
+/// change. Two concurrent `extract_colors` calls also fight over the global
+/// `PREVIOUS_COLORS` smoothing state.
+#[derive(Default)]
+struct WatchState {
+    last_path: Option<PathBuf>,
+    last_modified: Option<SystemTime>,
+    last_seen_change: Option<Instant>,
+    sent_initial: bool,
+}
+
+static WATCH_STATE: Lazy<Mutex<WatchState>> = Lazy::new(|| Mutex::new(WatchState::default()));
+
+/// Result of one watcher tick.
+#[derive(Debug, PartialEq)]
+enum WatchTick {
+    /// Nothing to do.
+    Unchanged,
+    /// The wallpaper changed (or appeared); `modified` may be `UNIX_EPOCH`.
+    Changed { modified: SystemTime },
+    /// The wallpaper that was being watched is gone.
+    Disappeared,
+}
+
+/// Single detection point for both monitors.
+///
+/// Returns how long the state has been stable so the caller can pick its next
+/// sleep interval.
+fn watch_step() -> (WatchTick, Duration) {
+    let now = Instant::now();
+    let current = WallpaperAnalyzer::find_wallpaper();
+
+    let mut state = match WATCH_STATE.lock() {
+        Ok(g) => g,
+        Err(p) => p.into_inner(),
+    };
+
+    let stable_for = state
+        .last_seen_change
+        .map(|t| now.duration_since(t))
+        .unwrap_or(Duration::ZERO);
+
+    match current {
+        Some(path) => {
+            let modified = fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .unwrap_or(SystemTime::UNIX_EPOCH);
+            let changed = match (&state.last_path, &state.last_modified) {
+                (Some(p), Some(t)) => p != &path || t != &modified,
+                _ => true,
+            };
+            if changed {
+                state.last_path = Some(path);
+                state.last_modified = Some(modified);
+                state.last_seen_change = Some(now);
+                (WatchTick::Changed { modified }, Duration::ZERO)
+            } else {
+                (WatchTick::Unchanged, stable_for)
+            }
+        }
+        None if state.last_path.is_some() => {
+            state.last_path = None;
+            state.last_modified = None;
+            state.last_seen_change = Some(now);
+            (WatchTick::Disappeared, Duration::ZERO)
+        }
+        None => (WatchTick::Unchanged, stable_for),
+    }
+}
+
+impl WallpaperAnalyzer {
     pub fn start_wallpaper_monitor(
         tx: Sender<Vec<[f32; 4]>>,
         num_colors: usize,
         extraction_mode: ColorExtractionMode,
         extract_enabled: bool,
     ) {
-        thread::spawn(move || {
-            let mut last_path: Option<PathBuf> = None;
-            let mut last_modified: Option<SystemTime> = None;
-            let mut sent_initial = false;
+        thread::spawn(move || loop {
+            // Only extract when extract_enabled is true OR if we haven't sent initial colors
+            // (fallback for when parallax/xray have no wallpaper)
+            let wants_extraction = extract_enabled || !initial_colors_sent();
 
-            loop {
-                // Only extract when extract_enabled is true OR if we haven't sent initial colors
-                // (fallback for when parallax/xray have no wallpaper)
-                let should_extract = extract_enabled || !sent_initial;
-
-                if should_extract {
-                    if let Some(path) = Self::find_wallpaper() {
-                        let modified = fs::metadata(&path)
-                            .and_then(|m| m.modified())
-                            .unwrap_or(SystemTime::UNIX_EPOCH);
-                        let changed = match (&last_path, &last_modified) {
-                            (Some(p), Some(t)) => p != &path || t != &modified,
-                            _ => true,
-                        };
-                        if changed {
-                            log::info!("Wallpaper changed to: {:?}", path);
-                            match Self::generate_gradient_colors(num_colors, Some(extraction_mode))
-                            {
-                                Ok(colors) => {
-                                    if let Err(e) = tx.send(colors) {
-                                        log::error!("Failed to send new colors: {}", e);
-                                        break;
-                                    }
-                                    sent_initial = true;
-                                }
-                                Err(e) => log::error!("Failed to generate colors: {}", e),
+            match watch_step() {
+                (WatchTick::Changed { .. }, _) if wants_extraction => {
+                    match Self::generate_gradient_colors(num_colors, Some(extraction_mode)) {
+                        Ok(colors) => {
+                            if tx.send(colors).is_err() {
+                                break;
                             }
-                            last_path = Some(path);
-                            last_modified = Some(modified);
+                            mark_initial_colors_sent();
                         }
-                    } else if last_path.is_some() {
-                        log::warn!("Wallpaper disappeared, using default colors");
-                        let default_colors = Self::default_colors(num_colors);
-                        let _ = tx.send(default_colors);
-                        last_path = None;
-                        last_modified = None;
+                        Err(e) => log::error!("Failed to generate colors: {}", e),
                     }
                 }
-                // Check frequently for instant reaction
-                thread::sleep(Duration::from_millis(100));
+                (WatchTick::Disappeared, _) => {
+                    log::warn!("Wallpaper disappeared, using default colors");
+                    let _ = tx.send(Self::default_colors(num_colors));
+                }
+                (_, stable_for) => thread::sleep(poll_interval(stable_for)),
             }
         });
     }
@@ -314,19 +381,22 @@ impl WallpaperAnalyzer {
         extraction_mode: ColorExtractionMode,
     ) {
         thread::spawn(move || {
-            let mut last_path: Option<PathBuf> = None;
+            let mut reported: Option<Option<PathBuf>> = None;
             loop {
-                let current_path = Self::find_wallpaper();
-                if current_path != last_path {
-                    log::info!("Wallpaper path changed: {:?}", current_path);
-                    // Send path immediately so layers reload
-                    if let Err(e) = tx.send(current_path.clone()) {
-                        log::error!("Failed to send wallpaper path: {}", e);
-                        break;
-                    }
-                    // Also trigger color extraction in the same pass
-                    if let Some(ref color_tx) = color_tx {
-                        if let Some(ref _path) = current_path {
+                let (tick, stable_for) = watch_step();
+
+                match tick {
+                    WatchTick::Changed { .. } => {
+                        let path = current_wallpaper_path();
+                        if reported.as_ref() != Some(&path) {
+                            log::info!("Wallpaper path changed: {:?}", path);
+                            if tx.send(path.clone()).is_err() {
+                                break;
+                            }
+                            reported = Some(path.clone());
+                        }
+
+                        if let (Some(color_tx), Some(_)) = (color_tx.as_ref(), path.as_ref()) {
                             log::info!("Extracting colors from new wallpaper");
                             match Self::generate_gradient_colors(num_colors, Some(extraction_mode))
                             {
@@ -337,11 +407,37 @@ impl WallpaperAnalyzer {
                             }
                         }
                     }
-                    last_path = current_path;
+                    WatchTick::Disappeared => {
+                        if reported.is_some() {
+                            if tx.send(None).is_err() {
+                                break;
+                            }
+                            reported = None;
+                        }
+                    }
+                    WatchTick::Unchanged => {}
                 }
-                thread::sleep(Duration::from_millis(80));
+
+                thread::sleep(poll_interval(stable_for));
             }
         });
+    }
+}
+
+fn current_wallpaper_path() -> Option<PathBuf> {
+    WATCH_STATE
+        .lock()
+        .map(|g| g.last_path.clone())
+        .unwrap_or(None)
+}
+
+fn initial_colors_sent() -> bool {
+    WATCH_STATE.lock().map(|g| g.sent_initial).unwrap_or(false)
+}
+
+fn mark_initial_colors_sent() {
+    if let Ok(mut g) = WATCH_STATE.lock() {
+        g.sent_initial = true;
     }
 }
 
@@ -368,16 +464,53 @@ mod tests {
         write_test_image(&path);
 
         for n in [0usize, 1, 2, 8, 300] {
-            let colors = WallpaperAnalyzer::extract_colors(
-                &path,
-                ColorExtractionMode::Dominant,
-                n,
-            )
-            .unwrap_or_else(|e| panic!("extract_colors failed for n={}: {}", n, e));
+            let colors = WallpaperAnalyzer::extract_colors(&path, ColorExtractionMode::Dominant, n)
+                .unwrap_or_else(|e| panic!("extract_colors failed for n={}: {}", n, e));
             assert_eq!(colors.len(), n.max(1), "wrong color count for n={}", n);
         }
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn poll_interval_backs_off_only_after_a_stable_window() {
+        // Right after a change we want a fast tick so a partially written
+        // wallpaper converges quickly.
+        assert_eq!(poll_interval(Duration::ZERO), Duration::from_millis(100));
+        assert_eq!(
+            poll_interval(Duration::from_secs(4)),
+            Duration::from_millis(100)
+        );
+        // Steady state: a wallpaper does not change 12 times a second.
+        assert_eq!(
+            poll_interval(Duration::from_secs(5)),
+            Duration::from_millis(1000)
+        );
+        assert_eq!(
+            poll_interval(Duration::from_secs(3600)),
+            Duration::from_millis(1000)
+        );
+    }
+
+    #[test]
+    fn watch_step_settles_instead_of_repeating_a_change() {
+        // This test deliberately does not assume whether a wallpaper is
+        // discoverable on the machine running it. It asserts the invariant that
+        // matters: whatever the first tick reports, the state converges and
+        // subsequent ticks stop reporting changes.
+        let reset = WATCH_STATE.lock().unwrap();
+        let mut guard = reset;
+        *guard = WatchState::default();
+        drop(guard);
+
+        let first = watch_step().0;
+        for _ in 0..3 {
+            assert_eq!(
+                watch_step().0,
+                WatchTick::Unchanged,
+                "watcher kept emitting change events after {first:?}"
+            );
+        }
     }
 
     #[test]

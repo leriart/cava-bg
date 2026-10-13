@@ -120,19 +120,11 @@ struct RuntimeOutputInfo {
 }
 
 fn runtime_color_socket_path(config_path: &Path) -> PathBuf {
-    let dir = config_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
-    dir.join("runtime-color-update.sock")
+    crate::paths::RuntimePaths::new(config_path).color_socket()
 }
 
 fn runtime_outputs_path(config_path: &Path) -> PathBuf {
-    let dir = config_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("/tmp"));
-    dir.join("runtime-outputs.json")
+    crate::paths::RuntimePaths::new(config_path).runtime_outputs()
 }
 
 fn load_runtime_output_names(config_path: &Path) -> Vec<String> {
@@ -189,7 +181,7 @@ impl ConfigEditorApp {
             .with_context(|| format!("Could not parse {}", config_path.display()))?;
         config.normalize_compat_fields();
 
-        let saved_snapshot = toml::to_string_pretty(&config)?;
+        let saved_snapshot = crate::app_config::serialize_config(&config)?;
         let wallpapers_dir_input = config
             .wallpaper
             .wallpapers_dir
@@ -257,7 +249,7 @@ impl ConfigEditorApp {
             last_live_push_at: None,
             live_push_snapshot: saved_snapshot.clone(),
             preset_name_input: String::new(),
-            available_presets: list_presets(),
+            available_presets: list_presets(config_path),
             profiles_dir_input,
             available_profiles: Vec::new(),
             selected_profile: default_selected_profile,
@@ -401,9 +393,8 @@ impl ConfigEditorApp {
             return;
         }
 
-        // Siempre mandamos la palette si no está vacía — los gradient_colors
-        // son para el efecto de gradiente en las barras, no deben bloquear
-        // los colores manuales o extraídos.
+        // The palette is always sent when non-empty — `gradient_colors` belong to
+        // the bar gradient effect and must not mask manual or extracted colours.
         let colors = if !self.config.colors.palette.is_empty()
             || self.config.colors.extract_from_wallpaper
         {
@@ -451,7 +442,8 @@ impl ConfigEditorApp {
             self.config.general.dynamic_colors = false;
         }
 
-        let content = toml::to_string_pretty(&self.config).context("Could not serialize config")?;
+        let content = crate::app_config::serialize_config(&self.config)
+            .context("Could not serialize config")?;
         fs::write(&self.config_path, &content)
             .with_context(|| format!("Could not save {}", self.config_path.display()))?;
         self.saved_snapshot = content.clone();
@@ -461,7 +453,7 @@ impl ConfigEditorApp {
     }
 
     fn is_dirty(&self) -> bool {
-        toml::to_string_pretty(&self.config)
+        crate::app_config::serialize_config(&self.config)
             .map(|s| s != self.saved_snapshot)
             .unwrap_or(true)
     }
@@ -482,15 +474,16 @@ impl ConfigEditorApp {
             anyhow::bail!("Preset name cannot be empty");
         }
         self.sync_inputs_into_config();
-        let content = toml::to_string_pretty(&self.config).context("Could not serialize preset")?;
-        let path = preset_dir().join(format!("{trimmed}.toml"));
+        let content = crate::app_config::serialize_config(&self.config)
+            .context("Could not serialize preset")?;
+        let path = preset_dir(&self.config_path).join(format!("{trimmed}.toml"));
         fs::write(&path, content).with_context(|| format!("Could not write {}", path.display()))?;
-        self.available_presets = list_presets();
+        self.available_presets = list_presets(&self.config_path);
         Ok(())
     }
 
     fn load_preset(&mut self, name: &str) -> Result<()> {
-        let path = preset_dir().join(format!("{}.toml", name.trim()));
+        let path = preset_dir(&self.config_path).join(format!("{}.toml", name.trim()));
         let content = fs::read_to_string(&path)
             .with_context(|| format!("Could not read preset {}", path.display()))?;
         let mut cfg: Config = toml::from_str(&content)
@@ -590,7 +583,7 @@ impl ConfigEditorApp {
             return;
         }
 
-        let current_snapshot = match toml::to_string_pretty(&self.config) {
+        let current_snapshot = match crate::app_config::serialize_config(&self.config) {
             Ok(s) => s,
             Err(e) => {
                 self.status = format!("Hot-reload snapshot error: {e}");
@@ -2050,7 +2043,7 @@ Sepia — Warm brownish tone",
                     }
                 }
                 if ui.button("Refresh").clicked() {
-                    self.available_presets = list_presets();
+                    self.available_presets = list_presets(&self.config_path);
                 }
             });
 
@@ -2090,7 +2083,7 @@ Sepia — Warm brownish tone",
                         .set_file_name("cava-bg-preset.toml")
                         .save_file()
                     {
-                        match toml::to_string_pretty(&self.config)
+                        match crate::app_config::serialize_config(&self.config)
                             .ok()
                             .and_then(|s| fs::write(&path, s).ok())
                         {
@@ -2584,15 +2577,12 @@ fn path_picker_row(ui: &mut egui::Ui, label: &str, target: &mut String, folder: 
     });
 }
 
-fn preset_dir() -> PathBuf {
-    dirs::config_dir()
-        .unwrap_or_else(|| PathBuf::from("/tmp"))
-        .join("cava-bg")
-        .join("presets")
+fn preset_dir(config_path: &Path) -> PathBuf {
+    crate::paths::RuntimePaths::new(config_path).presets_dir()
 }
 
-fn list_presets() -> Vec<String> {
-    let dir = preset_dir();
+fn list_presets(config_path: &Path) -> Vec<String> {
+    let dir = preset_dir(config_path);
     if fs::create_dir_all(&dir).is_err() {
         return Vec::new();
     }

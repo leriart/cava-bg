@@ -7,6 +7,7 @@ mod config_gui;
 mod layer_finder;
 mod layer_system;
 mod parallax_system;
+mod paths;
 mod perf_monitor;
 mod supervisor;
 mod video_decoder;
@@ -46,31 +47,55 @@ fn heartbeat_tick() {
 }
 
 fn default_config_path() -> PathBuf {
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(format!("{home}/.config/cava-bg/config.toml"))
+    paths::default_config_path()
 }
 
-fn pid_file_path(output: Option<&str>) -> PathBuf {
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    match output {
-        Some(name) => PathBuf::from(format!("{home}/.config/cava-bg/daemon.{name}.pid")),
-        None => PathBuf::from(format!("{home}/.config/cava-bg/daemon.pid")),
-    }
+/// The config this process is running with.
+///
+/// Set once in `main()` before any subcommand runs. Log helpers are called from
+/// ~30 sites across `main.rs` and `supervisor.rs` that have no other access to
+/// the config, and a process only ever has one — threading a parameter through
+/// all of them would add noise without adding meaning. Anything that already
+/// holds a `config_path` should use it explicitly.
+static ACTIVE_CONFIG_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
+fn active_config_path() -> PathBuf {
+    ACTIVE_CONFIG_PATH
+        .get()
+        .cloned()
+        .unwrap_or_else(default_config_path)
 }
 
-fn daemon_log_path(output: Option<&str>) -> PathBuf {
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    match output {
-        Some(name) => PathBuf::from(format!("{home}/.config/cava-bg/daemon.{name}.log")),
-        None => PathBuf::from(format!("{home}/.config/cava-bg/daemon.log")),
+/// PID file for a given config.
+///
+/// Derives from `config_path` so that two configurations — or two installed
+/// builds pointing at different configs — never collide. Previously this always
+/// returned the default config directory, which meant `cava-bg --config X on`
+/// would refuse to start (or worse, `off` would kill) an unrelated daemon.
+fn pid_file_path(config_path: &Path, output: Option<&str>) -> PathBuf {
+    paths::RuntimePaths::new(config_path).pid_file(output)
+}
+
+fn daemon_log_path(config_path: &Path, output: Option<&str>) -> PathBuf {
+    paths::RuntimePaths::new(config_path).daemon_log(output)
+}
+
+/// PID files written by *pre-0.2.6* builds, which always used the default
+/// config directory regardless of `--config`.
+///
+/// Only consulted when the caller is actually using the default config path;
+/// otherwise a custom-config run would be blocked by (and able to kill) an
+/// unrelated daemon.
+fn legacy_pid_file_paths(config_path: &Path) -> Vec<PathBuf> {
+    if config_path == default_config_path() {
+        paths::RuntimePaths::default().legacy_pid_files()
+    } else {
+        Vec::new()
     }
 }
 
 fn runtime_outputs_path(config_path: &Path) -> PathBuf {
-    config_path
-        .parent()
-        .map(|dir| dir.join("runtime-outputs.json"))
-        .unwrap_or_else(|| PathBuf::from("/tmp/runtime-outputs.json"))
+    paths::RuntimePaths::new(config_path).runtime_outputs()
 }
 
 fn start_watchdog_thread(running: Arc<AtomicBool>) {
@@ -126,8 +151,12 @@ struct DaemonContext {
 
 fn ensure_parent_dir(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Could not create directory {}", parent.to_string_lossy()))?;
+        if parent.as_os_str().is_empty() {
+            return Ok(());
+        }
+        paths::RuntimePaths::new(path)
+            .ensure_dir()
+            .with_context(|| format!("Could not create directory {}", parent.display()))?;
     }
     Ok(())
 }
@@ -145,7 +174,7 @@ fn rotate_log_file(log_path: &Path) -> bool {
 }
 
 fn rotate_daemon_log(output: Option<&str>) {
-    let log_path = daemon_log_path(output);
+    let log_path = daemon_log_path(&active_config_path(), output);
     if rotate_log_file(&log_path) {
         if let Ok(new_file) = OpenOptions::new().create(true).append(true).open(&log_path) {
             let fd = new_file.into_raw_fd();
@@ -159,7 +188,7 @@ fn rotate_daemon_log(output: Option<&str>) {
 }
 
 fn append_daemon_log_line(message: &str, output: Option<&str>) {
-    let log_path = daemon_log_path(output);
+    let log_path = daemon_log_path(&active_config_path(), output);
     if ensure_parent_dir(&log_path).is_err() {
         return;
     }
@@ -178,14 +207,6 @@ fn daemon_debug_log(debug_mode: bool, systemd_mode: bool, message: &str, output:
     if debug_mode {
         eprintln!("{message}");
     }
-}
-
-fn legacy_pid_file_paths() -> Vec<PathBuf> {
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    vec![
-        PathBuf::from(format!("{home}/.config/cava-bg/cava-bg.pid")),
-        PathBuf::from("/tmp/cava-bg.pid"),
-    ]
 }
 
 fn read_runtime_outputs(config_path: &Path) -> Result<Vec<RuntimeOutputInfo>> {
@@ -229,7 +250,7 @@ fn print_status(config_path: &Path, systemd_mode: bool) -> Result<()> {
         return Ok(());
     }
 
-    let supervisor_file = pid_file_path(None);
+    let supervisor_file = pid_file_path(config_path, None);
     let supervisor_running = read_pid_file(&supervisor_file)?
         .map(|pid| process_exists(pid) && is_cava_bg_process(pid) && is_supervisor_process(pid))
         .unwrap_or(false);
@@ -240,7 +261,7 @@ fn print_status(config_path: &Path, systemd_mode: bool) -> Result<()> {
         println!("  PID: {}", supervisor_pid);
     } else {
         // Check main daemon pid + legacy + per-output pid files
-        let pid_files = collect_pid_files();
+        let pid_files = collect_pid_files(config_path);
         let main_pid = read_pid_file(&supervisor_file)?;
         let main_running = main_pid
             .map(|pid| process_exists(pid) && is_cava_bg_process(pid))
@@ -304,7 +325,7 @@ fn set_output_enabled(config_path: &Path, output: &str, enabled: bool) -> Result
     entry.enabled = Some(enabled);
     entry.name = Some(output.to_string());
 
-    let serialized = toml::to_string_pretty(&cfg).context("Could not serialize config")?;
+    let serialized = app_config::serialize_config(&cfg).context("Could not serialize config")?;
     fs::write(config_path, serialized)
         .with_context(|| format!("Could not save {}", config_path.display()))?;
 
@@ -553,7 +574,7 @@ fn check_single_instance(
     output: Option<&str>,
 ) -> Result<bool> {
     let mut pid_locations = vec![pid_file.to_path_buf()];
-    pid_locations.extend(legacy_pid_file_paths());
+    pid_locations.extend(legacy_pid_file_paths(config_dir_of(pid_file)));
 
     for candidate in pid_locations {
         if !candidate.exists() {
@@ -679,23 +700,36 @@ fn stop_pid_with_escalation(pid: i32) -> bool {
     false
 }
 
-fn collect_pid_files() -> Vec<PathBuf> {
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    let config_dir = PathBuf::from(format!("{home}/.config/cava-bg"));
+/// The config directory implied by a runtime file such as `daemon.pid`.
+///
+/// `pid_file` is always `RuntimePaths::new(config).pid_file(..)`, so its parent
+/// directory *is* the config directory. Comparing it against the default is how
+/// we decide whether pre-0.2.6 pid files are relevant.
+fn config_dir_of(pid_file: &Path) -> &Path {
+    pid_file.parent().unwrap_or_else(|| Path::new("."))
+}
+
+/// Every pid file that could belong to the daemon using `config_path`.
+///
+/// Scoped to the config's own directory so that shutting one configuration down
+/// cannot terminate another.
+fn collect_pid_files(config_path: &Path) -> Vec<PathBuf> {
+    let paths = paths::RuntimePaths::new(config_path);
     let mut files = Vec::new();
 
-    let basic = pid_file_path(None);
-    if basic.exists() {
-        files.push(basic);
+    let own = paths.pid_file(None);
+    if own.exists() {
+        files.push(own);
     }
 
-    for legacy in legacy_pid_file_paths() {
+    for legacy in legacy_pid_file_paths(config_path) {
         if legacy.exists() && !files.contains(&legacy) {
             files.push(legacy);
         }
     }
 
-    if let Ok(entries) = fs::read_dir(&config_dir) {
+    // Supervisor children: daemon.<output>.pid next to the same config.
+    if let Ok(entries) = fs::read_dir(paths.dir()) {
         for entry in entries.flatten() {
             let path = entry.path();
             if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
@@ -748,7 +782,7 @@ fn systemd_unit_is_active() -> bool {
     }
 }
 
-fn kill_existing_instance(systemd_mode: bool) -> Result<()> {
+fn kill_existing_instance(config_path: &Path, systemd_mode: bool) -> Result<()> {
     if systemd_unit_is_active() {
         let output = run_systemctl(&["--user", "stop", "cava-bg.service"])?;
         if output.status.success() {
@@ -762,7 +796,7 @@ fn kill_existing_instance(systemd_mode: bool) -> Result<()> {
         anyhow::bail!("Use 'systemctl --user stop cava-bg' instead.");
     }
 
-    let pid_files = collect_pid_files();
+    let pid_files = collect_pid_files(config_path);
 
     let mut process_found = false;
     let mut killed_any = false;
@@ -823,14 +857,24 @@ fn kill_existing_instance(systemd_mode: bool) -> Result<()> {
         anyhow::bail!(
             "Some cava-bg processes could not be stopped: {:?}. Try 'kill -9 <pid>' manually. For diagnosis run 'cava-bg on --debug' and inspect {}",
             failed,
-            daemon_log_path(None).display()
+            daemon_log_path(config_path, None).display()
         );
     }
 
     anyhow::bail!(
         "No running daemon was found. Suggestion: run 'cava-bg on --debug' to diagnose startup issues and review {}",
-        daemon_log_path(None).display()
+        daemon_log_path(&active_config_path(), None).display()
     )
+}
+
+/// Render `Config::default()` as TOML.
+///
+/// Used both by [`create_default_config`] and by the hidden
+/// `__default-config` subcommand, so the config a fresh install receives is
+/// always byte-identical to what the daemon itself would have written.
+pub fn default_config_toml() -> Result<String> {
+    app_config::serialize_config(&crate::app_config::Config::default())
+        .context("Failed to serialize default config")
 }
 
 pub fn create_default_config(path: &Path) -> Result<()> {
@@ -838,8 +882,7 @@ pub fn create_default_config(path: &Path) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
 
-    let cfg = crate::app_config::Config::default();
-    let toml_str = toml::to_string_pretty(&cfg).context("Failed to serialize default config")?;
+    let toml_str = default_config_toml()?;
     fs::write(path, &toml_str)?;
     info!("Created default config at {:?}", path);
     Ok(())
@@ -861,7 +904,7 @@ fn start_daemon(config_path: &Path, output_filter: Option<&str>, supervisor: boo
         .open("/dev/null")
         .context("Could not open /dev/null")?;
 
-    let log_path = daemon_log_path(output_filter);
+    let log_path = daemon_log_path(config_path, output_filter);
     ensure_parent_dir(&log_path)?;
     rotate_log_file(&log_path);
     let log_file = OpenOptions::new()
@@ -896,7 +939,7 @@ fn start_daemon(config_path: &Path, output_filter: Option<&str>, supervisor: boo
     }
 
     let mut child = cmd.spawn().context("Could not start the daemon")?;
-    let pid_file = pid_file_path(output_filter);
+    let pid_file = pid_file_path(config_path, output_filter);
 
     for _ in 0..30 {
         if let Some(status) = child.try_wait().context("Could not poll daemon process")? {
@@ -1161,7 +1204,10 @@ fn main() -> Result<()> {
         .as_ref()
         .map(PathBuf::from)
         .unwrap_or_else(default_config_path);
-    let pid_file = pid_file_path(cli.output.as_deref());
+    // Everything downstream (log rotation, the pid file, the colour socket) is
+    // scoped to this config, so two configs never share runtime state.
+    let _ = ACTIVE_CONFIG_PATH.set(config_path.clone());
+    let pid_file = pid_file_path(&config_path, cli.output.as_deref());
 
     let daemon_context = DaemonContext {
         config_path: config_path.clone(),
@@ -1180,7 +1226,10 @@ fn main() -> Result<()> {
                 if cli.debug {
                     println!("Running cava-bg in debug foreground mode (no daemon detach).");
                     if !systemd_mode {
-                        println!("Daemon log file: {}", daemon_log_path(None).display());
+                        println!(
+                            "Daemon log file: {}",
+                            daemon_log_path(&config_path, None).display()
+                        );
                     }
                 }
                 if cli.supervisor {
@@ -1196,7 +1245,7 @@ fn main() -> Result<()> {
             }
         }
         Some(cli::Command::Off) | Some(cli::Command::Kill) => {
-            kill_existing_instance(systemd_mode)?;
+            kill_existing_instance(&config_path, systemd_mode)?;
         }
         Some(cli::Command::Restart) => {
             if systemd_unit_is_active() {
@@ -1212,11 +1261,14 @@ fn main() -> Result<()> {
                 anyhow::bail!("Use 'systemctl --user restart cava-bg' instead.");
             }
 
-            kill_existing_instance(systemd_mode)?;
+            kill_existing_instance(&config_path, systemd_mode)?;
             ensure_config_exists(&config_path)?;
             if cli.debug {
                 println!("Running cava-bg in debug foreground mode (no daemon detach).");
-                println!("Daemon log file: {}", daemon_log_path(None).display());
+                println!(
+                    "Daemon log file: {}",
+                    daemon_log_path(&config_path, None).display()
+                );
                 run_foreground(daemon_context, cli.output, false)?;
             } else {
                 start_daemon(&config_path, cli.output.as_deref(), cli.supervisor)?;
@@ -1247,6 +1299,13 @@ fn main() -> Result<()> {
         }
         Some(cli::Command::__Supervisor) => {
             supervisor::run_supervisor(daemon_context)?;
+        }
+        Some(cli::Command::__DefaultConfig) => {
+            // The single source of truth for a fresh `config.toml`. Packaging
+            // and `install.sh` call this instead of shipping a hand-written copy,
+            // which used to drift away from `Config::default()` (bar_width,
+            // max_bar_height, bar_alpha, palette, use_gradient all disagreed).
+            print!("{}", default_config_toml()?);
         }
     }
 

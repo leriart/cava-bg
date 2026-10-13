@@ -166,3 +166,123 @@ fn uv_for(x: f32, y: f32, x0: f32, y0: f32, w: f32, h: f32) -> (f32, f32) {
     let v = if h > 1e-9 { (y - y0) / h } else { 0.0 };
     (u.clamp(0.0, 1.0), v.clamp(0.0, 1.0))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn verts(shape: BarShape, segments: u32, rx: f32, ry: f32) -> usize {
+        let mut buf = Vec::new();
+        build_bar(
+            &mut buf, shape, -0.5, -0.5, 0.5, 0.5, rx, ry, segments, 6, false,
+        );
+        buf.len() / 4
+    }
+
+    /// The renderer sizes its vertex buffer from `vertices_per_bar` and then
+    /// issues `draw(0..vertex_count)`. If the estimate is ever smaller than what
+    /// `build_bar` actually emits, the tail of the bars is silently truncated
+    /// with no error anywhere — so pin the relationship down with a test.
+    #[test]
+    fn vertices_per_bar_is_never_an_underestimate() {
+        for shape in [
+            BarShape::Rectangle,
+            BarShape::Circle,
+            BarShape::Triangle,
+            BarShape::Line,
+        ] {
+            for segments in [0u32, 1, 4, 8, 12, 24, 64] {
+                for (rx, ry) in [(0.0f32, 0.0f32), (0.1, 0.1), (0.5, 0.3), (1.0, 1.0)] {
+                    let produced = verts(shape, segments, rx, ry);
+                    let budget = vertices_per_bar(shape, segments);
+                    assert!(
+                        produced <= budget,
+                        "{shape:?} segments={segments} rx={rx} ry={ry}: \
+                         build_bar emitted {produced} vertices but \
+                         vertices_per_bar only budgeted {budget}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn circle_with_no_radius_degrades_to_a_rectangle() {
+        assert_eq!(verts(BarShape::Circle, 16, 0.2, 0.0), 6);
+    }
+
+    #[test]
+    fn circle_top_emits_a_body_quad_plus_a_dome_fan() {
+        let budget = vertices_per_bar(BarShape::Circle, 16);
+        assert!(verts(BarShape::Circle, 16, 0.2, 0.2) > 6);
+        assert!(budget >= verts(BarShape::Circle, 16, 0.2, 0.2));
+    }
+
+    #[test]
+    fn every_bar_shape_is_a_multiple_of_three_vertices() {
+        for shape in [
+            BarShape::Rectangle,
+            BarShape::Circle,
+            BarShape::Triangle,
+            BarShape::Line,
+        ] {
+            let n = verts(shape, 12, 0.2, 0.2);
+            assert_eq!(
+                n % 3,
+                0,
+                "{shape:?} produced {n} vertices, not a triangle list"
+            );
+        }
+    }
+
+    #[test]
+    fn line_only_flag_forces_the_line_shape_for_any_config() {
+        let mut buf = Vec::new();
+        build_bar(
+            &mut buf,
+            BarShape::Rectangle,
+            -0.5,
+            -0.5,
+            0.5,
+            0.5,
+            0.1,
+            0.1,
+            8,
+            6,
+            true,
+        );
+        assert_eq!(buf.len() / 4, verts(BarShape::Line, 8, 0.1, 0.1));
+    }
+
+    #[test]
+    fn uvs_stay_inside_the_unit_square() {
+        for shape in [
+            BarShape::Rectangle,
+            BarShape::Circle,
+            BarShape::Triangle,
+            BarShape::Line,
+        ] {
+            let mut buf = Vec::new();
+            build_bar(&mut buf, shape, -0.5, -0.5, 0.5, 0.5, 0.2, 0.2, 8, 6, false);
+            for v in buf.as_chunks::<4>().0 {
+                let (x, y, u, vv) = (v[0], v[1], v[2], v[3]);
+                assert!((-1.0..=1.0).contains(&x), "{shape:?} x={x} out of NDC");
+                assert!((-1.0..=1.0).contains(&y), "{shape:?} y={y} out of NDC");
+                assert!((0.0..=1.0).contains(&u), "{shape:?} u={u} out of range");
+                assert!((0.0..=1.0).contains(&vv), "{shape:?} v={vv} out of range");
+            }
+        }
+    }
+
+    #[test]
+    fn degenerate_bars_do_not_panic() {
+        let mut buf = Vec::new();
+        for shape in [BarShape::Circle, BarShape::Triangle, BarShape::Line] {
+            build_bar(&mut buf, shape, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 8, 6, false);
+        }
+        // A zero-area bar must still produce geometry, not NaNs that the GPU
+        // has to reject.
+        assert!(!buf.is_empty());
+        assert!(buf.iter().all(|v| v.is_finite()));
+    }
+}
