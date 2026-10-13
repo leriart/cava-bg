@@ -176,7 +176,16 @@ jobs:
             git config user.name  "github-actions[bot]"
             git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             cava_bg_write_cargo_version "$WANTED"
-            git add Cargo.toml
+
+            # Cargo.lock records the workspace version too, and every later step
+            # runs cargo with --locked, which refuses to proceed when the lock and
+            # the manifest disagree:
+            #     error: cannot update the lock file because --locked was passed
+            # `--precise` touches only the cava-bg entry; all 140-odd dependency
+            # versions stay put.
+            cargo update -p cava-bg --precise "$WANTED"
+
+            git add Cargo.toml Cargo.lock
             # [skip ci] is essential: this commit lands on main, and without it
             # GitHub would start a second run, which would see "Cargo.toml ==
             # newest tag" and bump again — forever. Skipping the trigger while
