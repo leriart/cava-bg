@@ -273,10 +273,16 @@ jobs:
   nix:
     name: nix flake check
     runs-on: ubuntu-latest
+    # Advisory only: Nix packaging is an optional target and a store-path
+    # hiccup here must not block a release for everyone else.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
-      - uses: DeterminateSystems/magic-nix-cache-action@v9
+      # magic-nix-cache-action is deliberately not used: it serves store paths
+      # from a previous run over HTTP, and a stale or evicted path makes
+      # naersk fail with "path '/nix/store/...-source' is not valid" while
+      # walking the source tree. Not reproducible, but not worth the risk on an
+      # advisory job.
       - name: nix flake check
         run: nix flake check --no-build

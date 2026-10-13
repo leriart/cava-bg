@@ -188,8 +188,23 @@ cava_bg_run_tests() {
     check "gt equal"             "no"  "$(cava_bg_version_gt 0.2.6 0.2.6 && echo yes || echo no)"
     check "gt 1.0.0 vs 0.9.9"    "yes" "$(cava_bg_version_gt 1.0.0 0.9.9 && echo yes || echo no)"
 
-    # Tag reading accepts both `0.2.6` and `v0.2.6`, and always returns bare.
-    check "latest tag is bare"    "0.2.5" "$(cava_bg_latest_tag_version)"
+    # Tag parsing is exercised against a throwaway repo with known tags rather
+    # than this repository's own history: a real release cuts a new tag, which
+    # would make an assertion like "the newest tag is 0.2.5" fail the next time
+    # anyone publishes. Asserting on live state is what made this test fragile.
+    tagged="$(mktemp -d)"
+    git -C "$tagged" init -q .
+    git -C "$tagged" -c user.email=a@b -c user.name=c commit -q --allow-empty -m init
+    for t in 0.1.7 v0.2.5 0.2.6 v0.10.0 not-a-version; do
+        git -C "$tagged" tag "$t"
+    done
+    saved_root="$CAVA_BG_ROOT"
+    CAVA_BG_ROOT="$tagged"
+    # 0.10.0 must beat 0.2.6 (version sort, not string sort) and come back
+    # bare even though the tag on disk is `v0.10.0`.
+    check "highest tag, v stripped"      "0.10.0" "$(cava_bg_latest_tag_version)"
+    rm -rf "$tagged"
+    CAVA_BG_ROOT="$saved_root"
 
     # "no tags yet" must exit 0. Under `set -e -o pipefail` the grep that finds
     # nothing returns 1, and that used to abort the very first release of a
