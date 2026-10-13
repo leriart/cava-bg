@@ -145,61 +145,64 @@ jobs:
           echo "publish_aur=${PUBLISH_AUR}" >>"$GITHUB_OUTPUT"
           echo "::notice::cava-bg ${TAG} release=${RELEASE} publish_aur=${PUBLISH_AUR}"
 
-      - name: Commit the version bump to main
-        id: bump
-        if: steps.plan.outputs.release == 'true' && github.ref_type != 'tag'
+
+  # Applies the decision made by `plan`. Kept separate from it because GitHub
+  # Actions steps share a workspace: while `plan` both decided the version and
+  # wrote Cargo.toml, this job's `already at $WANTED` check saw the file already
+  # updated and exited without committing, so main never received the bump.
+  bump:
+    name: Apply the version bump
+    needs: [gate, plan]
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.bump.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - id: bump
+        name: Write, commit and push Cargo.toml
         run: |
           set -euo pipefail
           source scripts/version.sh
-          WANTED="${{ steps.plan.outputs.version }}"
-          if [ "$(cava_bg_version)" = "$WANTED" ]; then
-            echo "Cargo.toml already at $WANTED"
-            exit 0
-          fi
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          cava_bg_write_cargo_version "$WANTED"
-          git add Cargo.toml
-          # [skip ci] is essential: this commit lands on main, and without it
-          # GitHub would start a second run, which would see "Cargo.toml ==
-          # newest tag" and bump again — forever. Skipping the trigger while
-          # letting the current run continue is exactly what we want. The build
-          # job below re-runs `cargo test` anyway, so nothing goes unverified.
-          git commit -m "chore(release): $WANTED [skip ci]" --quiet
-          if ! git push origin HEAD:main; then
-            echo "::error::Could not push the version bump to main."
-            echo "::error::Either main is protected, or it moved on since CI validated."
-            echo "::error::No tag was created, so nothing was published."
-            echo "::error::Merge dev into main again (or re-run with --force once main is writable)."
-            exit 1
-          fi
-          echo "::notice::Bumped Cargo.toml to $WANTED on main"
+          WANTED="${{ needs.plan.outputs.version }}"
 
-      - name: Tag the release
-        if: steps.plan.outputs.release == 'true'
-        run: |
-          set -euo pipefail
-          TAG="${{ steps.plan.outputs.tag }}"
-          VERSION="${{ steps.plan.outputs.version }}"
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if git rev-parse "$TAG" >/dev/null 2>&1; then
-            echo "Tag $TAG already exists; reusing it."
-            exit 0
+          if [ "$(cava_bg_version)" = "$WANTED" ]; then
+            echo "Cargo.toml is already at $WANTED; nothing to commit."
+          else
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            cava_bg_write_cargo_version "$WANTED"
+            git add Cargo.toml
+            # [skip ci] is essential: this commit lands on main, and without it
+            # GitHub would start a second run, which would see "Cargo.toml ==
+            # newest tag" and bump again — forever. Skipping the trigger while
+            # letting the current run continue is exactly what we want.
+            git commit -m "chore(release): $WANTED [skip ci]" --quiet
+            if ! git push origin HEAD:main; then
+              echo "::error::Could not push the version bump to main."
+              echo "::error::Either main is protected, or it moved on since CI validated."
+              echo "::error::Nothing was tagged or published."
+              exit 1
+            fi
+            echo "::notice::Bumped Cargo.toml to $WANTED on main"
           fi
-          git tag -a "$TAG" -m "cava-bg $VERSION"
-          git push origin "$TAG"
-          echo "::notice::Created and pushed tag $TAG"
+
+          echo "sha=$(git rev-parse HEAD)" >>"$GITHUB_OUTPUT"
 
   build:
     name: Build all artifacts
-    needs: plan
+    needs: [plan, bump]
     if: needs.plan.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.plan.outputs.tag }}
+          # The bump commit, so the source tarball carries the released version.
+          ref: ${{ needs.bump.outputs.sha }}
       - name: Install build dependencies
         # Shared list; extras for the packaging steps.
         run: bash scripts/ci-deps.sh rpm fakeroot dpkg-dev
@@ -235,11 +238,35 @@ jobs:
           if-no-files-found: error
 
   github-release:
-    name: Publish GitHub release
-    needs: [plan, build]
+    name: Tag and publish GitHub release
+    needs: [plan, bump, build]
     if: needs.plan.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
+      # The tag is created HERE, not next to the version decision, so that a
+      # failed build cannot leave a tag pointing at unreleased code. That is
+      # exactly what happened before: two tags were cut for builds that never
+      # produced a release.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.bump.outputs.sha }}
+
+      - name: Create and push the tag
+        run: |
+          set -euo pipefail
+          TAG="${{ needs.plan.outputs.tag }}"
+          VERSION="${{ needs.plan.outputs.version }}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git rev-parse --verify --quiet "refs/tags/$TAG" >/dev/null; then
+            echo "::notice::Tag $TAG already exists; reusing it."
+          else
+            git tag -a "$TAG" -m "cava-bg $VERSION"
+            git push origin "$TAG"
+            echo "::notice::Created and pushed tag $TAG"
+          fi
+
       - uses: actions/download-artifact@v4
         with:
           name: cava-bg-release
@@ -277,7 +304,7 @@ jobs:
 
   aur:
     name: Publish to AUR
-    needs: [plan, build]
+    needs: [plan, bump, build]
     if: needs.plan.outputs.release == 'true' && needs.plan.outputs.publish_aur == 'true'
     runs-on: ubuntu-latest
     environment: aur

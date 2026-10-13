@@ -226,6 +226,13 @@ feature branch ──▶ dev ──▶ main ──▶ CI ──▶ (only if gree
 
 * The bump commit carries `[skip ci]`. Without it the push to `main` would start a
   second run, which would see "`Cargo.toml` == newest tag" and bump again, forever.
+* **The tag is created after the build succeeds**, in the `github-release` job, not
+  next to the version decision. Tagging early is how two tags were cut for builds
+  that never produced a release.
+* `plan` only *decides* the version; `bump` is a separate job that writes and pushes
+  `Cargo.toml`. They are split because Actions steps share a workspace: while one
+  step did both, the next step's "already at $WANTED" check saw the file already
+  updated and never committed it.
 * Tags are **bare** (`0.2.7`), matching the repository history. A leading `v` is
   accepted when reading so older links keep working.
 * If the release fails, re-run it with

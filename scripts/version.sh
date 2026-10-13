@@ -144,7 +144,14 @@ cava_bg_resolve_release_version() {
     if [ "$cargo_version" = "$latest" ]; then
         local next
         next="$(cava_bg_next_patch "$latest")"
-        cava_bg_write_cargo_version "$next"
+        # Deliberately does NOT write Cargo.toml here.
+        #
+        # It used to, and because GitHub Actions steps share a workspace, the
+        # later "commit the version bump" step found the file already updated,
+        # took its `already at $WANTED` early exit, and never committed or
+        # pushed anything. The tag then landed on a commit whose Cargo.toml
+        # still held the previous version. Deciding and mutating are separate
+        # steps on purpose; the caller writes the file when it is ready.
         echo "no bump on dev; cutting $latest -> $next" >&2
         echo "$next"
         return 0
