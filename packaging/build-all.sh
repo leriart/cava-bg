@@ -105,7 +105,16 @@ echo ""
 # Same reasoning as the .deb: rpmbuild consumes packaging/rpm/cava-bg.spec,
 # which has to stay the one place the RPM dependency list lives.
 echo "┌─ [5/6] Creating .rpm package..."
-if command -v rpmbuild >/dev/null; then
+if [ -n "${CAVA_BG_SKIP_RPM:-}" ]; then
+    # An RPM has to be built on an RPM distro. rpmbuild checks BuildRequires
+    # against package names that only exist on Fedora/openSUSE (cargo,
+    # dbus-devel, ffmpeg-devel, mesa-libEGL-devel...), so it cannot run on the
+    # Debian/Ubuntu runner at all. Reaching for --nodeps would be worse: the
+    # resulting binary would link against the wrong sonames and still be
+    # installed on Fedora. The release workflow builds it in a Fedora container
+    # instead, and sets this to skip it here.
+    echo "├─ SKIPPED: CAVA_BG_SKIP_RPM is set (see the rpm job in release.yml)"
+elif command -v rpmbuild >/dev/null; then
     VERSION="$VERSION" bash "$PROJECT_DIR/packaging/rpm/build-rpm.sh"
     cp "$PROJECT_DIR/target/rpm"/*.rpm "$DIST_DIR/" 2>/dev/null || true
     echo "├─ Done: $(ls "$DIST_DIR"/*.rpm 2>/dev/null)"

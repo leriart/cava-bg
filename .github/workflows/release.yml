@@ -223,7 +223,10 @@ jobs:
       - name: Verify tests pass before packaging
         run: cargo test --workspace --locked
 
-      - name: Build source + binary tarballs, .deb, .rpm, AUR files
+      - name: Build source + binary tarballs, .deb and AUR files
+        env:
+          # The .rpm cannot be built here: see the `rpm` job.
+          CAVA_BG_SKIP_RPM: "1"
         run: |
           # build-all.sh renders the PKGBUILD with an @SHA256SUM@ placeholder;
           # it is re-rendered with the real checksum in the AUR job.
@@ -235,7 +238,6 @@ jobs:
           mkdir -p upload
           cp target/dist/*.tar.gz target/dist/*.sha256 upload/ 2>/dev/null || true
           cp target/dist/*.deb upload/ 2>/dev/null || true
-          cp target/dist/*.rpm upload/ 2>/dev/null || true
           ls -lh upload/
 
       - name: Upload build artifacts
@@ -245,6 +247,62 @@ jobs:
           path: upload/
           retention-days: 7
           if-no-files-found: error
+
+  rpm:
+    name: Build the .rpm on Fedora
+    needs: [plan, bump]
+    if: needs.plan.outputs.release == 'true'
+    runs-on: ubuntu-latest
+    # rpmbuild validates the spec's BuildRequires against package names that only
+    # exist on an RPM distro, so this has to run on Fedora rather than on the
+    # Ubuntu runner where everything else is built. Reaching for --nodeps to
+    # dodge that check would produce a binary linked against Ubuntu's sonames and
+    # ship it to Fedora users.
+    #
+    # UNVERIFIED: this job has never run. It is advisory (continue-on-error) so
+    # that a packaging-side problem cannot block a release that is otherwise
+    # complete — the RPM simply will not be attached. Remove continue-on-error
+    # once a release has produced one.
+    continue-on-error: true
+    container: fedora:latest
+    steps:
+      - name: Install build dependencies
+        run: |
+          set -euo pipefail
+          dnf install -y --setopt=install_weak_deps=False \
+            git make rpm-build systemd-rpm-macros
+
+          # ffmpeg is not in Fedora's own repositories -- the spec already
+          # requires it at runtime (`Requires: ffmpeg`), and RPM Fusion is where
+          # Fedora users get it from.
+          dnf install -y \
+            "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm" \
+            || dnf install -y \
+            "https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm"
+
+          dnf install -y --setopt=install_weak_deps=False \
+            cargo rust pkg-config \
+            wayland-devel libxkbcommon-devel mesa-libEGL-devel mesa-libGL-devel \
+            dbus-devel ffmpeg-devel
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.bump.outputs.sha }}
+
+      - name: Build the RPM
+        env:
+          HOME: /root
+        run: bash packaging/rpm/build-rpm.sh
+
+      - name: Show what was produced
+        run: find target/rpm -name '*.rpm' -exec ls -lh {} \;
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cava-bg-rpm
+          path: target/rpm/**/*.rpm
+          if-no-files-found: error
+          retention-days: 7
 
   github-release:
     name: Tag and publish GitHub release
@@ -279,6 +337,13 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: cava-bg-release
+          path: upload/
+      # The RPM is advisory until the Fedora job has been proven, so its
+      # absence must not abort the release.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: cava-bg-rpm
           path: upload/
       - name: Create release
         env:
@@ -336,6 +401,13 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: cava-bg-release
+          path: upload/
+      # The RPM is advisory until the Fedora job has been proven, so its
+      # absence must not abort the release.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: cava-bg-rpm
           path: upload/
 
       - name: Configure SSH for aur.archlinux.org
