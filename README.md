@@ -222,15 +222,18 @@ sudo dnf install cava-bg-<version>-1.x86_64.rpm
 Releases are cut automatically when a change lands on `main`:
 
 ```text
-dev  ──▶  CI (fmt / clippy / tests)  ──▶  main  ──▶  release workflow
-                                                          ├─ version decided automatically
-                                                          ├─ tag <version>
-                                                          ├─ source + binary tarballs
-                                                          ├─ .deb          (Debian / Ubuntu)
-                                                          ├─ .rpm          (Fedora / openSUSE)
-                                                          ├─ GitHub Release
-                                                          └─ AUR           (cava-bg)
+dev  ──▶  main  ──┬─▶  CI (fmt / clippy / tests / deb install)
+                  └─▶  release workflow
+                            ├─ version decided automatically
+                            ├─ tag <version>
+                            ├─ source + binary tarballs
+                            ├─ .deb          (Debian / Ubuntu)
+                            ├─ .rpm          (Fedora / openSUSE)
+                            ├─ GitHub Release
+                            └─ AUR           (cava-bg)
 ```
+
+CI only runs on `main`; validate locally before merging.
 
 Nothing about the version is manual: merging `dev` into `main` reads the newest tag,
 works out the next version, writes it back to `Cargo.toml`, tags it, and publishes
@@ -365,7 +368,13 @@ For custom and fallback color palettes, see the `[colors]` block.
 feature branch  ──▶  dev  ──▶  main  ──▶  release
 ```
 
-* `dev` is the integration branch — every PR targets it and CI must be green.
+* `dev` is the integration branch. CI does not run on it, so validate locally:
+  ```bash
+  cargo fmt --all -- --check
+  cargo clippy --workspace --all-targets -- -D warnings
+  cargo test --workspace
+  cargo xtask -- --check
+  ```
 * `main` is release-only. Merging into it is the release trigger; the workflow
   picks the version, so there is nothing to bump by hand.
 * If a release fails, re-run it instead of re-merging:

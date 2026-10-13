@@ -78,8 +78,15 @@ second script for something that already exists.
    (`0.1` → `0.10000000149011612`); every write path goes through it.
 5. **Work happens on `dev`.** `main` is release-only, and merging into it is the
    only release trigger. See *Branching and releases*.
-6. **Every merge to `dev` must keep CI green** (fmt, clippy `-D warnings`, tests,
-   `cargo xtask -- --check`, and the packaging job).
+6. **CI runs on `main` only**, not on `dev` and not on PRs targeting `dev`. Run
+   the same gates locally before merging:
+   ```bash
+   cargo fmt --all -- --check
+   cargo clippy --workspace --all-targets -- -D warnings
+   cargo test --workspace
+   cargo xtask -- --check
+   bash scripts/version.sh --test
+   ```
 7. **Don't add dependencies without discussing it.** The tree is already ~1.5M lines
    of `Cargo.lock`; the binary links FFmpeg, wgpu, eframe and Wayland.
 8. **Avoid logging inside `Deserialize`/`Serialize` impls on the config hot-reload
@@ -188,7 +195,7 @@ Use `#[cfg_attr(any(), config_doc(hide_defaults))]` or
 ## Release process
 
 ```
-feature branch ──▶ dev ──▶ (CI) ──▶ main ──▶ release.yml
+feature branch ──▶ dev ──▶ main ──▶ CI  +  release.yml (in parallel)
                                             ├─ version decided automatically
                                             ├─ tag <version>
                                             ├─ source + binary tarballs (+sha256)
@@ -198,7 +205,10 @@ feature branch ──▶ dev ──▶ (CI) ──▶ main ──▶ release.yml
                                             └─ AUR PKGBUILD + .SRCINFO
 ```
 
-* Work lands on **`dev`**.
+* Work lands on **`dev`** and is validated locally with the commands above.
+* Merging into **`main`** starts CI *and* the release **in parallel** — nothing
+  waits for CI to go green before publishing. Run the gates locally; do not rely
+  on CI to catch a broken merge.
 * When `dev` is merged into **`main`**, `.github/workflows/release.yml` runs
   automatically and **decides the version itself** — you never edit it by hand:
 
