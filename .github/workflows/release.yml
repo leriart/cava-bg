@@ -207,10 +207,32 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
-          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" >~/.ssh/id_rsa
-          chmod 600 ~/.ssh/id_rsa
+          chmod 700 ~/.ssh
+          printf '%s\n' "$AUR_SSH_PRIVATE_KEY" >~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
           printf '%s\n' "$AUR_SSH_KNOWN_HOSTS" >~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
+
+          # AUR accepts ed25519 keys only, and ssh already prefers it when an
+          # ssh-agent is present — make the choice explicit so a stale RSA key
+          # left on the runner cannot be offered instead.
+          IdentityFile ~/.ssh/id_ed25519
+          IdentitiesOnly yes
+
+          # Never block on an interactive prompt: an auth or host-key problem
+          # should fail the job immediately with a readable error.
+          export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o StrictHostKeyChecking=yes"
+          echo "GIT_SSH_COMMAND=$GIT_SSH_COMMAND" >>"$GITHUB_ENV"
+
+          # Fail fast with a clear message rather than inside git's clone.
+          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
+              -i ~/.ssh/id_ed25519 aur@aur.archlinux.org \
+              "true" 2>/dev/null || {
+            echo "::error::SSH to aur.archlinux.org failed. Check that the AUR_SSH_PRIVATE_KEY secret"
+            echo "::error::holds the PRIVATE key and that its public half is registered at"
+            echo "::error::https://aur.archlinux.org/account/sshkeys"
+            exit 1
+          }
 
       - name: Render PKGBUILD with the real checksum and push
         env:
@@ -224,7 +246,11 @@ jobs:
           SHA256="$(sha256sum "$SRC_TAR" | cut -d' ' -f1)"
           echo "::notice::cava-bg-${VERSION}.tar.gz sha256=${SHA256}"
 
-          rm -rf /tmp/aur && git clone --quiet aur://aur.archlinux.org/cava-bg.git /tmp/aur
+          # Not `aur://` — that scheme is not understood by git unless a
+          # url.insteadOf mapping is configured, and it would abort with
+          # "fatal: remote helper 'aur' aborted session".
+          rm -rf /tmp/aur
+          git clone --quiet ssh://aur@aur.archlinux.org/cava-bg.git /tmp/aur
           cd /tmp/aur
 
           VERSION="$VERSION" ARCH=x86_64 SHA256="$SHA256" \
