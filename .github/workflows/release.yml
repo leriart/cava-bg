@@ -11,10 +11,15 @@ name: Release
 #
 # Tags follow the repository's existing convention: bare `0.2.7`, not `v0.2.7`.
 
+# There is deliberately no `push:` trigger. Publishing is gated on CI: this
+# workflow starts only once the CI run for the same commit has finished green,
+# so a broken merge can never reach a release. Manual dispatch stays available
+# for retries.
 on:
-  push:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
     branches: [main]
-    tags: ['[0-9]*', 'v[0-9]*']
   workflow_dispatch:
     inputs:
       publish_aur:
@@ -38,8 +43,45 @@ env:
   CARGO_BUILD_ARGS: --locked
 
 jobs:
+  # Decides whether CI passed, and pins the exact commit to release.
+  #
+  # `github.sha` during a workflow_run event is the head of the default branch
+  # at run-creation time, which is NOT necessarily the commit CI validated --
+  # another push could have landed in between. `workflow_run.head_sha` is the
+  # commit CI actually ran against, so that is what gets released.
+  gate:
+    name: Wait for CI
+    runs-on: ubuntu-latest
+    outputs:
+      ok: ${{ steps.check.outputs.ok }}
+      sha: ${{ steps.check.outputs.sha }}
+    steps:
+      - id: check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          CI_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" != "workflow_run" ]; then
+            echo "sha=${GITHUB_SHA}" >>"$GITHUB_OUTPUT"
+            echo "ok=true"           >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "::notice::CI on ${CI_SHA} finished: ${CI_CONCLUSION}"
+          if [ "$CI_CONCLUSION" != "success" ]; then
+            echo "::warning::CI did not pass (${CI_CONCLUSION}); nothing will be published."
+            echo "sha="  >>"$GITHUB_OUTPUT"
+            echo "ok=false" >>"$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "sha=${CI_SHA}" >>"$GITHUB_OUTPUT"
+          echo "ok=true"         >>"$GITHUB_OUTPUT"
+
   plan:
     name: Resolve version and tag
+    needs: gate
+    if: needs.gate.outputs.ok == 'true'
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.plan.outputs.version }}
@@ -50,6 +92,8 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          # Release exactly what CI validated, not whatever main points at now.
+          ref: ${{ needs.gate.outputs.sha }}
 
       - id: plan
         name: Decide the version
@@ -124,8 +168,9 @@ jobs:
           git commit -m "chore(release): $WANTED [skip ci]" --quiet
           if ! git push origin HEAD:main; then
             echo "::error::Could not push the version bump to main."
-            echo "::error::main may be protected, or someone pushed while this run was starting."
-            echo "::error::No tag was created, so nothing was published. Re-run once main is writable."
+            echo "::error::Either main is protected, or it moved on since CI validated."
+            echo "::error::No tag was created, so nothing was published."
+            echo "::error::Merge dev into main again (or re-run with --force once main is writable)."
             exit 1
           fi
           echo "::notice::Bumped Cargo.toml to $WANTED on main"
@@ -158,9 +203,15 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
+          # FFmpeg -dev packages are mandatory: ffmpeg-sys-next resolves
+          # libavutil & friends through pkg-config and fails the build script
+          # without them. libclang is needed by the bindgen step.
           sudo apt-get install -y --no-install-recommends \
+            pkg-config clang libclang-dev \
+            libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
+            libavdevice-dev libswscale-dev libswresample-dev libpostproc-dev \
             libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev \
-            libdbus-1-dev pkg-config rpm fakeroot dpkg-dev
+            libdbus-1-dev rpm fakeroot dpkg-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:

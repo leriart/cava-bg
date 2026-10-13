@@ -222,18 +222,18 @@ sudo dnf install cava-bg-<version>-1.x86_64.rpm
 Releases are cut automatically when a change lands on `main`:
 
 ```text
-dev  ──▶  main  ──┬─▶  CI (fmt / clippy / tests / deb install)
-                  └─▶  release workflow
-                            ├─ version decided automatically
-                            ├─ tag <version>
-                            ├─ source + binary tarballs
-                            ├─ .deb          (Debian / Ubuntu)
-                            ├─ .rpm          (Fedora / openSUSE)
-                            ├─ GitHub Release
-                            └─ AUR           (cava-bg)
+dev  ──▶  main  ──▶  CI  ──▶  (only if green)  release workflow
+                                              ├─ version decided automatically
+                                              ├─ tag <version>
+                                              ├─ source + binary tarballs
+                                              ├─ .deb          (Debian / Ubuntu)
+                                              ├─ .rpm          (Fedora / openSUSE)
+                                              ├─ GitHub Release
+                                              └─ AUR           (cava-bg)
 ```
 
-CI only runs on `main`; validate locally before merging.
+CI only runs on `main`, and the release waits for it to pass — a red CI
+publishes nothing. Validate locally before merging, since `dev` has no CI.
 
 Nothing about the version is manual: merging `dev` into `main` reads the newest tag,
 works out the next version, writes it back to `Cargo.toml`, tags it, and publishes

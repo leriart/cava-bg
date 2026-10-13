@@ -195,7 +195,7 @@ Use `#[cfg_attr(any(), config_doc(hide_defaults))]` or
 ## Release process
 
 ```
-feature branch ──▶ dev ──▶ main ──▶ CI  +  release.yml (in parallel)
+feature branch ──▶ dev ──▶ main ──▶ CI ──▶ (only if green) release.yml
                                             ├─ version decided automatically
                                             ├─ tag <version>
                                             ├─ source + binary tarballs (+sha256)
@@ -206,9 +206,13 @@ feature branch ──▶ dev ──▶ main ──▶ CI  +  release.yml (in par
 ```
 
 * Work lands on **`dev`** and is validated locally with the commands above.
-* Merging into **`main`** starts CI *and* the release **in parallel** — nothing
-  waits for CI to go green before publishing. Run the gates locally; do not rely
-  on CI to catch a broken merge.
+* Merging into **`main`** starts CI. `release.yml` has **no `push:` trigger** at
+  all: it starts through `workflow_run` once the CI run for that commit finishes
+  with `conclusion: success`, and publishes exactly the SHA CI validated
+  (`workflow_run.head_sha`, not `github.sha`). A red or cancelled CI publishes
+  nothing.
+* Run the gates locally anyway. Gating means a bad merge is caught, not that
+  iterating on `dev` is free — `dev` gets no CI at all.
 * When `dev` is merged into **`main`**, `.github/workflows/release.yml` runs
   automatically and **decides the version itself** — you never edit it by hand:
 
@@ -218,6 +222,7 @@ feature branch ──▶ dev ──▶ main ──▶ CI  +  release.yml (in par
   | `dev` bumped `Cargo.toml` to `0.3.0` | `0.3.0` (explicit bump honoured) |
   | `--force` on a manual run | the newest tag, re-released unchanged |
   | `Cargo.toml` is *behind* the newest tag | **refuses to release** |
+| CI for that commit is red or cancelled | **nothing is published** |
 
 * The bump commit carries `[skip ci]`. Without it the push to `main` would start a
   second run, which would see "`Cargo.toml` == newest tag" and bump again, forever.
