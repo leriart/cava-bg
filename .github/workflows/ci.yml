@@ -273,8 +273,20 @@ jobs:
   nix:
     name: nix flake check
     runs-on: ubuntu-latest
-    # Advisory only: Nix packaging is an optional target and a store-path
-    # hiccup here must not block a release for everyone else.
+    # KNOWN FAILING. Advisory only, so it cannot block a release.
+    #
+    # naersk fails while walking the source tree with:
+    #   error: path '/nix/store/...-source' is not valid
+    #   ... while evaluating attribute 'cargotomlss' of derivation 'dummy-src'
+    # at `builtins.readDir "${root}/."`. It reproduces with a different store
+    # hash on every run, so it is deterministic rather than a stale cache, and
+    # it survives removing magic-nix-cache-action.
+    #
+    # Nix cannot be installed in this environment (no root, and the single-user
+    # installer still wants sudo for /nix), so this has not been debugged at the
+    # root cause. Guessing at a fix would be worse than leaving it visible: it is
+    # the only signal that the Nix packaging is broken at all. Delete this job
+    # once it has been reproduced on a machine with Nix.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
