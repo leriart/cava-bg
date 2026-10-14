@@ -64,7 +64,10 @@ echo ""
 # ─── 2. Source tarball ───
 echo "┌─ [2/6] Creating source tarball..."
 SRC_TAR="$DIST_DIR/${PKG_NAME}-${VERSION}.tar.gz"
-git archive --prefix="${PKG_NAME}-${VERSION}/" -o "$SRC_TAR" HEAD
+# docs/media holds ~80 MB of demo GIFs. Nothing in the build, the PKGBUILD or
+# the spec reads them, and shipping them made the source tarball 88 MB — which
+# is also the file the AUR downloads on every install.
+git archive --prefix="${PKG_NAME}-${VERSION}/" -o "$SRC_TAR" HEAD -- . ':(exclude)docs/media' 
 cava_bg_sha256 "$SRC_TAR"
 echo "├─ Done: $(basename "$SRC_TAR")"
 echo ""
