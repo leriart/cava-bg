@@ -408,18 +408,6 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/checkout@v4
-        with:
-          path: source
-      - uses: actions/download-artifact@v4
-        with:
-          name: cava-bg-release
-          path: upload/
-      - uses: actions/download-artifact@v4
-        with:
-          name: cava-bg-rpm
-          path: upload/
-
       - name: Configure SSH for aur.archlinux.org
         env:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
@@ -473,6 +461,19 @@ jobs:
             exit 1
           fi
           echo "::notice::AUR SSH authentication OK"
+
+      - uses: actions/checkout@v4
+        with:
+          path: source
+      # Only the source tarball is needed here, to compute the checksum the
+      # PKGBUILD pins. An earlier edit accidentally added the RPM download to
+      # this job as well — the same download block appears in github-release,
+      # so a plain string replace matched both — and this job then failed
+      # fetching an artifact it has no use for.
+      - uses: actions/download-artifact@v4
+        with:
+          name: cava-bg-release
+          path: upload/
 
       - name: Render PKGBUILD with the real checksum and push
         env:
