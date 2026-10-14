@@ -322,7 +322,7 @@ jobs:
 
   github-release:
     name: Tag and publish GitHub release
-    needs: [plan, bump, build, rpm]
+    needs: [plan, bump, build]
     if: needs.plan.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -354,10 +354,6 @@ jobs:
         with:
           name: cava-bg-release
           path: upload/
-      - uses: actions/download-artifact@v4
-        with:
-          name: cava-bg-rpm
-          path: upload/
       - name: Create release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -388,6 +384,33 @@ jobs:
           gh release create "$TAG" upload/* --title "cava-bg ${TAG}" \
             --notes-file release-notes.md --verify-tag
           echo "::notice::Published https://github.com/leriart/cava-bg/releases/tag/${TAG}"
+
+  # The RPM is built in a Fedora container and takes ~15 minutes, roughly three
+  # times the rest of the pipeline. While github-release waited on it, a slow or
+  # cancelled RPM took the tag and the whole release down with it — which is
+  # what happened on two consecutive runs. The release now publishes without it
+  # and this job attaches the RPM afterwards, so the slowest and least certain
+  # artifact can only ever be late, never fatal.
+  attach-rpm:
+    name: Attach the RPM to the release
+    needs: [plan, github-release, rpm]
+    if: needs.plan.outputs.release == 'true' && needs.rpm.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: cava-bg-rpm
+
+      - name: Upload the RPM to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          ls -lh ./*.rpm
+          gh release upload "$TAG" ./*.rpm --clobber
+          echo "::notice::Attached the RPM to $TAG"
+
 
   aur:
     name: Publish to AUR
