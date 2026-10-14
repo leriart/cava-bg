@@ -280,8 +280,11 @@ jobs:
             || dnf install -y \
             "https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm"
 
+          # clang is not optional: ffmpeg-sys-next runs bindgen, which needs
+          # libclang. It was installed on the Ubuntu side (libclang-dev) and
+          # left out here.
           dnf install -y --setopt=install_weak_deps=False \
-            cargo rust pkg-config \
+            cargo rust pkg-config clang \
             wayland-devel libxkbcommon-devel mesa-libEGL-devel mesa-libGL-devel \
             dbus-devel ffmpeg-devel
 
@@ -298,10 +301,25 @@ jobs:
         run: find target/rpm -name '*.rpm' -exec ls -lh {} \;
 
       - uses: actions/upload-artifact@v4
+        if: success()
         with:
           name: cava-bg-rpm
           path: target/rpm/**/*.rpm
           if-no-files-found: error
+          retention-days: 7
+
+      # The container's log is not reachable through the API without auth, so
+      # publish it as an artifact instead: a failed Fedora build has to be
+      # diagnosable from the outside.
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: rpmbuild-log
+          path: |
+            target/rpm/rpmbuild.log
+            /root/rpmbuild/BUILD/*.log
+            /root/rpmbuild/BUILDROOT/*.log
+          if-no-files-found: ignore
           retention-days: 7
 
   github-release:
@@ -423,26 +441,31 @@ jobs:
           printf '%s\n' "$AUR_SSH_KNOWN_HOSTS" >~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
-          # AUR accepts ed25519 keys only, and ssh already prefers it when an
-          # ssh-agent is present — make the choice explicit so a stale RSA key
-          # left on the runner cannot be offered instead.
-          IdentityFile ~/.ssh/id_ed25519
-          IdentitiesOnly yes
-
-          # Never block on an interactive prompt: an auth or host-key problem
-          # should fail the job immediately with a readable error.
-          export GIT_SSH_COMMAND="ssh -o BatchMode=yes -o StrictHostKeyChecking=yes"
-          echo "GIT_SSH_COMMAND=$GIT_SSH_COMMAND" >>"$GITHUB_ENV"
+          # These are ssh_config directives, not shell commands. They were
+          # previously written directly into this script, where the shell tried
+          # to run `IdentityFile` as a command and `set -e` aborted the step
+          # before it ever reached the connectivity probe.
+          #
+          # A here-doc would have to have its terminator at column zero after
+          # YAML strips the block indentation, which is easy to get wrong; a
+          # group with redirects has no such trap.
+          {
+            echo "Host aur.archlinux.org"
+            echo "  IdentityFile ~/.ssh/id_ed25519"
+            echo "  IdentitiesOnly yes"
+            echo "  BatchMode yes"
+            echo "  StrictHostKeyChecking yes"
+          } >~/.ssh/config
+          chmod 600 ~/.ssh/config
 
           # Fail fast with a clear message rather than inside git's clone.
-          ssh -o BatchMode=yes -o StrictHostKeyChecking=yes \
-              -i ~/.ssh/id_ed25519 aur@aur.archlinux.org \
-              "true" 2>/dev/null || {
-            echo "::error::SSH to aur.archlinux.org failed. Check that the AUR_SSH_PRIVATE_KEY secret"
-            echo "::error::holds the PRIVATE key and that its public half is registered at"
+          if ! ssh -o BatchMode=yes aur@aur.archlinux.org true 2>/dev/null; then
+            echo "::error::SSH to aur.archlinux.org failed. Check that AUR_SSH_PRIVATE_KEY"
+            echo "::error::holds the private key and that its public half is registered at"
             echo "::error::https://aur.archlinux.org/account/sshkeys"
             exit 1
-          }
+          fi
+          echo "::notice::AUR SSH authentication OK"
 
       - name: Render PKGBUILD with the real checksum and push
         env:

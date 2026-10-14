@@ -48,8 +48,11 @@ Features:
 %autosetup -n %{name}-%{version}
 
 %build
-export RUSTUP_TOOLCHAIN=stable
-%{__cargo} build --release --locked
+# Plain `cargo`, not the %{__cargo} macro: the macro comes from Fedora's cargo
+# packaging and adds a second thing that has to be present before anything can
+# build. `RUSTUP_TOOLCHAIN` is a rustup variable with no meaning for Fedora's
+# packaged rustc.
+cargo build --release --locked
 
 %install
 install -Dm755 target/release/cava-bg %{buildroot}%{_bindir}/cava-bg
@@ -76,7 +79,7 @@ install -Dm644 packaging/cava-bg.desktop %{buildroot}%{_datadir}/applications/%{
 install -Dm644 packaging/systemd/cava-bg.service %{buildroot}%{_userunitdir}/%{name}.service
 
 %check
-%{__cargo} test --locked
+cargo test --locked
 
 %files
 %license LICENSE
