@@ -76,10 +76,9 @@ second script for something that already exists.
 4. **Serialize configs with `app_config::serialize_config`, not
    `toml::to_string_pretty`.** The wrapper rounds `f32` widening noise
    (`0.1` → `0.10000000149011612`); every write path goes through it.
-5. **Work happens on `dev`.** `main` is release-only, and merging into it is the
-   only release trigger. See *Branching and releases*.
-6. **CI runs on `main` only**, not on `dev` and not on PRs targeting `dev`. Run
-   the same gates locally before merging:
+5. **Work happens on `dev`; `main` is release-only.** Neither CI nor the release
+   runs by itself — both are started from the Actions tab. See *Release process*.
+6. **Run the gates locally before merging.** `dev` gets no CI at all:
    ```bash
    cargo fmt --all -- --check
    cargo clippy --workspace --all-targets -- -D warnings
@@ -194,69 +193,81 @@ Use `#[cfg_attr(any(), config_doc(hide_defaults))]` or
 
 ## Release process
 
+Both workflows are **manual**. Nothing is triggered by a push.
+
 ```
-feature branch ──▶ dev ──▶ main ──▶ CI ──▶ (only if green) release.yml
-                                            ├─ version decided automatically
-                                            ├─ tag <version>
-                                            ├─ source + binary tarballs (+sha256)
-                                            ├─ .deb   (Debian/Ubuntu)
-                                            ├─ .rpm   (Fedora/openSUSE)
-                                            ├─ GitHub Release
-                                            └─ AUR PKGBUILD + .SRCINFO
+feature branch ──▶ dev ──▶ main        (no CI, no release, nothing)
+                              │
+                              └─ Actions ▸ Release ▸ Run workflow
+                                   version: [ 0.2.11 ]   ← you type it
+                                       ├─ Cargo.toml + Cargo.lock bumped and pushed
+                                       ├─ source + binary tarballs (+sha256)
+                                       ├─ .deb   (Debian/Ubuntu)
+                                       ├─ .rpm   (Fedora, own container)
+                                       ├─ tag + GitHub Release
+                                       └─ AUR PKGBUILD + .SRCINFO
 ```
 
-* Work lands on **`dev`** and is validated locally with the commands above.
-* Merging into **`main`** starts CI. `release.yml` has **no `push:` trigger** at
-  all: it starts through `workflow_run` once the CI run for that commit finishes
-  with `conclusion: success`, and publishes exactly the SHA CI validated
-  (`workflow_run.head_sha`, not `github.sha`). A red or cancelled CI publishes
-  nothing.
-* Run the gates locally anyway. Gating means a bad merge is caught, not that
-  iterating on `dev` is free — `dev` gets no CI at all.
-* When `dev` is merged into **`main`**, `.github/workflows/release.yml` runs
-  automatically and **decides the version itself** — you never edit it by hand:
+* Work lands on **`dev`**. Merging into `main` runs nothing at all.
+* Run **CI** from the Actions tab when you want it
+  (`gh workflow run ci.yml --ref main`), or locally.
+* Run **Release** from the Actions tab, `gh workflow run release.yml --ref main`,
+  or `gh workflow run release.yml --ref main -f version=0.2.11`.
 
-  | State at merge | Released |
-  |---|---|
-  | newest tag is `0.2.6`, `Cargo.toml` says `0.2.6` | `0.2.7` (Cargo.toml is bumped and committed to `main`) |
-  | `dev` bumped `Cargo.toml` to `0.3.0` | `0.3.0` (explicit bump honoured) |
-  | `--force` on a manual run | the newest tag, re-released unchanged |
-  | `Cargo.toml` is *behind* the newest tag | **refuses to release** |
-| CI for that commit is red or cancelled | **nothing is published** |
+### Choosing the version
 
-* The bump commit carries `[skip ci]`. Without it the push to `main` would start a
-  second run, which would see "`Cargo.toml` == newest tag" and bump again, forever.
-* **The tag is created after the build succeeds**, in the `github-release` job, not
-  next to the version decision. Tagging early is how two tags were cut for builds
-  that never produced a release.
-* `plan` only *decides* the version; `bump` is a separate job that writes and pushes
-  `Cargo.toml`. They are split because Actions steps share a workspace: while one
-  step did both, the next step's "already at $WANTED" check saw the file already
-  updated and never committed it.
-* Tags are **bare** (`0.2.7`), matching the repository history. A leading `v` is
-  accepted when reading so older links keep working.
-* If the release fails, re-run it with
-  `gh workflow run release.yml --ref main -f force=true -f publish_aur=true`
-  instead of deleting the tag and re-merging.
-* `packaging/build-all.sh` reproduces every artifact locally. It refuses to run on a
-  dirty tree (`--allow-dirty` overrides) because a tarball from uncommitted files is
-  not reproducible.
+`release.yml` takes a `version` input. GitHub cannot build a dropdown from live
+data — a `choice` input's options are fixed in the workflow file — so instead the
+**run summary lists every existing tag** and the **suggested next version**, and
+you either type a version or leave the field empty to take the suggestion.
+
+The workflow refuses to continue when:
+
+| Situation | Behaviour |
+|---|---|
+| `version` is not `x.y.z` | error |
+| `version` is **older** than the newest tag | error (typing by hand makes this easy) |
+| the tag already exists, without `force` | error, telling you to use `force` |
+| the tag already exists, with `force` | re-releases that version |
+
+| Situation | Behaviour |
+|---|---|
+| `Cargo.toml` behind the newest tag | refused |
+
+### Why it works this way
+
+This is a gentle workflow on purpose. It used to be fully automatic: a push to
+`main` started CI, `workflow_run` started the release on success, and the version
+was inferred — which produced `0.2.6` through `0.2.10` in one day, every fix
+commit cutting a tag and a release nobody asked for.
+
+The parts below are not incidental; each one is the fix for something that
+actually went wrong:
+
+* **Both `Cargo.toml` and `Cargo.lock` are bumped**, and `Cargo.lock` with
+  `cargo update -p cava-bg --precise`. Every build step runs with `--locked`,
+  which refuses to start when the two disagree. Forgetting the lock file left
+  `main` unbuildable once.
+* **`plan` only decides; `bump` is a separate job that writes.** They are split
+  because Actions steps share a workspace: while one step did both, the next
+  step's "already at $WANTED" check found the file already updated and never
+  committed it.
+* **The tag is created after the build succeeds**, in `github-release`. Tagging
+  next to the version decision is how orphan tags were produced — a tag pointing
+  at code whose build had failed.
+* **The RPM is built in a `fedora:latest` container**, because rpmbuild checks
+  the spec's `BuildRequires` against package names that only exist on an RPM
+  distro. It attaches in `attach-rpm`, a job of its own: it takes three times as
+  long as the rest of the pipeline, and while `github-release` waited on it, a
+  slow RPM took the whole release down.
+* **Tags are bare** (`0.2.11`), matching the repository history. A leading `v` is
+  accepted on input so older links keep working.
+* **`packaging/build-all.sh` reproduces every artifact locally** and refuses to
+  run on a dirty tree (`--allow-dirty` overrides), because a tarball built from
+  uncommitted files is not reproducible. `CAVA_BG_SKIP_RPM=1` skips the RPM, which
+  the release uses since that one is built on Fedora.
 * The version arithmetic lives in `scripts/version.sh` and is covered by
   `bash scripts/version.sh --test`, which CI runs.
-
-### AUR
-
-The AUR repository is external and receives only `PKGBUILD` + `.SRCINFO`. Required
-repository secrets:
-
-| Secret | Purpose |
-|---|---|
-| `AUR_SSH_PRIVATE_KEY` | SSH key whose public half is registered at aur.archlinux.org |
-| `AUR_SSH_KNOWN_HOSTS` | `aur.archlinux.org` host key line |
-
-Both live on the `aur` GitHub **environment** so a maintainer can gate publishing.
-Without them the `aur` job fails early with a clear error instead of silently skipping.
-Local preview: `VERSION=0.2.6 ARCH=x86_64 bash packaging/aur/render-pkgbuild.sh`.
 
 ### Packaging layout
 

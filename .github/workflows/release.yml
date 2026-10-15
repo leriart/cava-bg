@@ -1,38 +1,41 @@
 name: Release
 
-# Merging `dev` into `main` is the only release trigger. The version does not
-# have to be managed by hand: the workflow reads the newest tag, decides the
-# next version, writes it back into Cargo.toml, tags it and publishes every
-# artifact plus the AUR package bump.
+# Manual only.
 #
-#   no tag newer than Cargo.toml  ->  cut the next patch release
-#   dev bumped Cargo.toml         ->  honour that version
-#   --force                       ->  re-run an already-tagged release
+# This workflow used to start by itself through `workflow_run` whenever CI passed
+# on `main`, and `main` itself was updated by the version bump it pushed — so a
+# stream of fix commits produced 0.2.6 through 0.2.10 in a single day, each one a
+# new tag and a new GitHub release, none of them intended.
 #
-# Tags follow the repository's existing convention: bare `0.2.7`, not `v0.2.7`.
+# Now nothing happens until somebody asks for it, and the version is chosen in
+# this dialog rather than inferred.
+#
+# The tag list and the suggested next version are written to the run's Summary
+# page. GitHub's `workflow_dispatch` cannot build a dropdown from live data —
+# a `choice` input's options are fixed in this file — so the listing is shown
+# there and the version is typed, or left empty to take the suggestion.
 
-# There is deliberately no `push:` trigger. Publishing is gated on CI: this
-# workflow starts only once the CI run for the same commit has finished green,
-# so a broken merge can never reach a release. Manual dispatch stays available
-# for retries.
 on:
-  workflow_run:
-    workflows: ["CI"]
-    types: [completed]
-    branches: [main]
   workflow_dispatch:
     inputs:
+      version:
+        description: >-
+          Version to release, e.g. 0.2.11. A leading "v" is accepted. Leave
+          empty to use the suggested next version from the run summary.
+        type: string
+        required: false
+        default: ''
       publish_aur:
-        description: 'Also push to the AUR repository'
+        description: 'Also push PKGBUILD and .SRCINFO to the AUR'
         type: boolean
         default: true
       force:
-        description: 'Re-run the release for the newest tag instead of cutting a new version'
+        description: 'Re-release a version whose tag already exists'
         type: boolean
         default: false
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 permissions:
@@ -40,60 +43,20 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  CARGO_BUILD_ARGS: --locked
 
 jobs:
-  # Decides whether CI passed, and pins the exact commit to release.
-  #
-  # `github.sha` during a workflow_run event is the head of the default branch
-  # at run-creation time, which is NOT necessarily the commit CI validated --
-  # another push could have landed in between. `workflow_run.head_sha` is the
-  # commit CI actually ran against, so that is what gets released.
-  gate:
-    name: Wait for CI
-    runs-on: ubuntu-latest
-    outputs:
-      ok: ${{ steps.check.outputs.ok }}
-      sha: ${{ steps.check.outputs.sha }}
-    steps:
-      - id: check
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
-          CI_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          set -euo pipefail
-          if [ "$EVENT_NAME" != "workflow_run" ]; then
-            echo "sha=${GITHUB_SHA}" >>"$GITHUB_OUTPUT"
-            echo "ok=true"           >>"$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "::notice::CI on ${CI_SHA} finished: ${CI_CONCLUSION}"
-          if [ "$CI_CONCLUSION" != "success" ]; then
-            echo "::warning::CI did not pass (${CI_CONCLUSION}); nothing will be published."
-            echo "sha="  >>"$GITHUB_OUTPUT"
-            echo "ok=false" >>"$GITHUB_OUTPUT"
-            exit 0
-          fi
-          echo "sha=${CI_SHA}" >>"$GITHUB_OUTPUT"
-          echo "ok=true"         >>"$GITHUB_OUTPUT"
-
   plan:
-    name: Resolve version and tag
-    needs: gate
-    if: needs.gate.outputs.ok == 'true'
+    name: Resolve the version
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.plan.outputs.version }}
       tag: ${{ steps.plan.outputs.tag }}
-      release: ${{ steps.plan.outputs.release }}
       publish_aur: ${{ steps.plan.outputs.publish_aur }}
+      force: ${{ steps.plan.outputs.force }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # Release exactly what CI validated, not whatever main points at now.
-          ref: ${{ needs.gate.outputs.sha }}
 
       - id: plan
         name: Decide the version
@@ -101,120 +64,133 @@ jobs:
           set -euo pipefail
           source scripts/version.sh
 
-          FORCE=false
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            [ "${{ inputs.force }}" = "true" ] && FORCE=true
-            [ "${{ inputs.publish_aur }}" = "true" ] && PUBLISH_AUR=true
+          # The Run workflow dialog lets you pick a branch, and the bump job
+          # pushes its HEAD to main. Running this from `dev` would therefore
+          # fast-forward main onto dev and release whatever is there.
+          if [ "${GITHUB_REF_NAME}" != "main" ]; then
+            echo "::error::This workflow has to be run from 'main', but it was run from '${GITHUB_REF_NAME}'."
+            echo "::error::The version bump pushes to main, so any other branch would push its own HEAD there."
+            exit 1
           fi
 
-          # A tag push always releases exactly the tag that was pushed.
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            VERSION="${GITHUB_REF_NAME#v}"
-            RELEASE=true
-            PUBLISH_AUR=false
-            echo "tag push: releasing ${GITHUB_REF_NAME}" >&2
-          elif FORCE; then
-            VERSION="$(cava_bg_latest_tag_version)"
-            if [ -z "$VERSION" ]; then
-              echo "::error::--force requested but no release tag exists yet"; exit 1
-            fi
-            RELEASE=true
-            echo "forced re-run of ${VERSION}" >&2
+          LATEST="$(cava_bg_latest_tag_version)"
+          if [ -n "$LATEST" ]; then
+            SUGGESTED="$(cava_bg_next_patch "$LATEST")"
           else
-            VERSION="$(cava_bg_resolve_release_version false)"
-            RELEASE=true
+            SUGGESTED="$(cava_bg_version)"
           fi
 
-          TAG="${VERSION}"
+          INPUT="${{ inputs.version }}"
+          # A leading "v" was the convention for a while; accept it rather than
+          # failing on a difference that does not matter.
+          VERSION="${INPUT#v}"
+          [ -z "$VERSION" ] && VERSION="$SUGGESTED"
 
-          # For a tag push, Cargo.toml must already agree with the tag.
-          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
-            CURRENT="$(cava_bg_version)"
-            if [ "$CURRENT" != "$VERSION" ]; then
-              echo "::error::tag ${TAG} does not match Cargo.toml version ${CURRENT}"
+          if ! printf '%s' "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::'$VERSION' is not a version like 0.2.11."
+            exit 1
+          fi
+
+          # Typing the version by hand makes it easy to go backwards. Releasing
+          # something older than the newest tag would move the project's version
+          # back in time for everyone.
+          if [ -n "$LATEST" ] && cava_bg_version_gt "$LATEST" "$VERSION"; then
+            echo "::error::'$VERSION' is older than the newest tag '$LATEST'."
+            echo "::error::Release something newer, or pass force=true if this is deliberate."
+            exit 1
+          fi
+
+          FORCE="${{ inputs.force }}"
+          EXISTS=no
+          if git rev-parse --verify --quiet "refs/tags/$VERSION" >/dev/null; then
+            EXISTS=yes
+            if [ "$FORCE" != "true" ]; then
+              echo "::error::tag $VERSION already exists."
+              echo "::error::Start this workflow again with force=true to re-release it, or pick another version."
               exit 1
             fi
+            echo "::notice::tag $VERSION exists; re-releasing because force=true"
           fi
 
-          PUBLISH_AUR="${PUBLISH_AUR:-false}"
-          [ "$RELEASE" = "true" ] && [ "${GITHUB_EVENT_NAME}" != "workflow_dispatch" ] && PUBLISH_AUR=true
+          {
+            echo "## Release plan"
+            echo
+            echo "| | |"
+            echo "|---|---|"
+            echo "| newest existing tag | \`${LATEST:-none}\` |"
+            echo "| suggested next | \`${SUGGESTED}\` |"
+            echo "| requested in the dialog | \`${INPUT:-<empty>}\` |"
+            echo "| **will release** | **\`${VERSION}\`** |"
+            echo "| tag exists already | ${EXISTS} |"
+            echo "| publish to AUR | ${{ inputs.publish_aur }} |"
+            echo "| force | ${FORCE} |"
+            echo
+            echo "### Existing tags, newest first"
+            echo
+            echo '```'
+            git tag --list --sort=-v:refname | head -30
+            echo '```'
+          } >>"$GITHUB_STEP_SUMMARY"
 
-          echo "version=${VERSION}"       >>"$GITHUB_OUTPUT"
-          echo "tag=${TAG}"               >>"$GITHUB_OUTPUT"
-          echo "release=${RELEASE}"       >>"$GITHUB_OUTPUT"
-          echo "publish_aur=${PUBLISH_AUR}" >>"$GITHUB_OUTPUT"
-          echo "::notice::cava-bg ${TAG} release=${RELEASE} publish_aur=${PUBLISH_AUR}"
+          echo "version=${VERSION}" >>"$GITHUB_OUTPUT"
+          echo "tag=${VERSION}"     >>"$GITHUB_OUTPUT"
+          echo "publish_aur=${{ inputs.publish_aur }}" >>"$GITHUB_OUTPUT"
+          echo "force=${FORCE}"     >>"$GITHUB_OUTPUT"
 
-
-  # Applies the decision made by `plan`. Kept separate from it because GitHub
-  # Actions steps share a workspace: while `plan` both decided the version and
-  # wrote Cargo.toml, this job's `already at $WANTED` check saw the file already
-  # updated and exited without committing, so main never received the bump.
   bump:
-    name: Apply the version bump
-    needs: [gate, plan]
-    if: needs.plan.outputs.release == 'true'
+    name: Set the version in Cargo.toml
+    needs: plan
     runs-on: ubuntu-latest
     outputs:
       sha: ${{ steps.bump.outputs.sha }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          ref: ${{ needs.gate.outputs.sha }}
 
       - id: bump
-        name: Write, commit and push Cargo.toml
+        name: Write, commit and push
         run: |
           set -euo pipefail
           source scripts/version.sh
           WANTED="${{ needs.plan.outputs.version }}"
 
           if [ "$(cava_bg_version)" = "$WANTED" ]; then
-            echo "Cargo.toml is already at $WANTED; nothing to commit."
+            echo "Cargo.toml is already at $WANTED"
           else
-            git config user.name  "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             cava_bg_write_cargo_version "$WANTED"
 
-            # Cargo.lock records the workspace version too, and every later step
-            # runs cargo with --locked, which refuses to proceed when the lock and
-            # the manifest disagree:
-            #     error: cannot update the lock file because --locked was passed
-            # `--precise` touches only the cava-bg entry; all 140-odd dependency
-            # versions stay put.
+            # Cargo.lock records the workspace version too, and every build step
+            # runs cargo with --locked, which refuses to start when the lock and
+            # the manifest disagree. --precise rewrites only the cava-bg entry.
             cargo update -p cava-bg --precise "$WANTED"
 
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
             git add Cargo.toml Cargo.lock
-            # [skip ci] is essential: this commit lands on main, and without it
-            # GitHub would start a second run, which would see "Cargo.toml ==
-            # newest tag" and bump again — forever. Skipping the trigger while
-            # letting the current run continue is exactly what we want.
-            git commit -m "chore(release): $WANTED [skip ci]" --quiet
+            # No [skip ci] needed any more: this workflow has no push trigger,
+            # so pushing to main cannot start anything.
+            git commit -m "chore(release): $WANTED" --quiet
             if ! git push origin HEAD:main; then
-              echo "::error::Could not push the version bump to main."
-              echo "::error::Either main is protected, or it moved on since CI validated."
+              echo "::error::Could not push the version bump to main (protected branch?)."
               echo "::error::Nothing was tagged or published."
               exit 1
             fi
-            echo "::notice::Bumped Cargo.toml to $WANTED on main"
+            echo "::notice::Set Cargo.toml and Cargo.lock to $WANTED on main"
           fi
 
           echo "sha=$(git rev-parse HEAD)" >>"$GITHUB_OUTPUT"
 
   build:
-    name: Build all artifacts
+    name: Build the artifacts
     needs: [plan, bump]
-    if: needs.plan.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          # The bump commit, so the source tarball carries the released version.
           ref: ${{ needs.bump.outputs.sha }}
-      - name: Install build dependencies
-        # Shared list; extras for the packaging steps.
-        run: bash scripts/ci-deps.sh rpm fakeroot dpkg-dev
+
+      - name: Install system dependencies
+        run: bash scripts/ci-deps.sh
+
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
@@ -225,14 +201,11 @@ jobs:
 
       - name: Build source + binary tarballs, .deb and AUR files
         env:
-          # The .rpm cannot be built here: see the `rpm` job.
-          CAVA_BG_SKIP_RPM: "1"
-        run: |
-          # build-all.sh renders the PKGBUILD with an @SHA256SUM@ placeholder;
-          # it is re-rendered with the real checksum in the AUR job.
-          CARGO_BUILD_ARGS="--locked" bash packaging/build-all.sh --allow-dirty
+          CAVA_BG_SKIP_RPM: "1"   # built in the `rpm` job, on Fedora
+          CARGO_BUILD_ARGS: "--locked"
+        run: bash packaging/build-all.sh --allow-dirty
 
-      - name: Collect artifacts
+      - name: Collect the artifacts
         run: |
           set -euo pipefail
           mkdir -p upload
@@ -240,8 +213,7 @@ jobs:
           cp target/dist/*.deb upload/ 2>/dev/null || true
           ls -lh upload/
 
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
           name: cava-bg-release
           path: upload/
@@ -251,17 +223,11 @@ jobs:
   rpm:
     name: Build the .rpm on Fedora
     needs: [plan, bump]
-    if: needs.plan.outputs.release == 'true'
     runs-on: ubuntu-latest
     # rpmbuild validates the spec's BuildRequires against package names that only
-    # exist on an RPM distro, so this has to run on Fedora rather than on the
-    # Ubuntu runner where everything else is built. Reaching for --nodeps to
-    # dodge that check would produce a binary linked against Ubuntu's sonames and
-    # ship it to Fedora users.
-    #
-    # Proven: the 0.2.7 run built the RPM end to end. It is no longer advisory,
-    # so a regression here is visible instead of quietly shipping a release
-    # without an RPM.
+    # exist on an RPM distro, so this needs Fedora, not the Ubuntu runner where
+    # everything else is built. Reaching for --nodeps to dodge the check would
+    # produce a binary linked against Ubuntu's sonames and ship it to Fedora.
     container: fedora:latest
     steps:
       - name: Install build dependencies
@@ -270,17 +236,15 @@ jobs:
           dnf install -y --setopt=install_weak_deps=False \
             git make rpm-build systemd-rpm-macros
 
-          # ffmpeg is not in Fedora's own repositories -- the spec already
-          # requires it at runtime (`Requires: ffmpeg`), and RPM Fusion is where
-          # Fedora users get it from.
+          # ffmpeg is not in Fedora's own repositories; the spec already declares
+          # `Requires: ffmpeg`, and RPM Fusion is where Fedora users get it.
           dnf install -y \
             "https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm" \
             || dnf install -y \
             "https://download1.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm"
 
           # clang is not optional: ffmpeg-sys-next runs bindgen, which needs
-          # libclang. It was installed on the Ubuntu side (libclang-dev) and
-          # left out here.
+          # libclang.
           dnf install -y --setopt=install_weak_deps=False \
             cargo rust pkg-config clang \
             wayland-devel libxkbcommon-devel mesa-libEGL-devel mesa-libGL-devel \
@@ -295,9 +259,6 @@ jobs:
           HOME: /root
         run: bash packaging/rpm/build-rpm.sh
 
-      - name: Show what was produced
-        run: find target/rpm -name '*.rpm' -exec ls -lh {} \;
-
       - uses: actions/upload-artifact@v4
         if: success()
         with:
@@ -307,8 +268,7 @@ jobs:
           retention-days: 7
 
       # The container's log is not reachable through the API without auth, so
-      # publish it as an artifact instead: a failed Fedora build has to be
-      # diagnosable from the outside.
+      # publish it: a failed Fedora build has to be diagnosable from outside.
       - uses: actions/upload-artifact@v4
         if: failure()
         with:
@@ -316,45 +276,61 @@ jobs:
           path: |
             target/rpm/rpmbuild.log
             /root/rpmbuild/BUILD/*.log
-            /root/rpmbuild/BUILDROOT/*.log
           if-no-files-found: ignore
           retention-days: 7
 
   github-release:
-    name: Tag and publish GitHub release
+    name: Tag and publish
     needs: [plan, bump, build]
-    if: needs.plan.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
-      # The tag is created HERE, not next to the version decision, so that a
-      # failed build cannot leave a tag pointing at unreleased code. That is
-      # exactly what happened before: two tags were cut for builds that never
-      # produced a release.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
           ref: ${{ needs.bump.outputs.sha }}
 
+      # The tag is created here, after the build, so a failed build cannot leave
+      # a tag pointing at code that was never released. Doing it next to the
+      # version decision is how two orphan tags were produced.
       - name: Create and push the tag
         run: |
           set -euo pipefail
           TAG="${{ needs.plan.outputs.tag }}"
-          VERSION="${{ needs.plan.outputs.version }}"
+          FORCE="${{ needs.plan.outputs.force }}"
+          HEAD="$(git rev-parse HEAD)"
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
           if git rev-parse --verify --quiet "refs/tags/$TAG" >/dev/null; then
-            echo "::notice::Tag $TAG already exists; reusing it."
+            TAG_SHA="$(git rev-list -n1 "$TAG")"
+
+            # A forced re-release only makes sense for the commit the tag
+            # already points at — that is the "the AUR push failed, run it
+            # again" case. Reusing the tag while building different code would
+            # publish artifacts that do not correspond to the tag, so that is
+            # refused rather than papered over by moving the tag: deleting a
+            # tag that has a release attached has side effects on GitHub, and
+            # silently rewriting history is not this workflow's business.
+            if [ "$TAG_SHA" != "$HEAD" ]; then
+              echo "::error::Tag $TAG points at ${TAG_SHA:0:8}, but this release builds ${HEAD:0:8}."
+              echo "::error::A forced re-release is for re-running the same commit."
+              echo "::error::To release different code under this version, delete the tag first:"
+              echo "::error::    git push origin :refs/tags/$TAG"
+              exit 1
+            fi
+            echo "::notice::Re-releasing $TAG at its existing commit ${HEAD:0:8}"
           else
-            git tag -a "$TAG" -m "cava-bg $VERSION"
-            git push origin "$TAG"
-            echo "::notice::Created and pushed tag $TAG"
+            git tag -a "$TAG" -m "cava-bg $TAG"
+            git push origin "$TAG" || { echo "::error::Could not push tag $TAG"; exit 1; }
+            echo "::notice::Tag $TAG now points at ${HEAD:0:8}"
           fi
 
       - uses: actions/download-artifact@v4
         with:
           name: cava-bg-release
           path: upload/
-      - name: Create release
+
+      - name: Create the GitHub release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ needs.plan.outputs.tag }}
@@ -371,30 +347,29 @@ jobs:
             echo "curl -fsSL https://raw.githubusercontent.com/leriart/cava-bg/main/install.sh | bash"
             echo '```'
             echo
-            echo "### Artifacts"
-            echo
-            echo "| File | Target distro |"
-            echo "|------|---------------|"
+            echo "| File | Target |"
+            echo "|------|--------|"
             echo "| \`.deb\` | Debian / Ubuntu |"
-            echo "| \`.rpm\` | Fedora / openSUSE |"
+            echo "| \`.rpm\` | Fedora / openSUSE (attached separately) |"
             echo "| \`-x86_64-unknown-linux-gnu.tar.gz\` | Arch / NixOS / manual |"
             echo "| \`aur-*.tar.gz\` | Arch (AUR) |"
             echo "| \`.tar.gz\` (no arch) | source |"
           } >release-notes.md
-          gh release create "$TAG" upload/* --title "cava-bg ${TAG}" \
-            --notes-file release-notes.md --verify-tag
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Re-release: replace the assets and the notes instead of failing.
+            echo "::notice::Release $TAG already exists; replacing its assets"
+            gh release upload "$TAG" upload/* --clobber
+            gh release edit "$TAG" --notes-file release-notes.md
+          else
+            gh release create "$TAG" upload/* --title "cava-bg ${TAG}" \
+              --notes-file release-notes.md --verify-tag
+          fi
           echo "::notice::Published https://github.com/leriart/cava-bg/releases/tag/${TAG}"
 
-  # The RPM is built in a Fedora container and takes ~15 minutes, roughly three
-  # times the rest of the pipeline. While github-release waited on it, a slow or
-  # cancelled RPM took the tag and the whole release down with it — which is
-  # what happened on two consecutive runs. The release now publishes without it
-  # and this job attaches the RPM afterwards, so the slowest and least certain
-  # artifact can only ever be late, never fatal.
   attach-rpm:
-    name: Attach the RPM to the release
+    name: Attach the RPM
     needs: [plan, github-release, rpm]
-    if: needs.plan.outputs.release == 'true' && needs.rpm.result == 'success'
+    if: needs.rpm.result == 'success'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -409,9 +384,8 @@ jobs:
         run: |
           set -euo pipefail
           # upload-artifact keeps the path structure relative to the matched
-          # files' common directory, so the RPM lands at rpm/x86_64/... rather
-          # than in the working directory. A plain ./*.rpm glob therefore
-          # matched nothing and `ls` exited 2 before gh ever ran.
+          # files' common directory, so the RPM comes back as
+          # rpm/x86_64/... rather than in the working directory.
           mapfile -t rpms < <(find rpm -name '*.rpm' -type f)
           if [ "${#rpms[@]}" -eq 0 ]; then
             echo "::error::no .rpm found in the cava-bg-rpm artifact"
@@ -422,26 +396,27 @@ jobs:
           gh release upload "$TAG" "${rpms[@]}" --clobber
           echo "::notice::Attached ${#rpms[@]} RPM(s) to $TAG"
 
-
   aur:
     name: Publish to AUR
-    needs: [plan, bump, build]
-    if: needs.plan.outputs.release == 'true' && needs.plan.outputs.publish_aur == 'true'
+    needs: [plan, github-release]
+    if: needs.plan.outputs.publish_aur == 'true'
     runs-on: ubuntu-latest
     environment: aur
     steps:
-      - name: Fail early when AUR credentials are missing
+      - name: Fail early when the credentials are missing
         env:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
           AUR_SSH_KNOWN_HOSTS: ${{ secrets.AUR_SSH_KNOWN_HOSTS }}
         run: |
           set -euo pipefail
           if [ -z "${AUR_SSH_PRIVATE_KEY}" ] || [ -z "${AUR_SSH_KNOWN_HOSTS}" ]; then
-            echo "::error::AUR_SSH_PRIVATE_KEY / AUR_SSH_KNOWN_HOSTS secrets are not set."
-            echo "::error::Add them under Settings -> Secrets (or Actions -> Environments -> aur)."
+            echo "::error::AUR_SSH_PRIVATE_KEY / AUR_SSH_KNOWN_HOSTS are not set."
+            echo "::error::Add them under Settings -> Environments -> aur."
             exit 1
           fi
 
+      # Runs before the checkout and the downloads so that an authentication
+      # problem reports itself instead of being hidden behind a later failure.
       - name: Configure SSH for aur.archlinux.org
         env:
           AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
@@ -455,14 +430,9 @@ jobs:
           printf '%s\n' "$AUR_SSH_KNOWN_HOSTS" >~/.ssh/known_hosts
           chmod 644 ~/.ssh/known_hosts
 
-          # These are ssh_config directives, not shell commands. They were
-          # previously written directly into this script, where the shell tried
-          # to run `IdentityFile` as a command and `set -e` aborted the step
-          # before it ever reached the connectivity probe.
-          #
-          # A here-doc would have to have its terminator at column zero after
-          # YAML strips the block indentation, which is easy to get wrong; a
-          # group with redirects has no such trap.
+          # These are ssh_config directives, not shell commands. Written directly
+          # into this script the shell tried to execute `IdentityFile` and
+          # `set -e` aborted the step.
           {
             echo "Host aur.archlinux.org"
             echo "  IdentityFile ~/.ssh/id_ed25519"
@@ -472,25 +442,15 @@ jobs:
           } >~/.ssh/config
           chmod 600 ~/.ssh/config
 
-          # Check the secret is a usable key before blaming the network. A key
-          # pasted as a public key, or with the newlines mangled, fails later
-          # with a generic "Permission denied" that says nothing about why.
           if ! ssh-keygen -y -f ~/.ssh/id_ed25519 >/dev/null 2>&1; then
             # Describe the shape of the secret rather than quoting it: GitHub
-            # replaces any text that matches a secret with ***, so printing the
-            # first line produced an unreadable "First line is: ***" annotation.
-            # These derived facts are not the secret and survive redaction.
+            # replaces anything that matches a secret with ***, so printing the
+            # content produced an unreadable "First line is: ***".
             keyfile=~/.ssh/id_ed25519
             key_lines=$(wc -l <"$keyfile" | tr -d ' ')
             key_bytes=$(wc -c <"$keyfile" | tr -d ' ')
-            # Order matters. A key whose newlines were lost is one long line
-            # that still contains the BEGIN marker, so testing for the marker
-            # first misreported it as a readable-but-broken key.
             if head -1 "$keyfile" | grep -qE '^[^ ]+ +ssh-(ed25519|rsa) '; then
-              # A known_hosts line starts with a hostname; a public key starts
-              # with the key type. Both are one line and both contain
-              # "ssh-ed25519", so they must be told apart explicitly.
-              kind='a known_hosts line — it belongs in AUR_SSH_KNOWN_HOSTS, not here'
+              kind='a known_hosts line — that belongs in AUR_SSH_KNOWN_HOSTS, not here'
             elif head -1 "$keyfile" | grep -q 'ssh-ed25519\|ssh-rsa'; then
               kind='a PUBLIC key (the .pub file); this secret needs the PRIVATE one'
             elif [ "$key_lines" -le 1 ]; then
@@ -505,24 +465,18 @@ jobs:
             echo "::error::AUR_SSH_PRIVATE_KEY is not a usable private key."
             echo "::error::It looks like: $kind."
             echo "::error::Shape: $key_lines line(s), $key_bytes bytes."
-            echo "::error::Expected: the contents of your ed25519 PRIVATE key file"
-            echo "::error::(starts with -----BEGIN OPENSSH PRIVATE KEY-----), pasted whole."
-            echo "::error::For reference an ed25519 OpenSSH private key is roughly 400 bytes"
-            echo "::error::over 7 lines; a public key is a single ~90 byte line and a"
-            echo "::error::known_hosts entry is a single ~100 byte line that starts with a hostname."
+            echo "::error::Expected: the ed25519 PRIVATE key file, pasted whole — roughly"
+            echo "::error::400 bytes over 7 lines, starting with -----BEGIN OPENSSH PRIVATE KEY-----."
             exit 1
           fi
           echo "::notice::Key fingerprint: $(ssh-keygen -lf ~/.ssh/id_ed25519 2>&1 | awk '{print $2}')"
-          echo "::notice::This is the fingerprint that must appear at https://aur.archlinux.org/account/sshkeys"
+          echo "::notice::That fingerprint must appear at https://aur.archlinux.org/account/sshkeys"
 
-          # Fail fast with a clear message rather than inside git's clone. The
-          # ssh error is echoed rather than discarded: silencing it made the
-          # previous run undiagnosable.
           if ! ssh_output=$(ssh -o BatchMode=yes aur@aur.archlinux.org true 2>&1); then
             echo "::error::SSH to aur.archlinux.org failed:"
             echo "$ssh_output"
-            echo "::error::If it says 'Permission denied (publickey)', compare the fingerprint"
-            echo "::error::above with the keys registered at https://aur.archlinux.org/account/sshkeys"
+            echo "::error::On 'Permission denied (publickey)', compare the fingerprint above"
+            echo "::error::with the keys at https://aur.archlinux.org/account/sshkeys"
             exit 1
           fi
           echo "::notice::AUR SSH authentication OK"
@@ -530,17 +484,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           path: source
-      # Only the source tarball is needed here, to compute the checksum the
-      # PKGBUILD pins. An earlier edit accidentally added the RPM download to
-      # this job as well — the same download block appears in github-release,
-      # so a plain string replace matched both — and this job then failed
-      # fetching an artifact it has no use for.
+
       - uses: actions/download-artifact@v4
         with:
           name: cava-bg-release
           path: upload/
 
-      - name: Render PKGBUILD with the real checksum and push
+      - name: Render the PKGBUILD with the real checksum and push
         env:
           VERSION: ${{ needs.plan.outputs.version }}
           ARCH: x86_64
@@ -552,9 +502,6 @@ jobs:
           SHA256="$(sha256sum "$SRC_TAR" | cut -d' ' -f1)"
           echo "::notice::cava-bg-${VERSION}.tar.gz sha256=${SHA256}"
 
-          # Not `aur://` — that scheme is not understood by git unless a
-          # url.insteadOf mapping is configured, and it would abort with
-          # "fatal: remote helper 'aur' aborted session".
           rm -rf /tmp/aur
           git clone --quiet ssh://aur@aur.archlinux.org/cava-bg.git /tmp/aur
           cd /tmp/aur
@@ -562,7 +509,7 @@ jobs:
           VERSION="$VERSION" ARCH=x86_64 SHA256="$SHA256" \
             OUT_DIR=/tmp/aur bash source/packaging/aur/render-pkgbuild.sh
 
-          git add PKGBUILD .SRCINFO 2>/dev/null || true
+          git add PKGBUILD .SRCINFO
           if git diff --cached --quiet; then
             echo "::notice::AUR already up to date at ${VERSION}; nothing to push."
             exit 0

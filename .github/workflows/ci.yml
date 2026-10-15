@@ -1,12 +1,19 @@
 name: CI
 
-# `main` only. Development happens on `dev` without spending runner minutes;
-# validation happens when a change reaches the release branch.
+# Manual only, on purpose.
+#
+# It used to run on every push to `main`, which made every push cut a release
+# through the release workflow's `workflow_run` trigger — 0.2.6 through 0.2.10
+# were produced in a single day that way. Nothing runs unless it is asked for.
+#
+# Run it from the Actions tab (Run workflow) or with:
+#     gh workflow run ci.yml --ref main
+#
+# The same gates run locally with `cargo fmt --all -- --check`,
+# `cargo clippy --workspace --all-targets -- -D warnings`,
+# `cargo test --workspace` and `cargo xtask -- --check`, which is the intended
+# loop while developing.
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -255,16 +262,45 @@ jobs:
           cava-bg outputs --config /tmp/cava-bg-devtest/config.toml
 
   nix:
-    name: nix flake check
+    name: nix build
     runs-on: ubuntu-latest
-    # Advisory: Nix is a secondary packaging path, and a Nix-side problem should
-    # not block a release for everyone else.
+    # This job builds. It used to be `nix flake check --no-build`, wrapped in
+    # continue-on-error: it evaluated the flake and compiled nothing, so it
+    # reported success while `nix build` was broken.
+    #
+    # KNOWN FAILING, and advisory only until that is fixed. buildRustPackage's
+    # vendoring fails on this Cargo.lock's one git dependency:
+    #
+    #   ln: failed to create symbolic link
+    #     '$out/smithay-client-toolkit-0.20.0/<hash>-smithay-client-toolkit-0.20.0'
+    #   Permission denied
+    #
+    # The crate is symlinked into the vendor dir, then something tries to create
+    # a further symlink inside that symlink, which resolves into the read-only
+    # store. Replacing naersk with buildRustPackage is what exposed this.
+    #
+    # continue-on-error keeps a Nix-side problem from blocking a release while
+    # the report above is addressed; remove it once the build is green so the
+    # job can do its job.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      # magic-nix-cache-action is deliberately not used: it serves store paths
-      # from a previous run over HTTP, which is a needless moving part for a
-      # job that takes well under a minute.
       - uses: cachix/install-nix-action@v31
-      - name: nix flake check
-        run: nix flake check --no-build
+      - name: Evaluate the flake
+        run: nix flake check
+      - name: Build the package
+        id: build
+        run: |
+          set -euo pipefail
+          nix build .#default --no-link --print-out-paths | tee /tmp/nix-out
+          echo "::notice::nix build produced $(cat /tmp/nix-out)"
+      - name: The built binary runs
+        if: steps.build.outcome == 'success'
+        run: |
+          set -euo pipefail
+          out="$(cat /tmp/nix-out)"
+          test -x "$out/bin/cava-bg"
+          # The wrapper sets LD_LIBRARY_PATH and PATH for cava/ffmpeg, so this
+          # also checks that wrapProgram did its job.
+          "$out/bin/cava-bg" --version
+          "$out/bin/cava-bg" __default-config | head -5

@@ -10,14 +10,23 @@ pkgdesc="Audio visualizer for Wayland, rendered as a background layer"
 arch=('@ARCH@')
 url="https://github.com/leriart/cava-bg"
 license=('MIT')
-depends=('cava' 'wayland' 'ffmpeg' 'libxkbcommon')
-makedepends=('cargo')
+depends=('cava' 'ffmpeg' 'wayland' 'libxkbcommon' 'libegl' 'libgl')
+# clang is not optional: ffmpeg-sys-next runs bindgen, and there are no
+# pre-generated bindings in the crate — src/lib.rs does
+# `include!(concat!(env!("OUT_DIR"), "/bindings.rs"))`. Without libclang the
+# build fails. It is easy to miss because a developer machine usually has clang
+# installed already, and it only shows up in a clean chroot.
+makedepends=('cargo' 'pkg-config' 'clang')
 optdepends=(
     'hyprctl: with hyprland, for wallpaper detection and cursor tracking'
     'wlrctl: cursor tracking on wlroots compositors'
     'swaybg: wallpaper detection fallback'
 )
-source=("$pkgname-$pkgver.tar.gz")
+# The tarball from the GitHub release, which is the slim `git archive` (it
+# excludes the ~80 MB of demo GIFs in docs/media) and whose checksum is
+# published next to it. A bare filename here -- what this used to be -- is not
+# a URL, so `makepkg -si` could not fetch anything for an AUR user.
+source=("$pkgname-$pkgver.tar.gz::$url/releases/download/$pkgver/$pkgname-$pkgver.tar.gz")
 sha256sums=('@SHA256SUM@')
 
 # cava-bg spawns the external `cava` binary and talks to compositor IPC helpers,

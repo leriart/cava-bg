@@ -42,14 +42,35 @@
 
           src = ./.;
 
-          cargoLock = {
-            lockFile = ./Cargo.lock;
-            # Cargo.lock contains a git dependency. cargoLock cannot hash that
-            # on its own, so the source hash is pinned here explicitly.
-            outputHashes = {
-              "smithay-client-toolkit-0.20.0" = "sha256-rFNSzm1003spYHdzlvCyb7PWGMOJibUq/Ek3F5HABkM=";
+          cargoLock =
+            let
+              lock = builtins.fromTOML (builtins.readFile ./Cargo.lock);
+              gitDeps = builtins.filter
+                (p: lib.hasPrefix "git+" (p.source or ""))
+                lock.package;
+
+              # A git dependency's source tree cannot be hashed by cargoLock, so
+              # the hash is unavoidably a literal. The *key* is not: writing
+              # "smithay-client-toolkit-0.20.0" here would duplicate the version
+              # from Cargo.lock, and bumping the crate would leave the stale key
+              # silently in place. The version is read from the lock file and
+              # only the hash is recorded, keyed by crate name.
+              hashes = {
+                smithay-client-toolkit = "sha256-rFNSzm1003spYHdzlvCyb7PWGMOJibUq/Ek3F5HABkM=";
+              };
+            in
+            {
+              lockFile = ./Cargo.lock;
+              outputHashes = builtins.listToAttrs (map
+                (p: {
+                  name = "${p.name}-${p.version}";
+                  value = hashes.${p.name} or (throw
+                    "Cargo.lock has a git dependency '${p.name}' with no recorded hash. "
+                    + "Add   ${p.name} = \"sha256-...\";   to cargoLock.hashes in flake.nix. "
+                    + "Nix prints the expected hash when the build fails.");
+                })
+                gitDeps);
             };
-          };
 
           buildFeatures = [ "dbus-detection" ];
 

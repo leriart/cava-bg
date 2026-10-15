@@ -128,7 +128,14 @@ echo ""
 
 # ─── 6. AUR submission tarball ───
 echo "┌─ [6/6] Rendering AUR PKGBUILD..."
-VERSION="$VERSION" ARCH="$ARCH" bash "$PROJECT_DIR/packaging/aur/render-pkgbuild.sh"
+# Pass the checksum of the source tarball built above. Without it the template's
+# @SHA256SUM@ placeholder survives into the PKGBUILD, and `makepkg` refuses to
+# even parse such a package — so a locally built AUR tarball was unusable. The
+# release workflow re-renders with the checksum it has just uploaded; this makes
+# the local copy correct too.
+SRC_SHA256="$(awk '{print $1}' "$DIST_DIR/${PKG_NAME}-${VERSION}.tar.gz.sha256")"
+VERSION="$VERSION" ARCH="$ARCH" SHA256="$SRC_SHA256" \
+    bash "$PROJECT_DIR/packaging/aur/render-pkgbuild.sh"
 AUR_DIR="$DIST_DIR/aur-${PKG_NAME}"
 rm -rf "$AUR_DIR"
 mkdir -p "$AUR_DIR"

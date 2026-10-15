@@ -217,27 +217,31 @@ Every release publishes an `.rpm`:
 sudo dnf install cava-bg-<version>-1.x86_64.rpm
 ```
 
-### Releases are automatic
+### Releases are manual
 
-Releases are cut automatically when a change lands on `main`:
+Nothing is published by a push. A release is started on purpose from the Actions
+tab (**Release ▸ Run workflow**) or from the command line:
 
-```text
-dev  ──▶  main  ──▶  CI  ──▶  (only if green)  release workflow
-                                              ├─ version decided automatically
-                                              ├─ tag <version>
-                                              ├─ source + binary tarballs
-                                              ├─ .deb          (Debian / Ubuntu)
-                                              ├─ .rpm          (Fedora / openSUSE)
-                                              ├─ GitHub Release
-                                              └─ AUR           (cava-bg)
+```bash
+gh workflow run release.yml --ref main -f version=0.2.11
 ```
 
-CI only runs on `main`, and the release waits for it to pass — a red CI
-publishes nothing. Validate locally before merging, since `dev` has no CI.
+The dialog takes a **version**; leave it empty to use the suggested next one,
+which the run summary shows together with the full list of existing tags. Each
+release produces:
 
-Nothing about the version is manual: merging `dev` into `main` reads the newest tag,
-works out the next version, writes it back to `Cargo.toml`, tags it, and publishes
-everything including the rendered `PKGBUILD` + `.SRCINFO` for the AUR.
+```text
+release workflow
+  ├─ Cargo.toml + Cargo.lock bumped and pushed
+  ├─ source + binary tarballs (+sha256)
+  ├─ .deb          (Debian / Ubuntu)
+  ├─ .rpm          (Fedora / openSUSE, built in a Fedora container)
+  ├─ tag + GitHub Release
+  └─ AUR           (cava-bg)
+```
+
+The workflow refuses versions that are not `x.y.z`, that are older than the
+newest tag, or whose tag already exists unless `force` is set.
 
 To reproduce every artifact locally:
 
@@ -365,22 +369,24 @@ For custom and fallback color palettes, see the `[colors]` block.
 ## Contributing
 
 ```text
-feature branch  ──▶  dev  ──▶  main  ──▶  release
+feature branch  ──▶  dev  ──▶  main  ──▶  (Actions ▸ Release ▸ Run workflow)
 ```
 
-* `dev` is the integration branch. CI does not run on it, so validate locally:
+* `dev` is the integration branch and `main` is release-only, but **merging into
+  `main` does nothing on its own** — both workflows are started by hand.
+* Validate locally before merging, since no CI runs automatically:
   ```bash
   cargo fmt --all -- --check
   cargo clippy --workspace --all-targets -- -D warnings
   cargo test --workspace
   cargo xtask -- --check
   ```
-* `main` is release-only. Merging into it is the release trigger; the workflow
-  picks the version, so there is nothing to bump by hand.
-* If a release fails, re-run it instead of re-merging:
+* Cut a release from the Actions tab, or:
   ```bash
-  gh workflow run release.yml --ref main -f force=true -f publish_aur=true
+  gh workflow run release.yml --ref main -f version=0.2.11
   ```
+* If a release fails, run it again rather than merging anything: a version whose
+  tag already exists needs `force=true`.
 
 See [AGENTS.md](AGENTS.md) for the architecture, the config schema rules and the
 list of landmines to read before touching the renderer.

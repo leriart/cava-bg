@@ -38,14 +38,6 @@ cava_bg_build_release() {
 
 # Refuse to continue on a dirty tree: a tarball built from uncommitted files
 # cannot be reproduced or audited from the release tag.
-cava_bg_require_clean_tree() {
-    if cava_bg_is_dirty; then
-        echo "error: working tree has uncommitted changes; commit or stash first." >&2
-        git -C "$CAVA_BG_ROOT" status --short >&2
-        return 1
-    fi
-}
-
 # Emit a sha256 file next to an artifact (portable, GNU/BSD compatible).
 cava_bg_sha256() {
     local artifact="$1"
@@ -107,62 +99,6 @@ cava_bg_write_cargo_version() {
     }
 }
 
-# Decide the version to release, and bump Cargo.toml when needed.
-#
-# Rules, in order:
-#   force     -> reuse the newest tag as-is (re-running a broken release)
-#   explicit  -> dev already bumped Cargo.toml past the newest tag; honour it
-#   same      -> nothing was bumped, so cut the next patch release
-#   first     -> no tags at all; release whatever Cargo.toml says
-#
-# Echoes the version on stdout and a human-readable reason on stderr.
-cava_bg_resolve_release_version() {
-    local force="${1:-false}"
-    local cargo_version latest
-
-    cargo_version="$(cava_bg_version)"
-    latest="$(cava_bg_latest_tag_version)"
-
-    if [ "$force" = "true" ] && [ -n "$latest" ]; then
-        echo "forced re-run; reusing already-released version $latest" >&2
-        echo "$latest"
-        return 0
-    fi
-
-    if [ -z "$latest" ]; then
-        echo "no tags yet; releasing Cargo.toml version $cargo_version" >&2
-        echo "$cargo_version"
-        return 0
-    fi
-
-    if cava_bg_version_gt "$cargo_version" "$latest"; then
-        echo "dev bumped $latest -> $cargo_version explicitly" >&2
-        echo "$cargo_version"
-        return 0
-    fi
-
-    if [ "$cargo_version" = "$latest" ]; then
-        local next
-        next="$(cava_bg_next_patch "$latest")"
-        # Deliberately does NOT write Cargo.toml here.
-        #
-        # It used to, and because GitHub Actions steps share a workspace, the
-        # later "commit the version bump" step found the file already updated,
-        # took its `already at $WANTED` early exit, and never committed or
-        # pushed anything. The tag then landed on a commit whose Cargo.toml
-        # still held the previous version. Deciding and mutating are separate
-        # steps on purpose; the caller writes the file when it is ready.
-        echo "no bump on dev; cutting $latest -> $next" >&2
-        echo "$next"
-        return 0
-    fi
-
-    # Cargo.toml is *behind* the newest tag: someone force-pushed or reverted.
-    # Trusting it would re-release an older version as if it were new.
-    echo "error: Cargo.toml ($cargo_version) is behind the newest tag ($latest)." >&2
-    echo "error: Refusing to release; bump version in Cargo.toml on dev first." >&2
-    return 1
-}
 # ── Tests ──────────────────────────────────────────────────────────────────
 # Run with `scripts/version.sh --test`.
 # Deliberately a function, not inline code: the harness sources this file in a
