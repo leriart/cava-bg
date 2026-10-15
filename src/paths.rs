@@ -8,9 +8,9 @@
 //! silently ignored `--config`.
 
 use std::env;
+use std::ffi::OsStr;
 use std::fs;
 use std::io;
-use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
@@ -244,7 +244,10 @@ mod tests {
     fn xdg_config_home_wins_over_home() {
         let dir = config_dir_from(Some(OsStr::new("/xdg")), Some(OsStr::new("/home/u")));
         assert_eq!(dir, PathBuf::from("/xdg/cava-bg"));
-        assert_eq!(dir.join(CONFIG_FILE), PathBuf::from("/xdg/cava-bg/config.toml"));
+        assert_eq!(
+            dir.join(CONFIG_FILE),
+            PathBuf::from("/xdg/cava-bg/config.toml")
+        );
     }
 
     #[test]
