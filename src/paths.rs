@@ -10,6 +10,7 @@
 use std::env;
 use std::fs;
 use std::io;
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
@@ -27,13 +28,27 @@ static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// The original implementation formatted `$HOME/.config/...` by hand, which
 /// ignored `XDG_CONFIG_HOME` entirely.
 pub fn default_config_dir() -> PathBuf {
-    if let Some(xdg) = env::var_os("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
+    config_dir_from(
+        env::var_os("XDG_CONFIG_HOME").as_deref(),
+        env::var_os("HOME").as_deref(),
+    )
+}
+
+/// The body of [`default_config_dir`], with the environment passed in.
+///
+/// Split out so it can be tested without `env::set_var`. That is `unsafe`
+/// because the environment is process-global and Rust's test harness runs tests
+/// on parallel threads: mutating it in one test leaks into every other test
+/// reading the same variable, which made this suite pass locally and fail on CI
+/// depending on thread scheduling.
+fn config_dir_from(xdg_config_home: Option<&OsStr>, home: Option<&OsStr>) -> PathBuf {
+    if let Some(xdg) = xdg_config_home.filter(|v| !v.is_empty()) {
         return PathBuf::from(xdg).join(APP_DIR);
     }
-    let home = env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."));
-    home.join(".config").join(APP_DIR)
+    home.map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".config")
+        .join(APP_DIR)
 }
 
 pub fn default_config_path() -> PathBuf {
@@ -219,23 +234,37 @@ mod tests {
 
     #[test]
     fn bare_filename_falls_back_to_default_dir() {
+        // This one genuinely wants the ambient environment, and it no longer
+        // races because nothing mutates it any more.
         let paths = RuntimePaths::new(Path::new("config.toml"));
         assert_eq!(paths.dir(), default_config_dir());
     }
 
     #[test]
-    fn default_paths_honour_xdg_config_home() {
-        // SAFETY: single-threaded test body, env restored immediately.
-        unsafe {
-            env::set_var("XDG_CONFIG_HOME", "/xdg");
+    fn xdg_config_home_wins_over_home() {
+        let dir = config_dir_from(Some(OsStr::new("/xdg")), Some(OsStr::new("/home/u")));
+        assert_eq!(dir, PathBuf::from("/xdg/cava-bg"));
+        assert_eq!(dir.join(CONFIG_FILE), PathBuf::from("/xdg/cava-bg/config.toml"));
+    }
+
+    #[test]
+    fn empty_xdg_config_home_falls_back_to_home() {
+        // An exported-but-empty XDG_CONFIG_HOME is common in shells and must be
+        // treated as unset rather than producing a path relative to "".
+        for empty in [None, Some(OsStr::new(""))] {
+            assert_eq!(
+                config_dir_from(empty, Some(OsStr::new("/home/u"))),
+                PathBuf::from("/home/u/.config/cava-bg")
+            );
         }
+    }
+
+    #[test]
+    fn no_home_and_no_xdg_is_relative_not_panicking() {
         assert_eq!(
-            default_config_path(),
-            PathBuf::from("/xdg/cava-bg/config.toml")
+            config_dir_from(None, None),
+            PathBuf::from("./.config/cava-bg")
         );
-        unsafe {
-            env::remove_var("XDG_CONFIG_HOME");
-        }
     }
 
     #[test]
