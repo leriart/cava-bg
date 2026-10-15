@@ -400,6 +400,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: cava-bg-rpm
+          path: rpm
 
       - name: Upload the RPM to the release
         env:
@@ -407,9 +408,19 @@ jobs:
           TAG: ${{ needs.plan.outputs.tag }}
         run: |
           set -euo pipefail
-          ls -lh ./*.rpm
-          gh release upload "$TAG" ./*.rpm --clobber
-          echo "::notice::Attached the RPM to $TAG"
+          # upload-artifact keeps the path structure relative to the matched
+          # files' common directory, so the RPM lands at rpm/x86_64/... rather
+          # than in the working directory. A plain ./*.rpm glob therefore
+          # matched nothing and `ls` exited 2 before gh ever ran.
+          mapfile -t rpms < <(find rpm -name '*.rpm' -type f)
+          if [ "${#rpms[@]}" -eq 0 ]; then
+            echo "::error::no .rpm found in the cava-bg-rpm artifact"
+            find rpm -type f | head -20
+            exit 1
+          fi
+          printf '  %s\n' "${rpms[@]}"
+          gh release upload "$TAG" "${rpms[@]}" --clobber
+          echo "::notice::Attached ${#rpms[@]} RPM(s) to $TAG"
 
 
   aur:
@@ -475,8 +486,13 @@ jobs:
             # Order matters. A key whose newlines were lost is one long line
             # that still contains the BEGIN marker, so testing for the marker
             # first misreported it as a readable-but-broken key.
-            if head -1 "$keyfile" | grep -q 'ssh-ed25519\|ssh-rsa'; then
-              kind='a PUBLIC key; you pasted the wrong half of the pair'
+            if head -1 "$keyfile" | grep -qE '^[^ ]+ +ssh-(ed25519|rsa) '; then
+              # A known_hosts line starts with a hostname; a public key starts
+              # with the key type. Both are one line and both contain
+              # "ssh-ed25519", so they must be told apart explicitly.
+              kind='a known_hosts line — it belongs in AUR_SSH_KNOWN_HOSTS, not here'
+            elif head -1 "$keyfile" | grep -q 'ssh-ed25519\|ssh-rsa'; then
+              kind='a PUBLIC key (the .pub file); this secret needs the PRIVATE one'
             elif [ "$key_lines" -le 1 ]; then
               kind='a single line — the newlines were lost when pasting'
             elif grep -q 'BEGIN OPENSSH PRIVATE KEY' "$keyfile"; then
@@ -491,6 +507,9 @@ jobs:
             echo "::error::Shape: $key_lines line(s), $key_bytes bytes."
             echo "::error::Expected: the contents of your ed25519 PRIVATE key file"
             echo "::error::(starts with -----BEGIN OPENSSH PRIVATE KEY-----), pasted whole."
+            echo "::error::For reference an ed25519 OpenSSH private key is roughly 400 bytes"
+            echo "::error::over 7 lines; a public key is a single ~90 byte line and a"
+            echo "::error::known_hosts entry is a single ~100 byte line that starts with a hostname."
             exit 1
           fi
           echo "::notice::Key fingerprint: $(ssh-keygen -lf ~/.ssh/id_ed25519 2>&1 | awk '{print $2}')"
