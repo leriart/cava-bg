@@ -255,16 +255,14 @@ jobs:
           cava-bg outputs --config /tmp/cava-bg-devtest/config.toml
 
   nix:
-    name: nix flake check
+    name: nix build
     runs-on: ubuntu-latest
     # Advisory: Nix is a secondary packaging path, and a Nix-side problem should
     # not block a release for everyone else.
     continue-on-error: true
     steps:
       - uses: actions/checkout@v4
-      # magic-nix-cache-action is deliberately not used: it serves store paths
-      # from a previous run over HTTP, which is a needless moving part for a
-      # job that takes well under a minute.
       - uses: cachix/install-nix-action@v31
-      - name: nix flake check
-        run: nix flake check --no-build
+      - uses: DeterminateSystems/magic-nix-cache-action@v15
+      - name: nix build
+        run: nix build .
