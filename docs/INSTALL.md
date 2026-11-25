@@ -124,16 +124,26 @@ curl -fsSL https://raw.githubusercontent.com/leriart/cava-bg/main/install.sh | b
 
 ### Manual build (no installer)
 
-If you prefer to drive `cargo` yourself:
+If you prefer to drive `cargo` yourself, install the build dependencies first.
+The installer checks the same set before it compiles: a C compiler,
+`pkg-config`, libclang (bindgen, used by `ffmpeg-sys-next`), the FFmpeg
+modules `libavcodec`, `libavformat`, `libavutil`, `libswscale`, and the
+`wayland-client`, `wayland-egl` and `xkbcommon` pkg-config files. EGL/GL are
+loaded at runtime and are not checked.
 
 ```bash
 # Install build dependencies
 # Arch Linux
-sudo pacman -S cava base-devel pkg-config wayland wayland-protocols libxkbcommon ffmpeg
+sudo pacman -S --needed cava base-devel clang pkgconf wayland wayland-protocols \
+    libxkbcommon mesa libglvnd ffmpeg
 # Ubuntu / Debian
-sudo apt install cava build-essential pkg-config libwayland-dev libegl-dev \
-    mesa-common-dev libxkbcommon-dev wayland-protocols libavformat-dev \
-    libavcodec-dev libavutil-dev libswscale-dev
+sudo apt install cava build-essential pkg-config clang libclang-dev \
+    libwayland-dev libegl-dev mesa-common-dev libxkbcommon-dev wayland-protocols \
+    libavformat-dev libavcodec-dev libavutil-dev libswscale-dev
+# Fedora (ffmpeg-devel comes from RPM Fusion)
+sudo dnf install cava clang clang-devel pkgconf wayland-devel \
+    wayland-protocols-devel libxkbcommon-devel mesa-libGL-devel libglvnd-devel \
+    ffmpeg-devel
 
 # Install Rust
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
@@ -199,6 +209,24 @@ Or make stable the default (this does change your rustup configuration):
 ```bash
 rustup default stable
 ```
+
+### "Unable to find libclang" / bindgen failure
+
+`ffmpeg-sys-next` runs bindgen, which needs libclang. Install it for your
+distribution (Arch: `clang`; Debian/Ubuntu: `clang libclang-dev`; Fedora:
+`clang clang-devel`) in addition to the FFmpeg development headers above.
+The installer preflight reports this before `cargo build` starts.
+
+If libclang lives outside the standard LLVM directories, point bindgen at the
+directory that contains `libclang.so`:
+
+```bash
+export LIBCLANG_PATH=/usr/lib/llvm-19/lib   # use your actual LLVM version
+cargo build --release --locked
+```
+
+A wrong `LIBCLANG_PATH` is worse than an unset one: clang-sys searches only
+that directory and stops.
 
 ### "cava not found"
 Install cava as shown above.

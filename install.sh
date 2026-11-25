@@ -310,6 +310,211 @@ resolve_cargo() {
     exit 1
 }
 
+# ─── Build dependency preflight ──────────────────────────────────────────
+# `ffmpeg-sys-next` runs bindgen, so a missing libclang used to surface only
+# after minutes of compiling as:
+#
+#     Unable to find libclang ... set LIBCLANG_PATH
+#
+# Check the things that fail before or early in `cargo build` here, and stop
+# with a distro-specific install command instead of a compiler backtrace.
+# Nothing is installed automatically: no package manager, no sudo.
+#
+# The checks are deliberately conservative. Only dependencies that are
+# required at compile time on every supported distro are hard failures:
+#   · a C compiler (cc/gcc/clang) and pkg-config
+#   · libclang, needed by bindgen
+#   · the four FFmpeg pkg-config modules this crate enables
+#   · wayland-client, wayland-egl and xkbcommon (the exact .pc names)
+# EGL/GL are loaded at runtime by wgpu and are intentionally not checked.
+
+preflight_find_compiler() {
+    command -v cc >/dev/null 2>&1 \
+        || command -v gcc >/dev/null 2>&1 \
+        || command -v clang >/dev/null 2>&1
+}
+
+preflight_pkg_config() {
+    if command -v pkg-config >/dev/null 2>&1; then
+        echo "pkg-config"
+    elif command -v pkgconf >/dev/null 2>&1; then
+        echo "pkgconf"
+    else
+        return 1
+    fi
+}
+
+# True when $1 is, or contains, a libclang shared library that clang-sys can
+# link: `libclang.so` or `libclang-<version>.so`. Deliberately does not accept
+# suffix-versioned names such as `libclang.so.1`: bindgen links at build time,
+# and clang-sys only looks for the two linkable forms. libclang-cpp and the
+# compiler-rt runtimes are skipped.
+libclang_has_library() {
+    local target=$1 candidate
+    [ -e "$target" ] || return 1
+
+    if [ -f "$target" ]; then
+        case "$(basename "$target")" in
+            *-cpp.*|libclang_rt.*) return 1 ;;
+            libclang.so|libclang-*.so) return 0 ;;
+            *) return 1 ;;
+        esac
+    fi
+
+    [ -d "$target" ] || return 1
+    for candidate in \
+        "$target"/libclang.so \
+        "$target"/libclang-*.so; do
+        [ -f "$candidate" ] || continue
+        case "$(basename "$candidate")" in
+            *-cpp.*|libclang_rt.*) continue ;;
+        esac
+        return 0
+    done
+    return 1
+}
+
+preflight_find_libclang() {
+    local candidate dir
+
+    # clang-sys treats LIBCLANG_PATH as an exclusive search path, so mirror
+    # that: when it is set, only look there. This also lets a deliberate
+    # LIBCLANG_PATH win over a stale library elsewhere.
+    if [ -n "${LIBCLANG_PATH:-}" ]; then
+        libclang_has_library "$LIBCLANG_PATH"
+        return
+    fi
+
+    if command -v llvm-config >/dev/null 2>&1; then
+        for dir in \
+            "$(llvm-config --libdir 2>/dev/null || true)" \
+            "$(llvm-config --prefix 2>/dev/null || true)/lib"; do
+            case "$dir" in
+                ""|"/lib") continue ;;
+            esac
+            if libclang_has_library "$dir"; then
+                return 0
+            fi
+        done
+    fi
+
+    if command -v ldconfig >/dev/null 2>&1; then
+        while IFS= read -r candidate; do
+            [ -n "$candidate" ] || continue
+            # ldconfig normally lists only the SONAME (libclang-19.so.1);
+            # the linkable libclang.so / libclang-19.so lives beside it.
+            if libclang_has_library "$candidate" \
+                || libclang_has_library "$(dirname -- "$candidate")"; then
+                return 0
+            fi
+        done < <(ldconfig -p 2>/dev/null | awk -F'=> ' '/libclang/ {print $2}')
+    fi
+
+    # Standard locations: Arch/Fedora use /usr/lib(64), Debian keeps libclang
+    # under /usr/lib/llvm-<version>/lib, and multiarch trees live in
+    # /usr/lib/<triplet>.
+    for dir in \
+        /usr/lib /usr/lib64 /usr/local/lib /usr/local/lib64 \
+        /usr/lib/llvm-*/lib /usr/lib/llvm*/lib /usr/lib64/llvm*/lib \
+        /usr/lib/*-linux-gnu /usr/lib64/*-linux-gnu; do
+        if libclang_has_library "$dir"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+preflight_install_hint() {
+    local distro=""
+
+    if [ -r /etc/os-release ]; then
+        distro=$(
+            # shellcheck disable=SC1091
+            . /etc/os-release 2>/dev/null || exit 0
+            printf '%s %s' "${ID:-}" "${ID_LIKE:-}"
+        )
+    fi
+
+    case "$distro" in
+        *arch*|*manjaro*|*endeavouros*)
+            echo "    sudo pacman -S --needed base-devel clang pkgconf wayland wayland-protocols libxkbcommon mesa libglvnd ffmpeg"
+            ;;
+        *debian*|*ubuntu*|*linuxmint*|*pop*)
+            echo "    sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang libclang-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libwayland-dev libxkbcommon-dev"
+            ;;
+        *fedora*|*rhel*|*centos*|*rocky*|*almalinux*)
+            echo "    sudo dnf install -y clang clang-devel pkgconf wayland-devel wayland-protocols-devel libxkbcommon-devel mesa-libGL-devel libglvnd-devel ffmpeg-devel"
+            ;;
+        *)
+            # os-release was unreadable or the distro is unusual: fall back to
+            # the package manager actually present, then to the docs.
+            if command -v pacman >/dev/null 2>&1; then
+                echo "    sudo pacman -S --needed base-devel clang pkgconf wayland wayland-protocols libxkbcommon mesa libglvnd ffmpeg"
+            elif command -v apt-get >/dev/null 2>&1; then
+                echo "    sudo apt-get update && sudo apt-get install -y build-essential pkg-config clang libclang-dev libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libwayland-dev libxkbcommon-dev"
+            elif command -v dnf >/dev/null 2>&1; then
+                echo "    sudo dnf install -y clang clang-devel pkgconf wayland-devel wayland-protocols-devel libxkbcommon-devel mesa-libGL-devel libglvnd-devel ffmpeg-devel"
+            else
+                echo "    See docs/INSTALL.md for the build dependencies on your distribution."
+            fi
+            ;;
+    esac
+}
+
+preflight_build_deps() {
+    local pkg_config_bin="" module missing_modules=() missing=()
+
+    echo "==> Checking build dependencies..."
+
+    if ! preflight_find_compiler; then
+        missing+=("C compiler (cc, gcc or clang)")
+    fi
+
+    if ! pkg_config_bin=$(preflight_pkg_config); then
+        missing+=("pkg-config")
+    fi
+
+    if ! preflight_find_libclang; then
+        missing+=("libclang (needed by bindgen in ffmpeg-sys-next)")
+    fi
+
+    if [ -n "$pkg_config_bin" ]; then
+        missing_modules=()
+        for module in libavcodec libavformat libavutil libswscale; do
+            "$pkg_config_bin" --exists "$module" 2>/dev/null || missing_modules+=("$module")
+        done
+        if [ "${#missing_modules[@]}" -gt 0 ]; then
+            missing+=("FFmpeg development headers (missing pkg-config module(s): ${missing_modules[*]})")
+        fi
+
+        missing_modules=()
+        for module in wayland-client wayland-egl xkbcommon; do
+            "$pkg_config_bin" --exists "$module" 2>/dev/null || missing_modules+=("$module")
+        done
+        if [ "${#missing_modules[@]}" -gt 0 ]; then
+            missing+=("Wayland/xkbcommon development files (missing pkg-config module(s): ${missing_modules[*]})")
+        fi
+    fi
+
+    if [ "${#missing[@]}" -eq 0 ]; then
+        echo "    build dependencies look OK."
+        return 0
+    fi
+
+    echo ""
+    echo "Error: missing build dependencies for cava-bg:"
+    local item
+    for item in "${missing[@]}"; do
+        echo "  · $item"
+    done
+    echo ""
+    echo "Install them and re-run this installer:"
+    preflight_install_hint
+    echo ""
+    echo "Manual build instructions: docs/INSTALL.md"
+    exit 1
+}
+
 # ─── Default: build from source (git clone + cargo build --release --locked) ─
 build_from_source() {
     local source_is_temp=0
@@ -358,9 +563,11 @@ build_from_source() {
     fi
 
     echo "==> Working in: $SCRIPT_DIR"
-    echo "==> Building cava-bg from $TARGET_REF (this may take a few minutes)..."
 
     resolve_cargo
+    preflight_build_deps
+
+    echo "==> Building cava-bg from $TARGET_REF (this may take a few minutes)..."
 
     # --locked enforces Cargo.lock so a tweak to Cargo.toml cannot silently
     # pull newer dependency versions at install time. On failure the resolved
@@ -373,8 +580,11 @@ build_from_source() {
         echo "first error before changing anything."
         echo ""
         echo "Common causes:"
-        echo "  · missing system build dependencies (Wayland, EGL, xkbcommon,"
-        echo "    FFmpeg development headers)"
+        echo "  · libclang not found by bindgen ('Unable to find libclang');"
+        echo "    install clang/libclang for your distro, or point LIBCLANG_PATH"
+        echo "    at the directory that contains libclang.so"
+        echo "  · missing system build dependencies (C compiler, pkg-config,"
+        echo "    Wayland/xkbcommon development files, FFmpeg headers)"
         echo "  · FFmpeg headers/ABI newer than the versions pinned in Cargo.lock"
         echo ""
         if [ "$source_is_temp" -eq 1 ]; then

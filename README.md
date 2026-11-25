@@ -116,10 +116,10 @@ Additional flags:
 - `--no-cava` – skip `cava` installation
 - `--no-config` – skip creating `~/.config/cava-bg/config.toml`
 - `--no-completions` – skip installing shell completions
-- `--branch <name>` – install from a specific branch or tag
+- `--version <ref>` – build from a specific branch, tag or commit (default `main`)
 - `--help` – show all options
 
-> Requirements: `git`, `curl`, `sudo`, and a C toolchain (for Rust dependencies). Rust is installed automatically via `rustup` if missing.
+> Requirements: `git`, `curl`, `sudo`, a C toolchain, `pkg-config` and libclang (for bindgen). Rust is installed automatically via `rustup` if missing.
 
 ### Arch Linux (AUR)
 #### Using yay
@@ -254,15 +254,15 @@ To reproduce every artifact locally:
 1. **Install Dependencies:**
 ```bash
 # Arch Linux
-sudo pacman -S cava rustup wayland wayland-protocols libxkbcommon mesa libglvnd ffmpeg
+sudo pacman -S --needed cava rustup base-devel clang pkgconf wayland wayland-protocols libxkbcommon mesa libglvnd ffmpeg
 ```
 ```bash
 # Debian/Ubuntu
-sudo apt install cava rustc cargo libwayland-dev wayland-protocols libxkbcommon-dev libgl1-mesa-dev libglvnd-dev libavformat-dev libavcodec-dev libavutil-dev libavfilter-dev libswscale-dev libswresample-dev
+sudo apt install cava rustc cargo build-essential pkg-config clang libclang-dev libwayland-dev wayland-protocols libxkbcommon-dev libgl1-mesa-dev libglvnd-dev libavformat-dev libavcodec-dev libavutil-dev libavfilter-dev libswscale-dev libswresample-dev
 ```
 ```bash
-# Fedora
-sudo dnf install cava rust cargo wayland-devel wayland-protocols-devel libxkbcommon-devel mesa-libGL-devel libglvnd-devel ffmpeg-devel
+# Fedora (ffmpeg-devel comes from RPM Fusion)
+sudo dnf install cava rust cargo clang clang-devel pkgconf wayland-devel wayland-protocols-devel libxkbcommon-devel mesa-libGL-devel libglvnd-devel ffmpeg-devel
 ```
 
 2. **Build and Install:**
