@@ -180,6 +180,26 @@ cava-bg
 
 ## Troubleshooting
 
+### Rust: "rustup could not choose a version of cargo to run"
+
+This means the `cargo` on your `PATH` is rustup's shim, but no default
+toolchain is configured: `cargo --version` fails and `rustup show` reports
+"no active toolchain". The installer detects this, installs stable if it is
+missing, and builds with `rustup run stable cargo` without changing your
+global default.
+
+For a manual build, pin the toolchain for that one command:
+
+```bash
+rustup run stable cargo build --release --locked
+```
+
+Or make stable the default (this does change your rustup configuration):
+
+```bash
+rustup default stable
+```
+
 ### "cava not found"
 Install cava as shown above.
 

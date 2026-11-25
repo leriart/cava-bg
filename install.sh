@@ -211,8 +211,108 @@ download_prebuilt() {
     return 0
 }
 
+# ─── Find a cargo that actually runs ─────────────────────────────────────
+# `command -v cargo` is not enough: rustup installs a shim that exits with
+# "no default is configured" when no toolchain is active. CARGO is an array
+# so the fallback can be `rustup run <toolchain> cargo`, which pins the
+# toolchain for this build only and leaves the user's default untouched.
+CARGO=()
+
+cargo_runs() {
+    "$@" --version >/dev/null 2>&1
+}
+
+installed_toolchains() {
+    rustup toolchain list 2>/dev/null | awk 'NF {print $1}'
+}
+
+resolve_cargo() {
+    if command -v cargo &> /dev/null; then
+        if cargo_runs cargo; then
+            CARGO=(cargo)
+            return 0
+        fi
+        echo "==> cargo is installed but does not run:"
+        cargo --version 2>&1 | head -n 3 | sed 's/^/    /' || true
+    else
+        echo "==> cargo not found on PATH."
+    fi
+
+    if command -v rustup &> /dev/null; then
+        local toolchain="stable" candidate
+        # `rustup run` never changes the global default and never downloads
+        # implicitly: check first, provision stable explicitly, then pin it
+        # for this build only.
+        if ! cargo_runs rustup run stable cargo; then
+            echo "==> No usable stable Rust toolchain; installing stable..."
+            if ! rustup toolchain install stable --profile minimal; then
+                # Offline host with another usable toolchain: reuse it rather
+                # than failing outright.
+                toolchain=""
+                while IFS= read -r candidate; do
+                    [ -n "$candidate" ] || continue
+                    if cargo_runs rustup run "$candidate" cargo; then
+                        toolchain="$candidate"
+                        break
+                    fi
+                done <<< "$(installed_toolchains)"
+                if [ -z "$toolchain" ]; then
+                    echo "Error: could not install the stable Rust toolchain,"
+                    echo "and no other installed toolchain can run cargo."
+                    echo "Install it manually, then re-run this installer:"
+                    echo ""
+                    echo "    rustup toolchain install stable --profile minimal"
+                    exit 1
+                fi
+                echo "==> Falling back to installed toolchain '$toolchain'."
+            fi
+        fi
+
+        CARGO=(rustup run "$toolchain" cargo)
+        if ! cargo_runs "${CARGO[@]}"; then
+            echo "Error: rustup toolchain '$toolchain' cannot run cargo."
+            echo "Check 'rustup show' and reinstall it with:"
+            echo ""
+            echo "    rustup toolchain install '$toolchain' --profile minimal"
+            exit 1
+        fi
+        echo "==> Building with rustup toolchain '$toolchain' (default unchanged)."
+        return 0
+    fi
+
+    if ! command -v cargo &> /dev/null; then
+        echo "==> Installing Rust with rustup..."
+        if ! command -v curl &> /dev/null; then
+            echo "Error: curl is required to install Rust automatically."
+            exit 1
+        fi
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain stable --profile minimal
+        if [ -f "$HOME/.cargo/env" ]; then
+            # shellcheck disable=SC1091
+            . "$HOME/.cargo/env"
+        fi
+        if cargo_runs cargo; then
+            CARGO=(cargo)
+        elif cargo_runs "$HOME/.cargo/bin/cargo"; then
+            CARGO=("$HOME/.cargo/bin/cargo")
+        else
+            echo "Error: rustup finished but cargo still does not run."
+            echo "Start a new shell (or run 'source \"\$HOME/.cargo/env\"') and"
+            echo "re-run this installer."
+            exit 1
+        fi
+        return 0
+    fi
+
+    echo "Error: cargo is installed but does not run, and rustup is not available."
+    echo "Reinstall Rust from https://rust-lang.org/tools/install and re-run."
+    exit 1
+}
+
 # ─── Default: build from source (git clone + cargo build --release --locked) ─
 build_from_source() {
+    local source_is_temp=0
     if [ -f "./Cargo.toml" ] && [ -f "./src/main.rs" ]; then
         # Local checkout detected; use it as-is. Setting CAVA_BG_SOURCE_DIR
         # also forces the path even when the script is run from elsewhere.
@@ -254,39 +354,51 @@ build_from_source() {
         fi
         cd "$TMP_DIR/cava-bg"
         SCRIPT_DIR="$TMP_DIR/cava-bg"
+        source_is_temp=1
     fi
 
     echo "==> Working in: $SCRIPT_DIR"
     echo "==> Building cava-bg from $TARGET_REF (this may take a few minutes)..."
 
-    # Check for Rust toolchain
-    if ! command -v cargo &> /dev/null; then
-        echo "==> Rust toolchain not found, installing rustup..."
-        if ! command -v curl &> /dev/null; then
-            echo "Error: curl is required to install Rust automatically."
-            exit 1
-        fi
-        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
-        # shellcheck disable=SC1091
-        source "$HOME/.cargo/env"
-    fi
+    resolve_cargo
 
-    # --locked enforces Cargo.lock so a downstream tweak to Cargo.toml
-    # cannot silently pull a newer ffmpeg-next or any other dependency
-    # at install time. The first run on a fresh checkout may briefly
-    # need `cargo update -p ffmpeg-next` if the system FFmpeg headers
-    # are newer than what Cargo.lock was generated against; install.sh
-    # surfaces a clear error in that case rather than silently fetching
-    # a different version.
-    if ! cargo build --release --locked; then
+    # --locked enforces Cargo.lock so a tweak to Cargo.toml cannot silently
+    # pull newer dependency versions at install time. On failure the resolved
+    # cargo command is printed so the build can be reproduced exactly from
+    # the same checkout.
+    if ! "${CARGO[@]}" build --release --locked; then
         echo ""
-        echo "Error: 'cargo build --release --locked' failed."
-        echo "This usually means the system FFmpeg headers are newer than"
-        echo "the locked versions in Cargo.lock. The fix is to update the"
-        echo "ffmpeg-next lockfile from the project root and re-run:"
+        echo "Error: '${CARGO[*]} build --release --locked' failed."
+        echo "The compiler output above is the authoritative reason; read its"
+        echo "first error before changing anything."
         echo ""
-        echo "    cargo update -p ffmpeg-next"
-        echo "    $0"
+        echo "Common causes:"
+        echo "  · missing system build dependencies (Wayland, EGL, xkbcommon,"
+        echo "    FFmpeg development headers)"
+        echo "  · FFmpeg headers/ABI newer than the versions pinned in Cargo.lock"
+        echo ""
+        if [ "$source_is_temp" -eq 1 ]; then
+            # The clone above lives in a mktemp directory removed on exit, so
+            # point at a checkout the user can keep instead.
+            echo "To reproduce from a fresh checkout:"
+            echo ""
+            echo "    git clone \"$REPO_URL\" cava-bg"
+            echo "    cd cava-bg"
+            echo "    git checkout \"$TARGET_REF\""
+        else
+            echo "To reproduce from the same tree:"
+            echo ""
+            echo "    cd \"$SCRIPT_DIR\""
+        fi
+        echo "    ${CARGO[*]} build --release --locked"
+        echo ""
+        echo "If, and only if, the error is an FFmpeg ABI/lockfile mismatch,"
+        echo "refresh the FFmpeg crates and rebuild (keep --locked):"
+        echo ""
+        echo "    ${CARGO[*]} update -p ffmpeg-next"
+        echo "    ${CARGO[*]} build --release --locked"
+        echo ""
+        echo "Build dependencies: docs/INSTALL.md"
         exit 1
     fi
 
