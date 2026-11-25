@@ -50,6 +50,17 @@ sd-notify = "0.5"
 members = ["xtask"]
 resolver = "2"
 
+# Local patch for ffmpeg-sys-next 9.0.0: its hwcontext_wrapper.h only declares
+# CUcontext/CUstream, but FFmpeg 9's <libavutil/hwcontext_cuda.h> now uses
+# CUarray and CUDA_ARRAY3D_DESCRIPTOR by value, so bindgen fails with
+# "unknown type name 'CUarray'". vendor/ffmpeg-sys-next/ is the unmodified
+# crates.io 9.0.0 source plus the wrapper hunk from
+# https://github.com/zmwangx/rust-ffmpeg-sys/pull/139 (see its
+# CAVA-BG-PATCH.md). Remove this section and vendor/ffmpeg-sys-next/ once a
+# crates.io release contains the upstream fix.
+[patch.crates-io]
+ffmpeg-sys-next = { path = "vendor/ffmpeg-sys-next" }
+
 [build-dependencies]
 clap = "4"
 clap_complete = "4"
