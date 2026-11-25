@@ -1,10 +1,16 @@
 {
   inputs = {
     nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
+    naersk = {
+      url = "github:nix-community/naersk";
+      # Reuse the checkout we already evaluate instead of pulling a second,
+      # unrelated nixpkgs just for naersk's own tests and fenix input.
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, flake-utils, ... }:
+  outputs = { self, nixpkgs, naersk, flake-utils, ... }:
     let
       baseHmModule = import ./nix/home-module.nix;
     in
@@ -12,6 +18,7 @@
       let
         pkgs = import nixpkgs { inherit system; };
         lib = pkgs.lib;
+        naersk-lib = pkgs.callPackage naersk { };
         rustSrc = pkgs.rust.packages.stable.rustPlatform.rustLibSrc;
 
         runtimeDeps = with pkgs; [
@@ -25,54 +32,29 @@
           cava
         ];
 
-        # nixpkgs' own Rust builder rather than naersk.
-        #
-        # naersk failed `nix flake check` with
-        #     error: path '/nix/store/...-source' is not valid
-        # inside its `findCargoTomls` helper, and it reproduces with a minimal
-        # naersk flake that has nothing to do with this repository, so it is an
-        # upstream problem rather than something in flake.nix. buildRustPackage
-        # needs no extra flake input (naersk dragged in fenix and
-        # rust-analyzer-src too) and understands Cargo.lock natively.
-        cava-bg = pkgs.rustPlatform.buildRustPackage {
-          pname = "cava-bg";
-          # Cargo.toml stays the single source of truth for the version, as it
-          # is everywhere else in the project.
-          version = (lib.importTOML ./Cargo.toml).package.version;
+        cava-bg = naersk-lib.buildPackage {
+          name = "cava-bg";
+          # naersk reads package.version from Cargo.toml, so Cargo.toml stays
+          # the single source of truth for the version here as everywhere else.
+          # It also reads Cargo.lock and fetches the smithay-client-toolkit git
+          # dependency itself, pinned to the revision in the lock, so there is
+          # no cargoLock.outputHashes (a buildRustPackage-only workaround).
+          src = lib.cleanSource ./.;
 
-          src = ./.;
-
-          cargoLock =
-            let
-              lock = builtins.fromTOML (builtins.readFile ./Cargo.lock);
-              gitDeps = builtins.filter
-                (p: lib.hasPrefix "git+" (p.source or ""))
-                lock.package;
-
-              # A git dependency's source tree cannot be hashed by cargoLock, so
-              # the hash is unavoidably a literal. The *key* is not: writing
-              # "smithay-client-toolkit-0.20.0" here would duplicate the version
-              # from Cargo.lock, and bumping the crate would leave the stale key
-              # silently in place. The version is read from the lock file and
-              # only the hash is recorded, keyed by crate name.
-              hashes = {
-                smithay-client-toolkit = "sha256-rFNSzm1003spYHdzlvCyb7PWGMOJibUq/Ek3F5HABkM=";
-              };
-            in
-            {
-              lockFile = ./Cargo.lock;
-              outputHashes = builtins.listToAttrs (map
-                (p: {
-                  name = "${p.name}-${p.version}";
-                  value = hashes.${p.name} or (throw
-                    "Cargo.lock has a git dependency '${p.name}' with no recorded hash. "
-                    + "Add   ${p.name} = \"sha256-...\";   to cargoLock.hashes in flake.nix. "
-                    + "Nix prints the expected hash when the build fails.");
-                })
-                gitDeps);
-            };
-
-          buildFeatures = [ "dbus-detection" ];
+          # `nix flake check --no-build` evaluates with a read-only store: a
+          # path coerced to a store path is only computed, not written. naersk
+          # discovers workspaces with
+          #
+          #     builtins.readDir "${root}/${dir}"
+          #
+          # so leaving `root` as a path makes the `--no-build` check fail with
+          #
+          #     error: path '/nix/store/...-source' is not valid
+          #
+          # before the build even starts. The flake's own source is already a
+          # valid store path, so hand naersk that path as a string and avoid
+          # coercing a fresh path while it discovers the workspace.
+          root = toString ./.;
 
           buildInputs = runtimeDeps;
 
@@ -84,6 +66,14 @@
           ];
 
           LD_LIBRARY_PATH = lib.makeLibraryPath runtimeDeps;
+
+          # naersk has no `cargoFeatures` option: an unknown attribute is passed
+          # straight to mkDerivation as an environment variable and never
+          # reaches cargo. Append the feature to naersk's default build options
+          # instead. This also covers the deps-only derivation that naersk
+          # builds from a stub source tree.
+          cargoBuildOptions =
+            opts: opts ++ [ "--features=dbus-detection" ];
 
           postFixup = ''
             if [ -x "$out/bin/cava-bg" ]; then

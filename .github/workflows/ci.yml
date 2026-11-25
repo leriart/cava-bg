@@ -264,25 +264,9 @@ jobs:
   nix:
     name: nix build
     runs-on: ubuntu-latest
-    # This job builds. It used to be `nix flake check --no-build`, wrapped in
-    # continue-on-error: it evaluated the flake and compiled nothing, so it
-    # reported success while `nix build` was broken.
-    #
-    # KNOWN FAILING, and advisory only until that is fixed. buildRustPackage's
-    # vendoring fails on this Cargo.lock's one git dependency:
-    #
-    #   ln: failed to create symbolic link
-    #     '$out/smithay-client-toolkit-0.20.0/<hash>-smithay-client-toolkit-0.20.0'
-    #   Permission denied
-    #
-    # The crate is symlinked into the vendor dir, then something tries to create
-    # a further symlink inside that symlink, which resolves into the read-only
-    # store. Replacing naersk with buildRustPackage is what exposed this.
-    #
-    # continue-on-error keeps a Nix-side problem from blocking a release while
-    # the report above is addressed; remove it once the build is green so the
-    # job can do its job.
-    continue-on-error: true
+    # Build and smoke-test the package for real. naersk fetches the git
+    # dependency pinned in Cargo.lock without buildRustPackage's outputHashes,
+    # so this check is mandatory rather than advisory.
     steps:
       - uses: actions/checkout@v4
       - uses: cachix/install-nix-action@v31
